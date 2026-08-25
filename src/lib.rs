@@ -5,6 +5,12 @@
 pub mod card;
 pub mod shoe;
 
+pub mod baccarat;
+
+pub use baccarat::{
+    BaccaratHand, OutcomeWeights, ProbabilityError, RoundError, RoundOutcome, RoundResult,
+    resolve_round,
+};
 pub use card::{Card, CardParseError, Rank, Suit};
 pub use shoe::{DEFAULT_DECKS, MAX_DECKS, MIN_DECKS, Shoe, ShoeError};
 

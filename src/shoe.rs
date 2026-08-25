@@ -2,7 +2,7 @@
 
 use std::{error::Error, fmt};
 
-use crate::Card;
+use crate::{Card, Rank, Suit};
 
 /// 本项目百家乐规则默认使用的副牌数。
 pub const DEFAULT_DECKS: u8 = 8;
@@ -82,6 +82,23 @@ impl Shoe {
         self.total += 1;
         self.debug_assert_invariants();
         Ok(())
+    }
+
+    /// 按百家乐点数聚合当前剩余牌，返回 0～9 点各自的剩余张数。
+    pub fn baccarat_point_counts(&self) -> [u16; 10] {
+        let mut point_counts = [0_u16; 10];
+
+        for rank in Rank::ALL {
+            let point_index = usize::from(rank.baccarat_value());
+
+            for suit in Suit::ALL {
+                let card = Card::new(rank, suit);
+                point_counts[point_index] += u16::from(self.remaining(card));
+            }
+        }
+
+        debug_assert_eq!(point_counts.iter().sum::<u16>(), self.total);
+        point_counts
     }
 
     /// 以原子方式扣除所有传入的牌。
@@ -317,5 +334,22 @@ mod tests {
         shoe.remove_many(&[]).expect("empty batch should succeed");
 
         assert_eq!(shoe, initial);
+    }
+
+    #[test]
+    fn baccarat_point_counts_reflect_the_current_shoe() {
+        let mut shoe = Shoe::default();
+
+        assert_eq!(
+            shoe.baccarat_point_counts(),
+            [128, 32, 32, 32, 32, 32, 32, 32, 32, 32]
+        );
+
+        shoe.remove(card("KS")).expect("KS should be available");
+        shoe.remove(card("7H")).expect("7H should be available");
+
+        let point_counts = shoe.baccarat_point_counts();
+        assert_eq!(point_counts, [127, 32, 32, 32, 32, 32, 32, 31, 32, 32]);
+        assert_eq!(point_counts.iter().sum::<u16>(), shoe.total_remaining());
     }
 }
