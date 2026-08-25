@@ -5,8 +5,11 @@ use crate::Card;
 /// 一方的百家乐手牌，由两张起手牌和一张可选的第三张牌组成。
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct BaccaratHand {
+    /// 按发牌顺序记录的第一张起手牌。
     first_card: Card,
+    /// 按发牌顺序记录的第二张起手牌。
     second_card: Card,
+    /// 只有补牌规则要求时才存在；`None` 表示该方停牌。
     third_card: Option<Card>,
 }
 
@@ -19,6 +22,7 @@ impl BaccaratHand {
             third_card: None,
         }
     }
+
     /// 创建一手包含第三张牌的三张牌手牌。
     pub const fn with_third(first_card: Card, second_card: Card, third_card: Card) -> Self {
         Self {
@@ -45,11 +49,14 @@ impl BaccaratHand {
 
     /// 计算起手两张牌的点数，只保留个位数。
     pub const fn initial_total(self) -> u8 {
+        // `% 10` 对应百家乐“只取总点数个位”的规则。
         (self.first_card.baccarat_value() + self.second_card.baccarat_value()) % 10
     }
 
     /// 计算包含可选第三张牌在内的最终点数，只保留个位数。
     pub const fn total(self) -> u8 {
+        // 初始点数必须保留下来，因为庄家补牌规则关心的是起手点数；
+        // 最终点数才把可选第三张牌加进去。
         match self.third_card {
             Some(third_card) => (self.initial_total() + third_card.baccarat_value()) % 10,
             None => self.initial_total(),
@@ -65,6 +72,8 @@ impl BaccaratHand {
     }
 
     /// 判断该手牌是否为起手两张组成的 Natural 8 或 Natural 9。
+    ///
+    /// 三张牌凑成的 8 或 9 不属于 Natural，所以还必须确认第三张牌不存在。
     pub const fn is_natural(self) -> bool {
         self.third_card.is_none() && matches!(self.initial_total(), 8 | 9)
     }

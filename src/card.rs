@@ -3,6 +3,8 @@
 use std::{error::Error, fmt, str::FromStr};
 
 /// 扑克牌花色。
+///
+/// 显式指定 `u8` 表示和 0～3 判别值，使花色能够稳定参与牌靴下标计算。
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Suit {
@@ -33,6 +35,7 @@ impl Suit {
 }
 
 impl fmt::Display for Suit {
+    /// 使用 CLI 接受的单字符 ASCII 代码显示花色。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}", self.ascii_code())
     }
@@ -41,6 +44,7 @@ impl fmt::Display for Suit {
 impl FromStr for Suit {
     type Err = CardParseError;
 
+    /// 从 `C`、`D`、`H`、`S` 解析花色，忽略大小写和两端空白。
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         let input = input.trim();
 
@@ -55,6 +59,8 @@ impl FromStr for Suit {
 }
 
 /// 扑克牌牌面。
+///
+/// 判别值按 A、2、……、K 顺序连续排列，供 `Card::index` 直接计算下标。
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Rank {
@@ -133,6 +139,7 @@ impl Rank {
 }
 
 impl fmt::Display for Rank {
+    /// 使用 `A`、`2`～`10`、`J`、`Q`、`K` 显示牌面。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.short_name())
     }
@@ -141,6 +148,7 @@ impl fmt::Display for Rank {
 impl FromStr for Rank {
     type Err = CardParseError;
 
+    /// 从 ASCII 简写解析牌面；十既接受 `10`，也接受常见简写 `T`。
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         let input = input.trim();
 
@@ -185,14 +193,17 @@ impl Card {
     /// 一副标准扑克牌中不同牌面与花色组合的数量。
     pub const DISTINCT_COUNT: usize = 52;
 
+    /// 使用牌面和花色创建一张具体牌。
     pub const fn new(rank: Rank, suit: Suit) -> Self {
         Self { rank, suit }
     }
 
+    /// 返回这张牌的牌面。
     pub const fn rank(self) -> Rank {
         self.rank
     }
 
+    /// 返回这张牌的花色。
     pub const fn suit(self) -> Suit {
         self.suit
     }
@@ -209,6 +220,7 @@ impl Card {
 }
 
 impl fmt::Display for Card {
+    /// 把具体牌显示为 `AS`、`10H` 之类的 CLI 牌面记法。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}{}", self.rank, self.suit)
     }
@@ -217,6 +229,7 @@ impl fmt::Display for Card {
 impl FromStr for Card {
     type Err = CardParseError;
 
+    /// 解析由“牌面 + 单字符花色”组成的具体牌文本。
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         let input = input.trim();
         if input.is_empty() {
@@ -232,6 +245,7 @@ impl FromStr for Card {
             return Err(CardParseError::InvalidFormat(input.to_owned()));
         }
 
+        // 使用最后一个字符的位置切分，才能同时兼容一字符牌面 `A` 和两字符牌面 `10`。
         let (rank_text, suit_text) = input.split_at(suit_start);
         let rank = rank_text.parse()?;
         let suit = suit_text.parse()?;
@@ -242,13 +256,18 @@ impl FromStr for Card {
 /// 牌面文本无法转换成扑克牌时返回的错误。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CardParseError {
+    /// 输入去除两端空白后为空。
     Empty,
+    /// 输入无法拆成牌面和花色两部分。
     InvalidFormat(String),
+    /// 花色部分不是 C、D、H、S。
     InvalidSuit(String),
+    /// 牌面部分不是 A、2～10、J、Q、K。
     InvalidRank(String),
 }
 
 impl fmt::Display for CardParseError {
+    /// 将结构化解析错误转换为适合上层展示的文本。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => formatter.write_str("card input cannot be empty"),

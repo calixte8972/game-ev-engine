@@ -2,11 +2,15 @@
 //!
 //! 游戏规则、牌靴状态、概率计算和 EV 计算会逐步实现在这个库中。
 
+/// 扑克牌的基础类型、文本解析和百家乐点数。
 pub mod card;
+/// 多副牌牌靴的剩余数量和安全扣牌操作。
 pub mod shoe;
 
+/// 标准百家乐手牌、补牌规则、回合结果和概率计算。
 pub mod baccarat;
 
+// 把最常使用的领域类型提升到 crate 根路径，调用者无需记住内部文件结构。
 pub use baccarat::{
     BaccaratHand, OutcomeWeights, ProbabilityError, RoundError, RoundOutcome, RoundResult,
     resolve_round,

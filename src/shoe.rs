@@ -9,6 +9,7 @@ pub const DEFAULT_DECKS: u8 = 8;
 
 /// 第一个版本支持的副牌数范围。
 pub const MIN_DECKS: u8 = 1;
+/// 第一个版本允许创建的最大副牌数。
 pub const MAX_DECKS: u8 = 8;
 
 /// 多副牌牌靴中的剩余牌。
@@ -17,8 +18,11 @@ pub const MAX_DECKS: u8 = 8;
 /// 因此，一个八副牌牌靴只需要 52 个计数字节。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Shoe {
+    /// 初始牌靴的副牌数，同时也是每一种具体牌允许恢复到的容量上限。
     decks: u8,
+    /// 52 种“牌面 + 花色”的剩余数量，位置由 `Card::index` 唯一确定。
     counts: [u8; Card::DISTINCT_COUNT],
+    /// 所有具体牌剩余数量之和；单独缓存可避免每次查询都遍历 52 个计数。
     total: u16,
 }
 
@@ -53,6 +57,7 @@ impl Shoe {
 
     /// 从牌靴中扣除一张已知的牌。
     pub fn remove(&mut self, card: Card) -> Result<(), ShoeError> {
+        // 直接取得目标计数的可变引用，后续修改不会扫描整个数组。
         let remaining = &mut self.counts[card.index()];
         if *remaining == 0 {
             return Err(ShoeError::CardUnavailable {
@@ -71,6 +76,7 @@ impl Shoe {
     /// 恢复一张之前扣除的牌。
     pub fn restore(&mut self, card: Card) -> Result<(), ShoeError> {
         let remaining = &mut self.counts[card.index()];
+        // 每种具体牌最初只有 `decks` 张，超过这个值说明恢复了未扣除的牌。
         if *remaining == self.decks {
             return Err(ShoeError::CardAtCapacity {
                 card,
@@ -85,10 +91,14 @@ impl Shoe {
     }
 
     /// 按百家乐点数聚合当前剩余牌，返回 0～9 点各自的剩余张数。
+    ///
+    /// 底层仍保留 52 种具体牌，确保对子等边注以后能够区分牌面和花色；
+    /// 主注只依赖点数时，再临时压缩为 10 类以减少枚举分支。
     pub fn baccarat_point_counts(&self) -> [u16; 10] {
         let mut point_counts = [0_u16; 10];
 
         for rank in Rank::ALL {
+            // 10、J、Q、K 都会聚合到下标 0，其余牌面聚合到自身点数。
             let point_index = usize::from(rank.baccarat_value());
 
             for suit in Suit::ALL {
@@ -106,7 +116,9 @@ impl Shoe {
     /// 修改牌靴前会先验证全部请求数量。如果任何一种牌数量不足，
     /// 整个操作都会失败，并且牌靴保持不变。
     pub fn remove_many(&mut self, cards: &[Card]) -> Result<(), ShoeError> {
+        // 第一遍只统计请求，不修改牌靴。重复输入同一张牌时会累加到同一下标。
         let mut requested = [0_usize; Card::DISTINCT_COUNT];
+        // 保存一种代表牌，用于数量不足时构造包含具体牌面的错误。
         let mut examples = [None; Card::DISTINCT_COUNT];
 
         for &card in cards {
@@ -115,6 +127,8 @@ impl Shoe {
             examples[index] = Some(card);
         }
 
+        // 第二遍先验证全部请求。只有全部可满足，才进入后面的实际扣牌阶段，
+        // 因而不会出现“扣了一半后才发现另一张牌不足”的部分修改。
         for index in 0..Card::DISTINCT_COUNT {
             let available = self.counts[index];
             if requested[index] > usize::from(available) {
@@ -128,7 +142,9 @@ impl Shoe {
         }
 
         let mut removed = 0_u16;
+        // `zip` 把每个剩余计数与相同下标的请求数成对处理。
         for (remaining, requested) in self.counts.iter_mut().zip(requested) {
+            // 单类牌最多只有 8 张，且前面已经验证过数量，因此这里转换为 u8 安全。
             let requested = requested as u8;
             *remaining -= requested;
             removed += u16::from(requested);
@@ -139,6 +155,9 @@ impl Shoe {
         Ok(())
     }
 
+    /// 在调试和测试构建中检查牌靴内部状态是否自洽。
+    ///
+    /// `debug_assert!` 在优化后的 release 构建中会被移除，不影响正式计算性能。
     fn debug_assert_invariants(&self) {
         debug_assert!(self.counts.iter().all(|&count| count <= self.decks));
         debug_assert_eq!(
@@ -152,6 +171,7 @@ impl Shoe {
 }
 
 impl Default for Shoe {
+    /// 创建规则基线使用的完整八副牌牌靴。
     fn default() -> Self {
         Self {
             decks: DEFAULT_DECKS,
@@ -164,21 +184,20 @@ impl Default for Shoe {
 /// 对牌靴执行非法操作时返回的错误。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShoeError {
-    InvalidDeckCount {
-        decks: u8,
-    },
+    /// 请求的副牌数不在当前支持的 1～8 范围内。
+    InvalidDeckCount { decks: u8 },
+    /// 要扣除的某种具体牌多于牌靴中的剩余数量。
     CardUnavailable {
         card: Card,
         requested: usize,
         remaining: u8,
     },
-    CardAtCapacity {
-        card: Card,
-        capacity: u8,
-    },
+    /// 恢复后会超过该具体牌的初始容量。
+    CardAtCapacity { card: Card, capacity: u8 },
 }
 
 impl fmt::Display for ShoeError {
+    /// 将结构化牌靴错误转换为便于 CLI 展示的文本。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidDeckCount { decks } => write!(

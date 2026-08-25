@@ -11,14 +11,21 @@ const MAX_ROUND_CARDS: u8 = 6;
 /// 共同分母时才能成功构造该类型。
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct OutcomeWeights {
+    /// 所有闲赢终局对应的六张有序序列数量。
     player: u64,
+    /// 所有庄赢终局对应的六张有序序列数量。
     banker: u64,
+    /// 所有和局终局对应的六张有序序列数量。
     tie: u64,
+    /// 从初始牌靴不放回抽六张的有序序列总数，即 `(N)₆`。
     total: u64,
 }
 
 impl OutcomeWeights {
     /// 根据牌靴总数与三种结果权重构造一个完整分布。
+    ///
+    /// 构造时强制验证三种互斥结果之和等于 `(N)₆`。这样，枚举器只要
+    /// 遗漏、重复或错误补齐任何路径，就不能产生一个看似有效的概率结果。
     pub fn from_weights(
         total_cards: u16,
         player: u64,
@@ -31,7 +38,9 @@ impl OutcomeWeights {
             });
         }
 
+        // 一局最多六张牌，因此所有 4、5、6 张终局统一映射到六张共同分母。
         let total = falling_factorial(total_cards, MAX_ROUND_CARDS);
+        // 两次 checked_add 同时保护 player + banker 和再加 tie 的过程。
         let actual = player
             .checked_add(banker)
             .and_then(|value| value.checked_add(tie))
@@ -73,16 +82,19 @@ impl OutcomeWeights {
     }
 
     /// 返回闲赢概率。
+    ///
+    /// 精确枚举阶段始终累计整数，到展示或 EV 计算阶段才转换为浮点数，
+    /// 避免递归过程中反复相加浮点概率产生累计误差。
     pub fn player_probability(self) -> f64 {
         self.player as f64 / self.total as f64
     }
 
-    /// 返回庄赢概率。
+    /// 返回庄赢概率；只在读取结果时执行一次浮点除法。
     pub fn banker_probability(self) -> f64 {
         self.banker as f64 / self.total as f64
     }
 
-    /// 返回和局概率。
+    /// 返回和局概率；只在读取结果时执行一次浮点除法。
     pub fn tie_probability(self) -> f64 {
         self.tie as f64 / self.total as f64
     }
@@ -99,12 +111,16 @@ impl OutcomeWeights {
 /// 概率权重无法构造成完整分布时返回的错误。
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ProbabilityError {
+    /// 牌靴不足六张，无法建立统一的六张有序序列分母。
     NotEnoughCards { remaining: u16 },
+    /// 权重乘法或加法超出了 `u64` 表示范围。
     WeightOverflow,
+    /// 三种结果权重之和与理论共同分母不相等。
     WeightSumMismatch { expected: u64, actual: u64 },
 }
 
 impl fmt::Display for ProbabilityError {
+    /// 将结构化概率错误转换成便于上层展示的文本。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotEnoughCards { remaining } => write!(
@@ -123,11 +139,16 @@ impl fmt::Display for ProbabilityError {
 impl Error for ProbabilityError {}
 
 /// 计算 `n × (n - 1) × ...`，共包含 `count` 个因子。
-fn falling_factorial(mut n: u16, count: u8) -> u64 {
+///
+/// 这是下降阶乘，也就是从 `n` 个对象中依次、不放回地抽取 `count` 个对象的
+/// 有序序列数量。例如 `(6)₄ = 6 × 5 × 4 × 3 = 360`。
+pub(super) fn falling_factorial(mut n: u16, count: u8) -> u64 {
+    // 调用者必须保证可抽数量不超过现有数量；只在调试构建中检查这条内部约束。
     debug_assert!(u16::from(count) <= n);
 
     let mut result = 1_u64;
     for _ in 0..count {
+        // 每抽一张，可供下一位置选择的牌就减少一张。
         result *= u64::from(n);
         n -= 1;
     }

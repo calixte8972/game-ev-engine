@@ -9,20 +9,29 @@ use super::{BaccaratHand, banker_should_draw, player_should_draw};
 /// 标准百家乐主注的最终结果。
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RoundOutcome {
+    /// 闲家最终点数较高。
     Player,
+    /// 庄家最终点数较高。
     Banker,
+    /// 双方最终点数相同。
     Tie,
 }
 
 /// 一局结束后的双方手牌与主注结果。
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct RoundResult {
+    /// 闲家最终的两张或三张手牌。
     player_hand: BaccaratHand,
+    /// 庄家最终的两张或三张手牌。
     banker_hand: BaccaratHand,
+    /// 根据双方最终点数提前计算并保存的主注结果。
     outcome: RoundOutcome,
 }
 
 impl RoundResult {
+    /// 根据双方最终手牌创建结果，并保证 `outcome` 与手牌点数一致。
+    ///
+    /// 构造函数保持私有，避免外部传入一个与双方手牌矛盾的结果字段。
     fn new(player_hand: BaccaratHand, banker_hand: BaccaratHand) -> Self {
         Self {
             player_hand,
@@ -69,13 +78,18 @@ pub const fn compare_hands(player_hand: BaccaratHand, banker_hand: BaccaratHand)
 /// 解析具体牌序列失败时返回的错误。
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum RoundError {
+    /// 当前序列不足四张起手牌，回合还不能判定。
     NotEnoughInitialCards,
+    /// 按闲家规则必须补牌，但序列没有提供下一张。
     MissingPlayerThirdCard,
+    /// 按庄家规则必须补牌，但序列没有提供下一张。
     MissingBankerThirdCard,
+    /// 回合已经结束，但输入序列还有未被规则使用的牌。
     UnexpectedExtraCards,
 }
 
 impl fmt::Display for RoundError {
+    /// 将结构化回合错误转换成便于上层展示的文本。
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotEnoughInitialCards => {
@@ -97,17 +111,25 @@ impl fmt::Display for RoundError {
 impl Error for RoundError {}
 
 /// 按 `P1 → B1 → P2 → B2 → 可选 P3 → 可选 B3` 的顺序解析一局。
+///
+/// 该函数不会摸牌或修改牌靴，只验证调用者给出的牌序列是否恰好符合补牌规则。
+/// “缺少下一张牌”使用 `RoundError` 表示，具体牌枚举器会把这些错误当作
+/// “当前回合尚未结束，请继续枚举”的状态信号。
 pub fn resolve_round(cards: &[Card]) -> Result<RoundResult, RoundError> {
+    // 切片模式一次取出固定的四张起手牌；不足四张时直接返回对应状态。
     let [player_first, banker_first, player_second, banker_second, ..] = cards else {
         return Err(RoundError::NotEnoughInitialCards);
     };
 
+    // `consumed` 记录规则实际使用了几张牌，最后用于拒绝多余输入。
     let mut consumed = 4;
     let mut player_hand = BaccaratHand::new(*player_first, *player_second);
     let mut banker_hand = BaccaratHand::new(*banker_first, *banker_second);
 
+    // 任意一方为自然 8/9 时双方都不得补牌，整局在四张牌处结束。
     if !player_hand.is_natural() && !banker_hand.is_natural() {
         if player_should_draw(player_hand.initial_total()) {
+            // `.get` 不会因下标越界而 panic；缺牌被转换成可匹配的领域错误。
             let third_card = cards
                 .get(consumed)
                 .copied()
@@ -116,6 +138,8 @@ pub fn resolve_round(cards: &[Card]) -> Result<RoundResult, RoundError> {
             consumed += 1;
         }
 
+        // `map` 把 `Option<Card>` 转成 `Option<u8>`：闲未补牌仍为 None，
+        // 闲已补牌则只把第三张牌的百家乐点数交给庄家规则。
         let player_third_value = player_hand.third_card().map(Card::baccarat_value);
         if banker_should_draw(banker_hand.initial_total(), player_third_value) {
             let third_card = cards
@@ -127,6 +151,7 @@ pub fn resolve_round(cards: &[Card]) -> Result<RoundResult, RoundError> {
         }
     }
 
+    // 输入长度必须和规则实际消费的长度完全一致；否则调用者多提供了牌。
     if consumed != cards.len() {
         return Err(RoundError::UnexpectedExtraCards);
     }
