@@ -13,6 +13,29 @@ pub enum MainBet {
     Tie,
 }
 
+impl MainBet {
+    /// 返回适合 CLI、JSON 和 Python 使用的稳定小写名称。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Player => "player",
+            Self::Banker => "banker",
+            Self::Tie => "tie",
+        }
+    }
+}
+
+/// 庄注的赔付方式。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BankerPayoutRule {
+    /// 标准庄：庄家获胜统一按指定净赔付结算。
+    Commission { net_payout: f64 },
+    /// 免佣庄：庄家最终 6 点时使用较低赔付，其他庄赢使用普通赔付。
+    NoCommission {
+        normal_net_payout: f64,
+        six_net_payout: f64,
+    },
+}
+
 /// 三种主注的净赔付配置。
 ///
 /// 所有赔付值都表示“每下注 1 单位的净盈利”，不包含退回的本金：
@@ -20,8 +43,11 @@ pub enum MainBet {
 /// 表示和局时 Push。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MainBetRules {
+    /// 闲注获胜时的净赔付。
     player_payout: f64,
-    banker_payout: f64,
+    /// 庄注赔付方式；使用枚举是因为免佣庄需要区分庄 6 与其他庄赢。
+    banker_rule: BankerPayoutRule,
+    /// 和注获胜时的净赔付。
     tie_payout: f64,
 }
 
@@ -31,16 +57,46 @@ impl MainBetRules {
     /// 参数仍然表示每下注 1 单位的净盈利，不包含本金返还。例如 `8.0`
     /// 表示和注赢得 8 个单位本金之外的净盈利。
     pub const fn with_payouts(player_payout: f64, banker_payout: f64, tie_payout: f64) -> Self {
+        Self::with_banker_rule(
+            player_payout,
+            BankerPayoutRule::Commission {
+                net_payout: banker_payout,
+            },
+            tie_payout,
+        )
+    }
+
+    /// 使用自定义庄赔付方式创建主注规则。
+    ///
+    /// 该构造函数是完整入口；`with_payouts`、`standard` 和 `no_commission`
+    /// 都会复用它，确保字段组装逻辑只保留一份。
+    pub const fn with_banker_rule(
+        player_payout: f64,
+        banker_rule: BankerPayoutRule,
+        tie_payout: f64,
+    ) -> Self {
         Self {
             player_payout,
-            banker_payout,
+            banker_rule,
             tie_payout,
         }
     }
 
     /// 创建项目当前采用的标准百家乐主注赔付：闲 1:1、庄 0.95:1、和 8:1。
     pub const fn standard() -> Self {
-        Self::with_payouts(1.0, 0.95, 8.0)
+        Self::with_banker_rule(1.0, BankerPayoutRule::Commission { net_payout: 0.95 }, 8.0)
+    }
+
+    /// 创建免佣庄规则：普通庄赢 1:1，庄家最终 6 点获胜 0.5:1。
+    pub const fn no_commission() -> Self {
+        Self::with_banker_rule(
+            1.0,
+            BankerPayoutRule::NoCommission {
+                normal_net_payout: 1.0,
+                six_net_payout: 0.5,
+            },
+            8.0,
+        )
     }
 
     /// 返回闲注获胜时的净赔付。
@@ -48,9 +104,40 @@ impl MainBetRules {
         self.player_payout
     }
 
-    /// 返回庄注获胜时的净赔付。
+    /// 返回庄家普通获胜时的净赔付。
     pub const fn banker_payout(self) -> f64 {
-        self.banker_payout
+        // `|` 把两个模式合并：无论标准庄还是免佣庄，都把“普通庄赢”的
+        // 赔付绑定到同一个局部变量 `net_payout` 后统一返回。
+        match self.banker_rule {
+            BankerPayoutRule::Commission { net_payout }
+            | BankerPayoutRule::NoCommission {
+                normal_net_payout: net_payout,
+                ..
+            } => net_payout,
+        }
+    }
+
+    /// 返回当前庄注赔付规则。
+    pub const fn banker_rule(self) -> BankerPayoutRule {
+        self.banker_rule
+    }
+
+    /// 根据庄家最终点数返回对应的庄注净赔付。
+    pub const fn banker_payout_for_total(self, banker_total: u8) -> f64 {
+        // 标准庄不关心最终点数；免佣庄只有最终 6 点时使用半赔。
+        match self.banker_rule {
+            BankerPayoutRule::Commission { net_payout } => net_payout,
+            BankerPayoutRule::NoCommission {
+                normal_net_payout,
+                six_net_payout,
+            } => {
+                if banker_total == 6 {
+                    six_net_payout
+                } else {
+                    normal_net_payout
+                }
+            }
+        }
     }
 
     /// 返回和注获胜时的净赔付。
@@ -58,17 +145,36 @@ impl MainBetRules {
         self.tie_payout
     }
 
-    /// 结算一笔主注，返回相对于本金的净盈利。
+    /// 结算一笔不需要区分庄家最终点数的主注，返回相对于本金的净盈利。
+    ///
+    /// 庄注在庄家获胜且规则可能区分庄 6 时，应使用
+    /// [`Self::settle_with_banker_total`]。
     pub const fn settle(self, bet: MainBet, outcome: RoundOutcome) -> f64 {
         match (bet, outcome) {
             (MainBet::Player, RoundOutcome::Player) => self.player_payout,
             (MainBet::Player, RoundOutcome::Banker) => -1.0,
             (MainBet::Player, RoundOutcome::Tie) => 0.0,
             (MainBet::Banker, RoundOutcome::Player) => -1.0,
-            (MainBet::Banker, RoundOutcome::Banker) => self.banker_payout,
+            (MainBet::Banker, RoundOutcome::Banker) => self.banker_payout(),
             (MainBet::Banker, RoundOutcome::Tie) => 0.0,
             (MainBet::Tie, RoundOutcome::Player | RoundOutcome::Banker) => -1.0,
             (MainBet::Tie, RoundOutcome::Tie) => self.tie_payout,
+        }
+    }
+
+    /// 根据庄家最终点数结算一笔主注，返回相对于本金的净盈利。
+    ///
+    /// 只有“下注庄且庄家获胜”需要查看 `banker_total`；其余八种组合仍复用
+    /// `settle`，避免复制 Player、Tie、输注和 Push 的结算规则。
+    pub const fn settle_with_banker_total(
+        self,
+        bet: MainBet,
+        outcome: RoundOutcome,
+        banker_total: u8,
+    ) -> f64 {
+        match (bet, outcome) {
+            (MainBet::Banker, RoundOutcome::Banker) => self.banker_payout_for_total(banker_total),
+            _ => self.settle(bet, outcome),
         }
     }
 }
@@ -100,6 +206,23 @@ mod tests {
         assert_eq!(rules.player_payout(), 1.0);
         assert_eq!(rules.banker_payout(), 1.0);
         assert_eq!(rules.tie_payout(), 9.0);
+    }
+
+    #[test]
+    fn no_commission_rules_pay_half_on_banker_six() {
+        let rules = MainBetRules::no_commission();
+
+        assert_eq!(rules.banker_payout(), 1.0);
+        assert_eq!(rules.banker_payout_for_total(5), 1.0);
+        assert_eq!(rules.banker_payout_for_total(6), 0.5);
+        assert_eq!(
+            rules.settle_with_banker_total(MainBet::Banker, RoundOutcome::Banker, 6),
+            0.5
+        );
+        assert_eq!(
+            rules.settle_with_banker_total(MainBet::Banker, RoundOutcome::Banker, 5),
+            1.0
+        );
     }
 
     #[test]

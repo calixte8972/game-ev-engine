@@ -175,6 +175,9 @@ pub(crate) fn resolve_point_round(points: &[u8]) -> Result<PointRoundResult, Rou
     })
 }
 impl PointRoundResult {
+    pub(crate) const fn banker_total(self) -> u8 {
+        self.banker_total
+    }
     //判断结果
     pub(crate) const fn outcome(self) -> RoundOutcome {
         if self.player_total > self.banker_total {

@@ -40,11 +40,12 @@ pub(crate) fn enumerate_main_outcomes_by_card(
     debug_assert!(cards.is_empty());
 
     // 最终构造器还会验证 player + banker + tie 是否等于 `(initial_total)₆`。
-    OutcomeWeights::from_weights(
+    OutcomeWeights::from_detailed_weights(
         initial_total,
         accumulator.player,
         accumulator.banker,
         accumulator.tie,
+        accumulator.banker_win_on_six,
     )
 }
 
@@ -60,6 +61,8 @@ struct OutcomeAccumulator {
     banker: u64,
     /// 当前已经发现的和局路径权重。
     tie: u64,
+    /// 当前已经发现的庄六点获胜路径权重。
+    banker_win_on_six: u64,
 }
 
 impl OutcomeAccumulator {
@@ -74,6 +77,15 @@ impl OutcomeAccumulator {
 
         // `checked_add` 在溢出时返回 None，再转换成统一的概率错误。
         *destination = destination
+            .checked_add(weight)
+            .ok_or(ProbabilityError::WeightOverflow)?;
+        Ok(())
+    }
+
+    /// 把庄六点获胜路径加入对应的子集桶，并检查加法溢出。
+    fn add_banker_win_on_six(&mut self, weight: u64) -> Result<(), ProbabilityError> {
+        self.banker_win_on_six = self
+            .banker_win_on_six
             .checked_add(weight)
             .ok_or(ProbabilityError::WeightOverflow)?;
         Ok(())
@@ -104,7 +116,14 @@ fn enumerate_paths(
                 .checked_mul(completion_weight)
                 .ok_or(ProbabilityError::WeightOverflow)?;
 
-            accumulator.add(result.outcome(), terminal_weight)
+            let outcome = result.outcome();
+            accumulator.add(outcome, terminal_weight)?;
+
+            if outcome == RoundOutcome::Banker && result.banker_hand().total() == 6 {
+                accumulator.add_banker_win_on_six(terminal_weight)?;
+            }
+
+            Ok(())
         }
         Err(
             RoundError::NotEnoughInitialCards
@@ -204,5 +223,6 @@ mod tests {
         assert_eq!(weights.banker_weight(), 0);
         assert_eq!(weights.tie_weight(), 720);
         assert_eq!(weights.total_weight(), 720);
+        assert_eq!(weights.banker_win_on_six_weight(), 0);
     }
 }

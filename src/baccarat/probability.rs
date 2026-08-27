@@ -5,7 +5,7 @@ use std::{error::Error, fmt};
 /// 一局百家乐最多使用的牌数。
 const MAX_ROUND_CARDS: u8 = 6;
 
-/// 庄、闲、和三种结果的精确整数权重。
+/// 庄、闲、和三种结果以及庄六点获胜子集的精确整数权重。
 ///
 /// 三种结果共用六张有序抽牌序列的总权重作为分母，只有权重和等于
 /// 共同分母时才能成功构造该类型。
@@ -19,18 +19,35 @@ pub struct OutcomeWeights {
     tie: u64,
     /// 从初始牌靴不放回抽六张的有序序列总数，即 `(N)₆`。
     total: u64,
+    /// 庄家最终为 6 点且庄家获胜的路径数量；它是 `banker` 的子集。
+    banker_win_on_six: u64,
 }
 
 impl OutcomeWeights {
     /// 根据牌靴总数与三种结果权重构造一个完整分布。
     ///
-    /// 构造时强制验证三种互斥结果之和等于 `(N)₆`。这样，枚举器只要
-    /// 遗漏、重复或错误补齐任何路径，就不能产生一个看似有效的概率结果。
+    /// 这是兼容构造函数，没有额外的庄六点子集信息，因此将
+    /// `banker_win_on_six` 设为零。需要计算免佣庄时，应使用
+    /// [`Self::from_detailed_weights`]。
     pub fn from_weights(
         total_cards: u16,
         player: u64,
         banker: u64,
         tie: u64,
+    ) -> Result<Self, ProbabilityError> {
+        Self::from_detailed_weights(total_cards, player, banker, tie, 0)
+    }
+
+    /// 根据三种主结果和庄六点获胜子集构造完整权重。
+    ///
+    /// 除了验证三种互斥结果之和等于 `(N)₆`，还会验证庄六点获胜权重
+    /// 不超过庄家获胜总权重。
+    pub fn from_detailed_weights(
+        total_cards: u16,
+        player: u64,
+        banker: u64,
+        tie: u64,
+        banker_win_on_six: u64,
     ) -> Result<Self, ProbabilityError> {
         if total_cards < u16::from(MAX_ROUND_CARDS) {
             return Err(ProbabilityError::NotEnoughCards {
@@ -53,12 +70,25 @@ impl OutcomeWeights {
             });
         }
 
+        if banker_win_on_six > banker {
+            return Err(ProbabilityError::BankerWinOnSixExceedsBankerWeight {
+                banker,
+                banker_win_on_six,
+            });
+        }
+
         Ok(Self {
             player,
             banker,
             tie,
             total,
+            banker_win_on_six,
         })
+    }
+
+    /// 返回庄家最终为 6 点且庄家获胜的路径权重。
+    pub const fn banker_win_on_six_weight(self) -> u64 {
+        self.banker_win_on_six
     }
 
     /// 返回闲赢路径的整数权重。
@@ -94,6 +124,11 @@ impl OutcomeWeights {
         self.banker as f64 / self.total as f64
     }
 
+    /// 返回庄家最终为 6 点且庄家获胜的概率。
+    pub fn banker_win_on_six_probability(self) -> f64 {
+        self.banker_win_on_six as f64 / self.total as f64
+    }
+
     /// 返回和局概率；只在读取结果时执行一次浮点除法。
     pub fn tie_probability(self) -> f64 {
         self.tie as f64 / self.total as f64
@@ -117,6 +152,8 @@ pub enum ProbabilityError {
     WeightOverflow,
     /// 三种结果权重之和与理论共同分母不相等。
     WeightSumMismatch { expected: u64, actual: u64 },
+    /// 庄六点获胜权重不能大于庄家获胜总权重。
+    BankerWinOnSixExceedsBankerWeight { banker: u64, banker_win_on_six: u64 },
 }
 
 impl fmt::Display for ProbabilityError {
@@ -131,6 +168,13 @@ impl fmt::Display for ProbabilityError {
             Self::WeightSumMismatch { expected, actual } => write!(
                 formatter,
                 "outcome weights sum to {actual}; expected common denominator {expected}"
+            ),
+            Self::BankerWinOnSixExceedsBankerWeight {
+                banker,
+                banker_win_on_six,
+            } => write!(
+                formatter,
+                "banker six-point win weight {banker_win_on_six} exceeds banker weight {banker}"
             ),
         }
     }
@@ -169,6 +213,7 @@ mod tests {
         let weights =
             OutcomeWeights::from_weights(6, 360, 240, 120).expect("测试权重之和应等于六张共同分母");
         assert_eq!(weights.total_weight(), 720);
+        assert_eq!(weights.banker_win_on_six_weight(), 0);
         assert!(weights.weights_sum_to_total());
         assert!((weights.player_probability() - 0.5).abs() < f64::EPSILON);
         assert!(
@@ -189,6 +234,19 @@ mod tests {
             Err(ProbabilityError::WeightSumMismatch {
                 expected: 720,
                 actual: 6,
+            })
+        );
+
+        let detailed = OutcomeWeights::from_detailed_weights(6, 360, 240, 120, 60)
+            .expect("庄六点获胜权重应当可以作为庄家权重的子集");
+        assert_eq!(detailed.banker_win_on_six_weight(), 60);
+        assert!((detailed.banker_win_on_six_probability() - 1.0 / 12.0).abs() < 1e-15);
+
+        assert_eq!(
+            OutcomeWeights::from_detailed_weights(6, 360, 240, 120, 241),
+            Err(ProbabilityError::BankerWinOnSixExceedsBankerWeight {
+                banker: 240,
+                banker_win_on_six: 241,
             })
         );
     }

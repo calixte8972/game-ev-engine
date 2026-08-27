@@ -8,6 +8,8 @@ fn default_eight_deck_shoe_matches_probability_baseline() {
     assert_eq!(weights.banker_weight(), 2_292_252_566_437_888);
     assert_eq!(weights.tie_weight(), 475_627_426_473_216);
     assert_eq!(weights.total_weight(), 4_998_398_275_503_360);
+    assert!(weights.banker_win_on_six_weight() > 0);
+    assert!(weights.banker_win_on_six_weight() <= weights.banker_weight());
 
     assert!((weights.player_probability() - 0.446246609344).abs() < 1e-12);
     assert!((weights.banker_probability() - 0.458597422633).abs() < 1e-12);
