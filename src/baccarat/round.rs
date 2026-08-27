@@ -109,6 +109,87 @@ impl fmt::Display for RoundError {
 }
 
 impl Error for RoundError {}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PointRoundResult {
+    player_total: u8,
+    banker_total: u8,
+    card_count: u8,
+}
+///计算点数结果
+pub(crate) fn resolve_point_round(points: &[u8]) -> Result<PointRoundResult, RoundError> {
+    let [
+        player_first_point,
+        banker_first_point,
+        player_second_point,
+        banker_second_point,
+        ..,
+    ] = points
+    else {
+        return Err(RoundError::NotEnoughInitialCards);
+    };
+
+    let player_initial = (*player_first_point + *player_second_point) % 10;
+
+    let banker_initial = (*banker_first_point + *banker_second_point) % 10;
+
+    let mut player_total = player_initial;
+    let mut banker_total = banker_initial;
+    let mut player_third_point: Option<u8> = None;
+    let mut consumed: u8 = 4;
+
+    let player_is_natural = matches!(player_initial, 8 | 9);
+
+    let banker_is_natural = matches!(banker_initial, 8 | 9);
+
+    if !player_is_natural && !banker_is_natural {
+        if player_should_draw(player_initial) {
+            let third_point = points
+                .get(usize::from(consumed))
+                .copied()
+                .ok_or(RoundError::MissingPlayerThirdCard)?;
+
+            player_third_point = Some(third_point);
+            player_total = (player_initial + third_point) % 10;
+            consumed += 1;
+        }
+
+        if banker_should_draw(banker_initial, player_third_point) {
+            let third_point = points
+                .get(usize::from(consumed))
+                .copied()
+                .ok_or(RoundError::MissingBankerThirdCard)?;
+
+            banker_total = (banker_initial + third_point) % 10;
+            consumed += 1;
+        }
+    }
+
+    if usize::from(consumed) != points.len() {
+        return Err(RoundError::UnexpectedExtraCards);
+    }
+
+    Ok(PointRoundResult {
+        player_total,
+        banker_total,
+        card_count: consumed,
+    })
+}
+impl PointRoundResult {
+    //判断结果
+    pub(crate) const fn outcome(self) -> RoundOutcome {
+        if self.player_total > self.banker_total {
+            RoundOutcome::Player
+        } else if self.player_total < self.banker_total {
+            RoundOutcome::Banker
+        } else {
+            RoundOutcome::Tie
+        }
+    }
+
+    pub(crate) const fn card_count(self) -> u8 {
+        self.card_count
+    }
+}
 
 /// 按 `P1 → B1 → P2 → B2 → 可选 P3 → 可选 B3` 的顺序解析一局。
 ///
@@ -163,7 +244,7 @@ pub fn resolve_round(cards: &[Card]) -> Result<RoundResult, RoundError> {
 mod tests {
     use crate::Card;
 
-    use super::{RoundError, RoundOutcome, resolve_round};
+    use super::{RoundError, RoundOutcome, resolve_point_round, resolve_round};
 
     fn cards(input: &str) -> Vec<Card> {
         input
@@ -231,5 +312,62 @@ mod tests {
                 "发牌序列为 {input}"
             );
         }
+    }
+
+    #[test]
+    fn resolves_point_round_natural_after_four_cards() {
+        let result = resolve_point_round(&[1, 4, 7, 3]).expect("Natural 牌局应在四张牌后结束");
+
+        assert_eq!(result.player_total, 8);
+        assert_eq!(result.banker_total, 7);
+        assert_eq!(result.card_count, 4);
+        assert_eq!(result.outcome(), RoundOutcome::Player);
+    }
+
+    #[test]
+    fn resolves_point_round_when_both_sides_draw() {
+        let result = resolve_point_round(&[0, 2, 0, 0, 5, 4]).expect("双方补牌的牌局应正常结束");
+
+        assert_eq!(result.player_total, 5);
+        assert_eq!(result.banker_total, 6);
+        assert_eq!(result.card_count, 6);
+        assert_eq!(result.outcome(), RoundOutcome::Banker);
+    }
+
+    #[test]
+    fn resolves_point_round_when_player_stands_and_banker_draws() {
+        let result =
+            resolve_point_round(&[3, 0, 3, 1, 2]).expect("闲家停牌、庄家补牌的牌局应正常结束");
+
+        assert_eq!(result.player_total, 6);
+        assert_eq!(result.banker_total, 3);
+        assert_eq!(result.card_count, 5);
+        assert_eq!(result.outcome(), RoundOutcome::Player);
+    }
+
+    #[test]
+    fn resolves_point_round_tie_after_four_cards() {
+        let result = resolve_point_round(&[2, 3, 4, 3]).expect("四张牌和局应正常结束");
+
+        assert_eq!(result.player_total, 6);
+        assert_eq!(result.banker_total, 6);
+        assert_eq!(result.card_count, 4);
+        assert_eq!(result.outcome(), RoundOutcome::Tie);
+    }
+
+    #[test]
+    fn point_round_reports_missing_cards_and_extra_cards() {
+        assert_eq!(
+            resolve_point_round(&[0, 2, 0, 0]),
+            Err(RoundError::MissingPlayerThirdCard)
+        );
+        assert_eq!(
+            resolve_point_round(&[3, 0, 3, 1]),
+            Err(RoundError::MissingBankerThirdCard)
+        );
+        assert_eq!(
+            resolve_point_round(&[1, 4, 7, 3, 5]),
+            Err(RoundError::UnexpectedExtraCards)
+        );
     }
 }

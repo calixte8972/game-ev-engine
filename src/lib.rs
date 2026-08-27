@@ -13,7 +13,7 @@ pub mod baccarat;
 // 把最常使用的领域类型提升到 crate 根路径，调用者无需记住内部文件结构。
 pub use baccarat::{
     BaccaratHand, OutcomeWeights, ProbabilityError, RoundError, RoundOutcome, RoundResult,
-    resolve_round,
+    calculate_main_outcomes, resolve_round,
 };
 pub use card::{Card, CardParseError, Rank, Suit};
 pub use shoe::{DEFAULT_DECKS, MAX_DECKS, MIN_DECKS, Shoe, ShoeError};
