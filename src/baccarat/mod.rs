@@ -8,11 +8,15 @@ pub mod hand;
 /// 按百家乐点数聚合的生产概率枚举器。
 mod point_enumerate;
 // 以下模块通过本文件选择性导出，避免暴露内部辅助函数。
+mod bet;
+mod ev;
 mod probability;
 mod round;
 mod rule;
 
 // 对外统一暴露稳定的百家乐 API，调用者不需要依赖内部文件布局。
+pub use bet::{MainBet, MainBetRules};
+pub use ev::MainBetEv;
 pub use hand::BaccaratHand;
 pub use point_enumerate::calculate_main_outcomes;
 pub use probability::{OutcomeWeights, ProbabilityError};
