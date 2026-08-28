@@ -9,6 +9,7 @@ pub mod shoe;
 
 /// 标准百家乐手牌、补牌规则、回合结果和概率计算。
 pub mod baccarat;
+pub mod cli;
 
 // 把最常使用的领域类型提升到 crate 根路径，调用者无需记住内部文件结构。
 pub use baccarat::{

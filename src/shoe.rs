@@ -110,6 +110,32 @@ impl Shoe {
         debug_assert_eq!(point_counts.iter().sum::<u16>(), self.total);
         point_counts
     }
+    pub fn from_remaining(decks: u8, cards: &[Card]) -> Result<Self, ShoeError> {
+        if !(MIN_DECKS..=MAX_DECKS).contains(&decks) {
+            return Err(ShoeError::InvalidDeckCount { decks });
+        }
+        let mut shoe = Self {
+            decks,
+            counts: [0; Card::DISTINCT_COUNT],
+            total: 0,
+        };
+        for &card in cards {
+            let count = &mut shoe.counts[card.index()];
+
+            // 如果某一种牌已经达到副牌容量，说明输入非法
+            if *count == decks {
+                return Err(ShoeError::RemainingCardCountExceedsCapacity {
+                    card,
+                    requested: *count as usize + 1,
+                    capacity: decks,
+                });
+            }
+
+            *count += 1;
+            shoe.total += 1;
+        }
+        Ok(shoe)
+    }
 
     /// 以原子方式扣除所有传入的牌。
     ///
@@ -194,6 +220,11 @@ pub enum ShoeError {
     },
     /// 恢复后会超过该具体牌的初始容量。
     CardAtCapacity { card: Card, capacity: u8 },
+    RemainingCardCountExceedsCapacity {
+        card: Card,
+        requested: usize,
+        capacity: u8,
+    },
 }
 
 impl fmt::Display for ShoeError {
@@ -216,6 +247,13 @@ impl fmt::Display for ShoeError {
                 formatter,
                 "cannot restore {card}; all {capacity} copies are already in the shoe"
             ),
+            Self::RemainingCardCountExceedsCapacity {
+                card,
+                requested,
+                capacity,
+            } => write! {
+                formatter,"剩余牌列表中包含 {requested} 张 {card}，但 {capacity} 副牌最多只能有 {capacity} 张"
+            },
         }
     }
 }

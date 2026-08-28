@@ -4,7 +4,7 @@
 #[cfg(test)]
 mod enumerate;
 /// 一方百家乐手牌的表示和点数计算。
-pub mod hand;
+mod hand;
 /// 按百家乐点数聚合的生产概率枚举器。
 mod point_enumerate;
 // 以下模块通过本文件选择性导出，避免暴露内部辅助函数。
