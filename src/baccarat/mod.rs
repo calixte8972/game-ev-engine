@@ -12,16 +12,21 @@ mod analysis;
 mod bet;
 mod ev;
 mod probability;
+mod rebate;
 mod round;
 mod rule;
+mod strategy;
 
 // 对外统一暴露稳定的百家乐 API，调用者不需要依赖内部文件布局。
-pub use analysis::{BetMetrics, MainBetAnalysis, analyze_main_bets};
+pub use analysis::{
+    BetMetrics, EffectiveBetMetrics, MainBetAnalysis, analyze_main_bets, effective_ev,
+};
 pub use bet::{BankerPayoutRule, MainBet, MainBetRules};
 pub use ev::MainBetEv;
 pub use hand::BaccaratHand;
 pub use point_enumerate::calculate_main_outcomes;
 pub use probability::{OutcomeWeights, ProbabilityError};
+pub use rebate::RebateRule;
 pub(crate) use round::resolve_point_round;
 pub use round::{RoundError, RoundOutcome, RoundResult, compare_hands, resolve_round};
 pub use rule::{banker_should_draw, player_should_draw};

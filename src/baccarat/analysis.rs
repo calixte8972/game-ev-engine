@@ -15,7 +15,8 @@
 use crate::Shoe;
 
 use super::{
-    MainBet, MainBetEv, MainBetRules, OutcomeWeights, ProbabilityError, calculate_main_outcomes,
+    MainBet, MainBetEv, MainBetRules, OutcomeWeights, ProbabilityError, RebateRule, RoundOutcome,
+    calculate_main_outcomes,
 };
 
 /// 单个主注的概率和收益指标。
@@ -65,7 +66,90 @@ impl BetMetrics {
         1.0 + self.ev
     }
 }
+/// 加入返水后的单个下注指标。
+///
+/// base_ev 是赌场基础赔付带来的 EV；
+/// rebate_ev 是根据所有可能结果计算出来的期望返水；
+/// effective_ev 是两者之和。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EffectiveBetMetrics {
+    probability: f64,
+    base_ev: f64,
+    rebate_ev: f64,
+    effective_ev: f64,
+}
 
+impl EffectiveBetMetrics {
+    /// 返回该下注对应结果的概率。
+    pub const fn probability(self) -> f64 {
+        self.probability
+    }
+
+    /// 返回不考虑返水时的基础 EV。
+    pub const fn base_ev(self) -> f64 {
+        self.base_ev
+    }
+
+    /// 返回返水带来的期望收益。
+    pub const fn rebate_ev(self) -> f64 {
+        self.rebate_ev
+    }
+
+    /// 返回加入返水后的有效 EV。
+    pub const fn effective_ev(self) -> f64 {
+        self.effective_ev
+    }
+
+    /// 根据有效 EV 返回 House Edge。
+    pub const fn house_edge(self) -> f64 {
+        -self.effective_ev
+    }
+
+    /// 根据有效 EV 返回 RTP。
+    pub const fn rtp(self) -> f64 {
+        1.0 + self.effective_ev
+    }
+}
+
+/// 根据基础分析和返水规则计算某一个下注的有效 EV。
+///
+/// 下注前并不知道真实 outcome。这里的 outcome 只是三种假设：
+///
+/// ```text
+/// 假设结果是 Player  → P(Player) × 该结果收益
+/// 假设结果是 Banker  → P(Banker) × 该结果收益
+/// 假设结果是 Tie     → P(Tie) × 该结果收益
+/// ```
+///
+/// 三项相加后，得到下注前的长期期望收益。
+pub fn effective_ev(
+    analysis: MainBetAnalysis,
+    bet: MainBet,
+    rebate: RebateRule,
+) -> EffectiveBetMetrics {
+    let base_metrics = analysis.metrics(bet);
+    let possible_outcomes = [
+        (RoundOutcome::Player, analysis.player().probability()),
+        (RoundOutcome::Banker, analysis.banker().probability()),
+        (RoundOutcome::Tie, analysis.tie().probability()),
+    ];
+
+    // 返水也必须按照结果概率加权。
+    // 例如 Player 注遇到 Tie 没有返水，所以 Tie 这一项为零。
+    let rebate_ev = possible_outcomes
+        .iter()
+        .map(|(outcome, probability)| *probability * rebate.rate_for(bet, *outcome))
+        .sum::<f64>();
+
+    let base_ev = base_metrics.ev();
+
+    EffectiveBetMetrics {
+        probability: base_metrics.probability(),
+        base_ev,
+        rebate_ev,
+        effective_ev: base_ev + rebate_ev,
+    }
+}
 /// Player、Banker、Tie 三种主注的一次完整分析。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MainBetAnalysis {
@@ -157,6 +241,41 @@ impl MainBetAnalysis {
     pub const fn optimal_ev(self) -> f64 {
         self.metrics(self.optimal_bet).ev()
     }
+
+    pub fn effective_metrics(self, bet: MainBet, rebate: RebateRule) -> EffectiveBetMetrics {
+        effective_ev(self, bet, rebate)
+    }
+
+    pub fn optimal_effective_bet(self, rebate: RebateRule) -> MainBet {
+        // 先假设 Player 最优
+        let mut optimal_bet = MainBet::Player;
+
+        let mut optimal_ev = effective_ev(self, MainBet::Player, rebate).effective_ev();
+
+        // 比较 Banker
+        let banker_ev = effective_ev(self, MainBet::Banker, rebate).effective_ev();
+
+        if banker_ev > optimal_ev {
+            optimal_bet = MainBet::Banker;
+
+            // 非常重要：同步更新当前最大 EV
+            optimal_ev = banker_ev;
+        }
+
+        // 比较 Tie
+        let tie_ev = effective_ev(self, MainBet::Tie, rebate).effective_ev();
+
+        if tie_ev > optimal_ev {
+            optimal_bet = MainBet::Tie;
+        }
+
+        optimal_bet
+    }
+
+    pub fn optimal_effective_ev(self, rebate: RebateRule) -> f64 {
+        self.effective_metrics(self.optimal_effective_bet(rebate), rebate)
+            .effective_ev()
+    }
 }
 
 /// 根据当前牌靴和赔付规则计算完整主注分析。
@@ -179,8 +298,8 @@ pub fn analyze_main_bets(
 
 #[cfg(test)]
 mod tests {
-    use super::{MainBetAnalysis, analyze_main_bets};
-    use crate::{MainBet, MainBetRules, OutcomeWeights, Shoe};
+    use super::{MainBetAnalysis, analyze_main_bets, effective_ev};
+    use crate::{MainBet, MainBetRules, OutcomeWeights, RebateRule, Shoe};
 
     fn assert_close(actual: f64, expected: f64) {
         assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
@@ -214,5 +333,34 @@ mod tests {
 
         assert_eq!(analysis.optimal_bet(), MainBet::Tie);
         assert_close(analysis.optimal_ev(), 0.5);
+    }
+
+    #[test]
+    fn effective_ev_weights_rebate_by_possible_outcome() {
+        let weights =
+            OutcomeWeights::from_weights(6, 360, 240, 120).expect("测试权重应构成完整分布");
+        let analysis = MainBetAnalysis::from_weights(weights, MainBetRules::standard());
+        let rebate = RebateRule::AllExceptMainBetTie { rate: 0.015 };
+
+        // Player/Banker 遇到 Tie 没有返水，因此返水期望是：
+        // 0.015 × (P(Player) + P(Banker))
+        // = 0.015 × (1/2 + 1/3)
+        // = 0.0125。
+        let player = effective_ev(analysis, MainBet::Player, rebate);
+        assert_close(player.probability(), 0.5);
+        assert_close(player.base_ev(), 1.0 / 6.0);
+        assert_close(player.rebate_ev(), 0.0125);
+        assert_close(player.effective_ev(), 1.0 / 6.0 + 0.0125);
+
+        let banker = effective_ev(analysis, MainBet::Banker, rebate);
+        assert_close(banker.base_ev(), -11.0 / 60.0);
+        assert_close(banker.rebate_ev(), 0.0125);
+        assert_close(banker.effective_ev(), -11.0 / 60.0 + 0.0125);
+
+        // 按当前规则，Tie 注三种结果都有返水，所以返水期望就是完整 rate。
+        let tie = effective_ev(analysis, MainBet::Tie, rebate);
+        assert_close(tie.base_ev(), 0.5);
+        assert_close(tie.rebate_ev(), 0.015);
+        assert_close(tie.effective_ev(), 0.515);
     }
 }

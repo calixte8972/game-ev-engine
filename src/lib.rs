@@ -13,9 +13,10 @@ pub mod cli;
 
 // 把最常使用的领域类型提升到 crate 根路径，调用者无需记住内部文件结构。
 pub use baccarat::{
-    BaccaratHand, BankerPayoutRule, BetMetrics, MainBet, MainBetAnalysis, MainBetEv, MainBetRules,
-    OutcomeWeights, ProbabilityError, RoundError, RoundOutcome, RoundResult, analyze_main_bets,
-    calculate_main_outcomes, resolve_round,
+    BaccaratHand, BankerPayoutRule, BetMetrics, EffectiveBetMetrics, MainBet, MainBetAnalysis,
+    MainBetEv, MainBetRules, OutcomeWeights, ProbabilityError, RebateRule, RoundError,
+    RoundOutcome, RoundResult, analyze_main_bets, calculate_main_outcomes, effective_ev,
+    resolve_round,
 };
 pub use card::{Card, CardParseError, Rank, Suit};
 pub use shoe::{DEFAULT_DECKS, MAX_DECKS, MIN_DECKS, Shoe, ShoeError};
