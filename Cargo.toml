@@ -1,10 +1,28 @@
+# Cargo 使用这个区块识别 crate 的基本信息。
 [package]
+# crate 名称；Rust 代码导入时连字符会变成下划线：game_ev_engine。
 name = "game-ev-engine"
+# 当前仍处于学习项目的第一个开发版本。
 version = "0.1.0"
+# 使用 Rust 2024 edition 的语法和名称解析规则。
 edition = "2024"
 
-[dependencies]
+# 同一个库既能被本地 Rust 程序链接，也能编译成浏览器加载的 WebAssembly。
+[lib]
+crate-type = ["cdylib", "rlib"]
 
+# 运行时依赖列表。Serde 负责把稳定决策快照转换成 JSON，供 Python 和数据库使用。
+[dependencies]
+csv = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# wasm-bindgen 只在 wasm32 构建中参与编译，不影响本地 CLI 和历史回放程序。
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+
+# 声明 benches/main_outcomes.rs 为性能基准目标。
 [[bench]]
 name = "main_outcomes"
+# false 表示它有自己的 main()，不使用 Rust 内置的 libtest benchmark harness。
 harness = false

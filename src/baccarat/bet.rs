@@ -1,4 +1,14 @@
-//! 标准百家乐主注的净赔付规则。
+//! 标准百家乐主注的类型与净赔付规则。
+//!
+//! 概率层只回答“Player、Banker、Tie 各有多大概率”，不知道赌场如何赔钱。
+//! 本模块把下注方向、牌局结果和赔付配置组合起来，回答：
+//!
+//! ```text
+//! 如果下注 1 单位，并且 outcome 发生，最终净盈利是多少？
+//! ```
+//!
+//! 统一使用“净盈利”口径非常重要：赢闲注返回 `1.0`，输注返回 `-1.0`，
+//! Push 返回 `0.0`。这样 EV 层可以直接计算 `Σ 概率 × 净盈利`。
 
 use super::RoundOutcome;
 
@@ -16,6 +26,8 @@ pub enum MainBet {
 impl MainBet {
     /// 返回适合 CLI、JSON 和 Python 使用的稳定小写名称。
     pub const fn as_str(self) -> &'static str {
+        // 返回 &'static str 表示这些文本直接存放在程序二进制中，生命周期贯穿
+        // 整个程序；调用者不需要分配新的 String，也不需要负责释放。
         match self {
             Self::Player => "player",
             Self::Banker => "banker",
@@ -28,10 +40,15 @@ impl MainBet {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BankerPayoutRule {
     /// 标准庄：庄家获胜统一按指定净赔付结算。
-    Commission { net_payout: f64 },
+    Commission {
+        /// 扣除佣金后的庄赢净赔付，例如 0.95。
+        net_payout: f64,
+    },
     /// 免佣庄：庄家最终 6 点时使用较低赔付，其他庄赢使用普通赔付。
     NoCommission {
+        /// 庄家不是 6 点获胜时的净赔付。
         normal_net_payout: f64,
+        /// 庄家以 6 点获胜时的特殊净赔付。
         six_net_payout: f64,
     },
 }
@@ -150,6 +167,8 @@ impl MainBetRules {
     /// 庄注在庄家获胜且规则可能区分庄 6 时，应使用
     /// [`Self::settle_with_banker_total`]。
     pub const fn settle(self, bet: MainBet, outcome: RoundOutcome) -> f64 {
+        // `(bet, outcome)` 组成一个元组。match 会穷尽三种下注 × 三种结果的
+        // 九种组合，未来如果枚举增加新变体，编译器会提醒这里补充规则。
         match (bet, outcome) {
             (MainBet::Player, RoundOutcome::Player) => self.player_payout,
             (MainBet::Player, RoundOutcome::Banker) => -1.0,
@@ -157,6 +176,7 @@ impl MainBetRules {
             (MainBet::Banker, RoundOutcome::Player) => -1.0,
             (MainBet::Banker, RoundOutcome::Banker) => self.banker_payout(),
             (MainBet::Banker, RoundOutcome::Tie) => 0.0,
+            // `|` 是模式的“或”：下注 Tie 时，Player 或 Banker 获胜都会输本金。
             (MainBet::Tie, RoundOutcome::Player | RoundOutcome::Banker) => -1.0,
             (MainBet::Tie, RoundOutcome::Tie) => self.tie_payout,
         }
@@ -172,6 +192,7 @@ impl MainBetRules {
         outcome: RoundOutcome,
         banker_total: u8,
     ) -> f64 {
+        // 只拦截唯一需要额外信息的组合；下划线 `_` 代表其余所有组合。
         match (bet, outcome) {
             (MainBet::Banker, RoundOutcome::Banker) => self.banker_payout_for_total(banker_total),
             _ => self.settle(bet, outcome),
@@ -180,6 +201,7 @@ impl MainBetRules {
 }
 
 impl Default for MainBetRules {
+    /// `MainBetRules::default()` 与 `MainBetRules::standard()` 使用同一套标准赔付。
     fn default() -> Self {
         Self::standard()
     }

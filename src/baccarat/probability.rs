@@ -1,4 +1,16 @@
 //! 标准百家乐主注概率的精确整数权重表示。
+//!
+//! 枚举器不在每条路径上累加浮点概率，而是统计“这个结果占了多少条
+//! 六张有序物理发牌序列”。枚举完成后再做一次除法：
+//!
+//! ```text
+//! P(Player) = player_weight / total_weight
+//! P(Banker) = banker_weight / total_weight
+//! P(Tie)    = tie_weight / total_weight
+//! ```
+//!
+//! 这种“先整数计数，后浮点除法”的做法可以避免递归中大量浮点加法带来的
+//! 累计误差，也能用 `player + banker + tie == total` 做强一致性检查。
 
 use std::{error::Error, fmt};
 
@@ -49,6 +61,8 @@ impl OutcomeWeights {
         tie: u64,
         banker_win_on_six: u64,
     ) -> Result<Self, ProbabilityError> {
+        // 虽然有些回合只发 4 或 5 张，但项目使用统一六张分母。
+        // 因此初始牌数少于 6 时，无法构建这种表示。
         if total_cards < u16::from(MAX_ROUND_CARDS) {
             return Err(ProbabilityError::NotEnoughCards {
                 remaining: total_cards,
@@ -63,6 +77,7 @@ impl OutcomeWeights {
             .and_then(|value| value.checked_add(tie))
             .ok_or(ProbabilityError::WeightOverflow)?;
 
+        // 庄、闲、和是互斥且穷尽的三种主结果，所以三者必须刚好覆盖总分母。
         if actual != total {
             return Err(ProbabilityError::WeightSumMismatch {
                 expected: total,
@@ -70,6 +85,7 @@ impl OutcomeWeights {
             });
         }
 
+        // “庄 6 点获胜”必须包含在“庄获胜”中，子集权重不可能更大。
         if banker_win_on_six > banker {
             return Err(ProbabilityError::BankerWinOnSixExceedsBankerWeight {
                 banker,
@@ -136,6 +152,7 @@ impl OutcomeWeights {
 
     /// 检查庄、闲、和权重之和是否等于共同分母。
     pub fn weights_sum_to_total(self) -> bool {
+        // checked_add 而不是普通 +，避免异常大数据在加法溢出后变成错误小值。
         self.player
             .checked_add(self.banker)
             .and_then(|value| value.checked_add(self.tie))
@@ -147,13 +164,26 @@ impl OutcomeWeights {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum ProbabilityError {
     /// 牌靴不足六张，无法建立统一的六张有序序列分母。
-    NotEnoughCards { remaining: u16 },
+    NotEnoughCards {
+        /// 当前牌靴实际剩余牌数。
+        remaining: u16,
+    },
     /// 权重乘法或加法超出了 `u64` 表示范围。
     WeightOverflow,
     /// 三种结果权重之和与理论共同分母不相等。
-    WeightSumMismatch { expected: u64, actual: u64 },
+    WeightSumMismatch {
+        /// 根据初始牌数计算出的理论六张序列总权重。
+        expected: u64,
+        /// 枚举器实际累计出的庄、闲、和权重之和。
+        actual: u64,
+    },
     /// 庄六点获胜权重不能大于庄家获胜总权重。
-    BankerWinOnSixExceedsBankerWeight { banker: u64, banker_win_on_six: u64 },
+    BankerWinOnSixExceedsBankerWeight {
+        /// 全部庄家获胜路径权重。
+        banker: u64,
+        /// 被声明为庄 6 点获胜的子集权重。
+        banker_win_on_six: u64,
+    },
 }
 
 impl fmt::Display for ProbabilityError {
@@ -190,6 +220,7 @@ pub(super) fn falling_factorial(mut n: u16, count: u8) -> u64 {
     // 调用者必须保证可抽数量不超过现有数量；只在调试构建中检查这条内部约束。
     debug_assert!(u16::from(count) <= n);
 
+    // 1 是乘法单位。count == 0 时循环不执行，正确返回空乘积 1。
     let mut result = 1_u64;
     for _ in 0..count {
         // 每抽一张，可供下一位置选择的牌就减少一张。

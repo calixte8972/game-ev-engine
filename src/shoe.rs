@@ -1,4 +1,14 @@
 //! 紧凑的多副牌牌靴状态：每一种具体牌使用一个计数器。
+//!
+//! `Shoe` 不保存 416 个 `Card` 对象，而是保存一个长度为 52 的计数数组：
+//!
+//! ```text
+//! counts[AS.index()] = 当前还剩多少张黑桃 A
+//! counts[KD.index()] = 当前还剩多少张方块 K
+//! ```
+//!
+//! 八副牌刚创建时，每个位置都是 8。这样既节省内存，也能在 O(1) 时间查询、
+//! 扣除或恢复某一张具体牌。主注枚举时再把 52 类牌压缩成 0～9 共 10 类点数。
 
 use std::{error::Error, fmt};
 
@@ -29,6 +39,7 @@ pub struct Shoe {
 impl Shoe {
     /// 创建一个包含 `decks` 副标准 52 张扑克牌的完整牌靴。
     pub fn new(decks: u8) -> Result<Self, ShoeError> {
+        // `a..=b` 是包含两端的范围；contains 检查 decks 是否在 1～8 内。
         if !(MIN_DECKS..=MAX_DECKS).contains(&decks) {
             return Err(ShoeError::InvalidDeckCount { decks });
         }
@@ -52,11 +63,13 @@ impl Shoe {
 
     /// 某一种具体牌当前的剩余张数。
     pub fn remaining(&self, card: Card) -> u8 {
+        // &self 只借用牌靴，因此查询不会取得所有权，也不会修改牌靴。
         self.counts[card.index()]
     }
 
     /// 从牌靴中扣除一张已知的牌。
     pub fn remove(&mut self, card: Card) -> Result<(), ShoeError> {
+        // &mut self 表示调用者必须提供可变借用，因为这个函数会修改牌靴。
         // 直接取得目标计数的可变引用，后续修改不会扫描整个数组。
         let remaining = &mut self.counts[card.index()];
         if *remaining == 0 {
@@ -95,6 +108,8 @@ impl Shoe {
     /// 底层仍保留 52 种具体牌，确保对子等边注以后能够区分牌面和花色；
     /// 主注只依赖点数时，再临时压缩为 10 类以减少枚举分支。
     pub fn baccarat_point_counts(&self) -> [u16; 10] {
+        // 数组下标就是百家乐点数：point_counts[0] 保存全部 0 点牌数量，
+        // point_counts[9] 保存全部 9 点牌数量。
         let mut point_counts = [0_u16; 10];
 
         for rank in Rank::ALL {
@@ -110,15 +125,28 @@ impl Shoe {
         debug_assert_eq!(point_counts.iter().sum::<u16>(), self.total);
         point_counts
     }
+
+    /// 根据“当前仍在牌靴中的牌”直接重建牌靴。
+    ///
+    /// 这与 [`Self::new`] 的语义不同：
+    ///
+    /// - `new(8)` 创建完整八副牌；
+    /// - `from_remaining(8, cards)` 只把 `cards` 中列出的牌放入牌靴。
+    ///
+    /// 它主要服务于 CLI 的 `remaining` 输入方式和未来数据库快照恢复。
+    /// 如果同一种具体牌出现次数超过副牌数，会返回错误而不是构造非法状态。
     pub fn from_remaining(decks: u8, cards: &[Card]) -> Result<Self, ShoeError> {
         if !(MIN_DECKS..=MAX_DECKS).contains(&decks) {
             return Err(ShoeError::InvalidDeckCount { decks });
         }
+        // 从空计数开始，逐张加入调用者声明仍然存在的牌。
         let mut shoe = Self {
             decks,
             counts: [0; Card::DISTINCT_COUNT],
             total: 0,
         };
+        // cards 是 &[Card]，循环中的元素原本是 &Card。Card 实现 Copy，
+        // `for &card` 会直接复制出 Card 值，后续使用更方便。
         for &card in cards {
             let count = &mut shoe.counts[card.index()];
 
@@ -211,18 +239,33 @@ impl Default for Shoe {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShoeError {
     /// 请求的副牌数不在当前支持的 1～8 范围内。
-    InvalidDeckCount { decks: u8 },
+    InvalidDeckCount {
+        /// 调用者实际请求的副牌数。
+        decks: u8,
+    },
     /// 要扣除的某种具体牌多于牌靴中的剩余数量。
     CardUnavailable {
+        /// 数量不足的具体牌。
         card: Card,
+        /// 调用者希望扣除的张数。
         requested: usize,
+        /// 牌靴中实际还能使用的张数。
         remaining: u8,
     },
     /// 恢复后会超过该具体牌的初始容量。
-    CardAtCapacity { card: Card, capacity: u8 },
-    RemainingCardCountExceedsCapacity {
+    CardAtCapacity {
+        /// 已经达到容量的具体牌。
         card: Card,
+        /// 由副牌数决定的最大允许张数。
+        capacity: u8,
+    },
+    /// 使用剩余牌列表重建牌靴时，某种具体牌出现次数超过副牌容量。
+    RemainingCardCountExceedsCapacity {
+        /// 在剩余牌列表中重复过多的具体牌。
+        card: Card,
+        /// 加入当前这张后，列表一共声明了多少张。
         requested: usize,
+        /// 当前副牌数允许的最大张数。
         capacity: u8,
     },
 }
@@ -258,6 +301,7 @@ impl fmt::Display for ShoeError {
     }
 }
 
+// 接入标准库 Error trait 后，ShoeError 可以作为其他上层错误的来源。
 impl Error for ShoeError {}
 
 #[cfg(test)]
@@ -267,6 +311,7 @@ mod tests {
     use super::{DEFAULT_DECKS, Shoe, ShoeError};
 
     fn card(input: &str) -> Card {
+        // 测试辅助函数把字符串快速转换成 Card；测试数据写错时应立即失败。
         input.parse().expect("test card must be valid")
     }
 

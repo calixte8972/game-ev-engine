@@ -1,10 +1,16 @@
 //! 标准百家乐的补牌规则。
+//!
+//! 这个模块是“纯规则层”：函数只根据输入点数返回 `true` 或 `false`，
+//! 不会从牌靴摸牌，也不会修改任何状态。因此真实回合解析和概率枚举器
+//! 都能复用同一份规则，避免两套补牌表慢慢变得不一致。
 
 /// 根据闲家起手点数判断是否需要补第三张牌。
 ///
 /// 调用者应传入 0～9：闲 0～5 补牌，6～7 停牌；自然 8/9 通常已经由
 /// 回合流程提前拦截，但这里对 8/9 同样返回 `false`。
 pub const fn player_should_draw(initial_total: u8) -> bool {
+    // matches! 会把“是否匹配模式”直接转成 bool。
+    // `0..=5` 是包含 0 和 5 的范围模式。
     matches!(initial_total, 0..=5)
 }
 
@@ -13,6 +19,8 @@ pub const fn player_should_draw(initial_total: u8) -> bool {
 /// `player_third_value` 为 `None` 表示闲家没有补第三张牌，此时庄家像闲家一样
 /// 在 0～5 点补牌。`Some(0..=9)` 表示闲家已经补牌，庄家必须查完整补牌表。
 pub const fn banker_should_draw(banker_initial_total: u8, player_third_value: Option<u8>) -> bool {
+    // 先按闲家是否补牌分成两张表；Some 分支中再按庄家起手点数
+    // 查询标准补牌表。这个嵌套 match 和真实规则表的结构一致。
     match player_third_value {
         // 闲家停牌时，庄家 0～5 补、6～7 停；自然牌由回合流程提前结束。
         None => matches!(banker_initial_total, 0..=5),

@@ -7,6 +7,10 @@
 //! 后续生产算法会把牌压缩成 0～9 共十种点数来提速。保留本模块的原因是：
 //! 高速算法即使算出一个概率和为 1 的结果，也可能把庄、闲路径分错；把两种
 //! 独立实现放在同一个小牌靴上比较，才能更可靠地发现这种“数字合理但结果错误”。
+//!
+//! 枚举可以想象成一棵树：第一层选 P1，第二层选 B1，一直到规则
+//! 判定回合结束。递归函数负责“向下走一层”，回溯则负责“走完一个
+//! 分支后恢复牌靴，再尝试同层的下一张牌”。
 
 use crate::{Card, OutcomeWeights, ProbabilityError, Rank, RoundError, RoundOutcome, Shoe, Suit};
 
@@ -102,6 +106,11 @@ fn enumerate_paths(
     path_weight: u64,
     accumulator: &mut OutcomeAccumulator,
 ) -> Result<(), ProbabilityError> {
+    // 四个参数分别代表：
+    // shoe       -> 当前递归分支还剩什么牌；
+    // cards      -> 从根节点到当前节点已经发出的牌；
+    // path_weight-> 这条压缩路径代表多少条真实物理序列；
+    // accumulator-> 所有已完成终局共用的结果桶。
     // 同一个规则解析器既用于解析真实输入，也用于判断枚举过程还缺哪张牌，
     // 从而避免在概率代码中复制一份容易产生差异的补牌规则。
     match resolve_round(cards) {
@@ -150,6 +159,7 @@ fn enumerate_next_card(
     path_weight: u64,
     accumulator: &mut OutcomeAccumulator,
 ) -> Result<(), ProbabilityError> {
+    // 每一次循环就是在当前树节点选择一种“下一张牌”。
     for rank in Rank::ALL {
         for suit in Suit::ALL {
             let card = Card::new(rank, suit);
@@ -172,6 +182,8 @@ fn enumerate_next_card(
 
             // 离开分支：无论递归成功还是失败，都必须先恢复现场。
             // 如果直接写 `enumerate_paths(...)?`，错误会提前返回，下面两步不会执行。
+            // pop 删掉刚才 push 的最后一张；restore 把同一张牌放回牌靴。
+            // 这两步后，父节点看到的状态和进入子分支前完全一样。
             cards.pop();
             shoe.restore(card).expect("递归分支扣除的牌必须能够恢复");
 

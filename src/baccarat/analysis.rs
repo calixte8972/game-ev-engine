@@ -11,6 +11,9 @@
 //!
 //! 本模块是核心算法与 CLI/Python 之间的“结果适配层”。上层不必分别调用
 //! 概率函数和 EV 函数，只需调用 [`analyze_main_bets`] 即可获得完整结果。
+//!
+//! `MainBetEv` 更接近数学中间结果；`MainBetAnalysis` 则把同一方向的概率、EV、
+//! House Edge、RTP 和最优方向整理到一起，更适合作为应用层返回值。
 
 use crate::Shoe;
 
@@ -73,9 +76,13 @@ impl BetMetrics {
 /// effective_ev 是两者之和。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EffectiveBetMetrics {
+    /// 当前下注方向对应的获胜结果概率。
     probability: f64,
+    /// 不考虑返水时，每下注 1 单位的基础净 EV。
     base_ev: f64,
+    /// 所有可能结果按概率加权后的返水 EV。
     rebate_ev: f64,
+    /// `base_ev + rebate_ev`，方向策略真正用于比较的 EV。
     effective_ev: f64,
 }
 
@@ -127,7 +134,12 @@ pub fn effective_ev(
     bet: MainBet,
     rebate: RebateRule,
 ) -> EffectiveBetMetrics {
+    // 先取得这个下注方向原本的概率和基础 EV。MainBetAnalysis 实现 Copy，
+    // 按值传入这里不会让调用者失去原分析结果。
     let base_metrics = analysis.metrics(bet);
+
+    // 数组中的三个元素是互斥且穷尽的可能结果。这里保存的是“假设结果 + 概率”，
+    // 不是本局已经发生的真实 outcome。
     let possible_outcomes = [
         (RoundOutcome::Player, analysis.player().probability()),
         (RoundOutcome::Banker, analysis.banker().probability()),
@@ -138,7 +150,10 @@ pub fn effective_ev(
     // 例如 Player 注遇到 Tie 没有返水，所以 Tie 这一项为零。
     let rebate_ev = possible_outcomes
         .iter()
+        // iter() 给闭包的是元素引用，所以 outcome 和 probability 前面的 * 用来解引用。
+        // map 把每个 (结果, 概率) 转成“该结果对返水 EV 的贡献”。
         .map(|(outcome, probability)| *probability * rebate.rate_for(bet, *outcome))
+        // sum::<f64>() 把三个 f64 贡献相加；类型参数告诉编译器目标总和是 f64。
         .sum::<f64>();
 
     let base_ev = base_metrics.ev();
@@ -242,27 +257,34 @@ impl MainBetAnalysis {
         self.metrics(self.optimal_bet).ev()
     }
 
+    /// 返回指定方向加入返水后的完整指标。
+    ///
+    /// 这是自由函数 [`effective_ev`] 的面向对象式便捷入口，两者计算完全相同。
     pub fn effective_metrics(self, bet: MainBet, rebate: RebateRule) -> EffectiveBetMetrics {
         effective_ev(self, bet, rebate)
     }
 
+    /// 比较 Player、Banker、Tie 的有效 EV，返回最大者。
+    ///
+    /// 这里仍然只做“最大值比较”，不会判断最大值是否达到下注门槛；门槛属于
+    /// `BettingPolicy` 的职责。如果完全相等，固定优先顺序仍是 Player → Banker → Tie。
     pub fn optimal_effective_bet(self, rebate: RebateRule) -> MainBet {
-        // 先假设 Player 最优
+        // 先假设 Player 最优，并保存当前最大有效 EV。
         let mut optimal_bet = MainBet::Player;
 
         let mut optimal_ev = effective_ev(self, MainBet::Player, rebate).effective_ev();
 
-        // 比较 Banker
+        // Banker 只有严格大于当前值时才替换 Player。
         let banker_ev = effective_ev(self, MainBet::Banker, rebate).effective_ev();
 
         if banker_ev > optimal_ev {
             optimal_bet = MainBet::Banker;
 
-            // 非常重要：同步更新当前最大 EV
+            // 必须同步更新当前最大 EV，否则后面的 Tie 会错误地继续和 Player 比较。
             optimal_ev = banker_ev;
         }
 
-        // 比较 Tie
+        // 最后让 Tie 与当前最大值比较。
         let tie_ev = effective_ev(self, MainBet::Tie, rebate).effective_ev();
 
         if tie_ev > optimal_ev {
@@ -272,6 +294,9 @@ impl MainBetAnalysis {
         optimal_bet
     }
 
+    /// 返回三个方向中最大的有效 EV。
+    ///
+    /// 不重复保存数值：先找出方向，再从该方向指标读取 EV，避免方向和值不一致。
     pub fn optimal_effective_ev(self, rebate: RebateRule) -> f64 {
         self.effective_metrics(self.optimal_effective_bet(rebate), rebate)
             .effective_ev()

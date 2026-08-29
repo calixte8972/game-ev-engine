@@ -1,4 +1,14 @@
 //! 标准百家乐主注的期望收益计算。
+//!
+//! 本模块连接概率和赔付，但不负责产生概率，也不负责选择下注方向：
+//!
+//! ```text
+//! OutcomeWeights（结果概率） + MainBetRules（每种结果的净盈亏）
+//!                             -> MainBetEv（三个方向的长期平均净收益）
+//! ```
+//!
+//! EV 是下注前指标，不是在预测下一局一定赚多少钱。`EV = 0.01` 表示在同样
+//! 条件下重复很多次、每次下注 1 单位，长期平均每次净赚约 0.01 单位。
 
 use super::{MainBet, MainBetRules, OutcomeWeights, RoundOutcome};
 
@@ -37,6 +47,8 @@ impl MainBetEv {
 
         // Player 和 Tie 的赔付只看最终 RoundOutcome，因此可复用同一个期望值公式。
         // `rules.settle` 返回的是净盈利：赢返回净赔付，输返回 -1，Push 返回 0。
+        // `|bet| { ... }` 是闭包，可以理解成当前函数内部的一小段匿名函数。
+        // Player 和 Tie 使用同一个三结果公式，因此用闭包避免复制三行计算。
         let expected_value = |bet| {
             player_probability * rules.settle(bet, RoundOutcome::Player)
                 + banker_probability * rules.settle(bet, RoundOutcome::Banker)
@@ -50,6 +62,7 @@ impl MainBetEv {
         let banker_non_six_win_ev = banker_non_six_probability * rules.banker_payout_for_total(5);
         let banker_six_win_ev = banker_six_probability * rules.banker_payout_for_total(6);
         let banker_push_ev = tie_probability * rules.settle(MainBet::Banker, RoundOutcome::Tie);
+        // 四项来自互斥结果，可以直接相加成庄注的完整 EV。
         let banker_ev = banker_loss_ev + banker_non_six_win_ev + banker_six_win_ev + banker_push_ev;
 
         Self {
@@ -104,6 +117,7 @@ mod tests {
     use crate::{MainBet, MainBetRules, OutcomeWeights};
 
     fn assert_close(actual: f64, expected: f64) {
+        // 浮点运算可能有极小舍入误差，所以比较差的绝对值，而不使用 assert_eq!。
         assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
     }
 

@@ -1,3 +1,9 @@
+//! 返水规则及“下注方向 + 牌局结果”到返水率的映射。
+//!
+//! 返水是按下注额额外返还的收益。`rate = 0.015` 表示每下注 1 单位，在符合
+//! 条件的结果下额外获得 0.015 单位。下注前不知道真实结果，因此 EV 层会把
+//! 三种可能结果分别调用 [`RebateRule::rate_for`]，再按各自概率加权。
+
 use crate::{MainBet, RoundOutcome};
 
 /// 返水规则。
@@ -11,7 +17,10 @@ pub enum RebateRule {
     ///
     /// 按当前约定，Tie 注的三种结果都属于“其他情况”，因此 Tie 注
     /// 无论最终结果是什么都会获得返水。
-    AllExceptMainBetTie { rate: f64 },
+    AllExceptMainBetTie {
+        /// 用小数表示的返水率；例如 1.5% 写成 0.015。
+        rate: f64,
+    },
 }
 
 impl RebateRule {
@@ -21,6 +30,7 @@ impl RebateRule {
     /// EV 计算会分别传入 Player、Banker、Tie 三种可能结果，
     /// 再把它们按照各自概率加权。
     pub const fn rate_for(self, bet: MainBet, outcome: RoundOutcome) -> f64 {
+        // 外层 match 先判断有没有返水；内层 match 再处理有返水规则下的例外组合。
         match self {
             Self::None => 0.0,
             Self::AllExceptMainBetTie { rate } => match (bet, outcome) {

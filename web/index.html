@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="使用 Rust WebAssembly 在浏览器中计算百家乐牌靴 EV、凯利下注金额并回放游戏 CSV。"
+    />
+    <title>百家乐牌靴策略与回放</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">Rust · WebAssembly · Kelly</p>
+        <h1>百家乐牌靴策略与回放</h1>
+        <p class="subtitle">同一套 Rust 核心完成概率、EV、下注金额和历史盈亏计算。</p>
+      </div>
+      <div class="header-badges">
+        <span class="privacy-badge"><span class="status-dot"></span>CSV 只在当前浏览器处理</span>
+        <span id="wasm-status" class="wasm-status">正在加载 WASM…</span>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <section class="panel input-panel" aria-labelledby="strategy-title">
+        <div class="section-heading">
+          <div>
+            <p class="section-number">01</p>
+            <h2 id="strategy-title">策略与当前牌靴</h2>
+          </div>
+        </div>
+
+        <form id="analysis-form">
+          <div class="subsection-heading">
+            <h3>资金与下注门槛</h3>
+            <span>当前计算与 CSV 回放共用</span>
+          </div>
+
+          <div class="strategy-grid">
+            <label class="field">
+              <span>初始／当前本金</span>
+              <span class="input-prefix">
+                <span>¥</span>
+                <input id="bankroll" type="number" value="10000" min="0.01" step="100" />
+              </span>
+            </label>
+
+            <label class="field">
+              <span>最低有效 EV</span>
+              <span class="input-suffix">
+                <input id="minimum-ev" type="number" value="0" step="0.01" />
+                <span>%</span>
+              </span>
+            </label>
+
+            <label class="field">
+              <span>返水比例</span>
+              <span class="input-suffix">
+                <input id="rebate-rate" type="number" value="0.9" min="0" max="100" step="0.1" />
+                <span>%</span>
+              </span>
+            </label>
+
+            <label class="field">
+              <span>单局本金比例上限</span>
+              <span class="input-suffix">
+                <input id="max-fraction" type="number" value="5" min="0" max="100" step="0.5" />
+                <span>%</span>
+              </span>
+            </label>
+
+            <label class="field">
+              <span>系统单局金额上限</span>
+              <span class="input-prefix">
+                <span>¥</span>
+                <input id="max-round-stake" type="number" value="500" min="0" step="50" />
+              </span>
+            </label>
+
+            <label class="field">
+              <span>桌台金额上限</span>
+              <span class="input-prefix">
+                <span>¥</span>
+                <input id="table-limit" type="number" value="10000" min="0" step="100" />
+              </span>
+            </label>
+          </div>
+
+          <p class="field-help policy-help">
+            最终金额 = 本金 × 完整凯利比例，再依次受本金比例、单局金额和桌台金额上限约束。
+          </p>
+
+          <div class="subsection-heading shoe-heading">
+            <h3>下一局牌靴</h3>
+            <span>手工即时分析</span>
+          </div>
+
+          <fieldset class="mode-switch">
+            <legend>输入表示什么</legend>
+            <label class="mode-option">
+              <input type="radio" name="source-mode" value="consumed" checked />
+              <span>
+                <strong>已消耗的牌</strong>
+                <small>从完整牌靴扣除这些牌</small>
+              </span>
+            </label>
+            <label class="mode-option">
+              <input type="radio" name="source-mode" value="remaining" />
+              <span>
+                <strong>当前剩余的牌</strong>
+                <small>输入就是剩余牌的完整集合</small>
+              </span>
+            </label>
+          </fieldset>
+
+          <label class="field deck-field">
+            <span>牌靴副数</span>
+            <select id="deck-count" name="deck-count">
+              <option value="8" selected>8 副牌 · 416 张</option>
+              <option value="6">6 副牌 · 312 张</option>
+              <option value="4">4 副牌 · 208 张</option>
+              <option value="2">2 副牌 · 104 张</option>
+              <option value="1">1 副牌 · 52 张</option>
+            </select>
+          </label>
+
+          <label class="field card-field" for="cards-input">
+            <span>牌面列表</span>
+            <textarea
+              id="cards-input"
+              name="cards-input"
+              rows="7"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="例如：AS, 10H, KD, 7C"
+            ></textarea>
+          </label>
+          <p id="mode-help" class="field-help">
+            留空表示还没有消耗任何牌，将计算完整牌靴的基线结果。
+          </p>
+          <p class="card-format">格式：A、2～10、J、Q、K + C/D/H/S，例如 <code>AS</code>、<code>10H</code>。</p>
+
+          <div class="form-actions">
+            <button id="analyze-button" class="primary-button" type="submit" disabled>
+              计算策略
+            </button>
+            <button id="sample-button" class="secondary-button" type="button">载入示例</button>
+            <button id="clear-button" class="text-button" type="button">清空牌面</button>
+          </div>
+        </form>
+
+        <div id="error-message" class="error-message" role="alert" hidden></div>
+      </section>
+
+      <section class="panel result-panel" aria-labelledby="result-title">
+        <div class="section-heading">
+          <div>
+            <p class="section-number">02</p>
+            <h2 id="result-title">下一局决策</h2>
+          </div>
+          <span id="calculation-time" class="calculation-time">—</span>
+        </div>
+
+        <div class="shoe-summary" aria-label="牌靴概要">
+          <div>
+            <span>输入牌数</span>
+            <strong id="input-card-count">—</strong>
+          </div>
+          <div>
+            <span>当前剩余</span>
+            <strong id="remaining-card-count">—</strong>
+          </div>
+          <div>
+            <span>概率合计</span>
+            <strong id="probability-total">—</strong>
+          </div>
+          <div>
+            <span>建议金额</span>
+            <strong id="summary-amount">—</strong>
+          </div>
+        </div>
+
+        <div id="recommendation" class="recommendation" data-action="pending">
+          <div>
+            <span class="recommendation-label">有效 EV 最优方向</span>
+            <strong id="recommended-bet">等待计算</strong>
+          </div>
+          <div class="recommendation-metric">
+            <span>有效 EV</span>
+            <strong id="recommended-ev">—</strong>
+          </div>
+          <span id="recommended-action" class="action-pill">—</span>
+        </div>
+
+        <div class="decision-grid" aria-label="资金决策">
+          <div>
+            <span>完整凯利比例</span>
+            <strong id="kelly-fraction">—</strong>
+          </div>
+          <div>
+            <span>实际本金比例</span>
+            <strong id="applied-fraction">—</strong>
+          </div>
+          <div>
+            <span>最终建议下注</span>
+            <strong id="suggested-amount">—</strong>
+          </div>
+          <div>
+            <span>单笔期望盈利</span>
+            <strong id="expected-profit">—</strong>
+          </div>
+        </div>
+        <p id="decision-reason" class="decision-reason">策略计算完成后会在这里解释下注或跳过原因。</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">方向</th>
+                <th scope="col">胜率</th>
+                <th scope="col">基础 EV</th>
+                <th scope="col">返水 EV</th>
+                <th scope="col">有效 EV</th>
+                <th scope="col">RTP</th>
+              </tr>
+            </thead>
+            <tbody id="result-body">
+              <tr class="placeholder-row">
+                <td colspan="6">WASM 核心加载后会自动计算完整牌靴基线。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <p class="result-note">
+          “最优”不等于“下注”：还要同时通过最低 EV 门槛、正凯利比例和金额上限。
+        </p>
+      </section>
+
+      <section class="panel replay-panel" aria-labelledby="replay-title">
+        <div class="section-heading replay-heading">
+          <div>
+            <p class="section-number">03</p>
+            <h2 id="replay-title">游戏 CSV 策略回放</h2>
+            <p class="section-description">
+              从每個牌靴第 1 局开始还原，下注前计算，开奖后结算，并把真实盈亏滚入下一局本金。
+            </p>
+          </div>
+          <span id="replay-status" class="replay-status">等待选择文件</span>
+        </div>
+
+        <div class="replay-input-grid">
+          <div class="upload-box">
+            <input id="csv-file" class="file-input" type="file" accept=".csv,text/csv" />
+            <label for="csv-file" class="upload-label">
+              <span class="upload-icon" aria-hidden="true">CSV</span>
+              <strong>选择游戏 CSV</strong>
+              <small>文件仅在本机浏览器读取，支持当前数据库导出格式，最大 50 MB。</small>
+            </label>
+            <div id="selected-file" class="selected-file">尚未选择文件</div>
+          </div>
+
+          <div class="replay-rules">
+            <h3>回放前提</h3>
+            <ul>
+              <li>必需列：<code>__source_pk</code>、<code>table_id</code>、<code>session_id</code>、<code>round_no</code>、时间、牌面和结果。</li>
+              <li>只有从第 1 局开始、局号连续且牌面合法的牌靴会进入策略计算。</li>
+              <li>多个桌台按 <code>started_at</code> 排序，共享上方配置的一份滚动本金。</li>
+            </ul>
+            <button id="replay-button" class="primary-button replay-button" type="button" disabled>
+              开始策略回放
+            </button>
+          </div>
+        </div>
+
+        <div id="replay-error" class="error-message" role="alert" hidden></div>
+
+        <div id="replay-results" class="replay-results" hidden>
+          <div class="replay-summary" aria-label="回放结果概要">
+            <div>
+              <span>可回放局数</span>
+              <strong id="replayed-rounds">—</strong>
+            </div>
+            <div>
+              <span>实际下注</span>
+              <strong id="placed-bets">—</strong>
+            </div>
+            <div>
+              <span>累计下注额</span>
+              <strong id="total-stake">—</strong>
+            </div>
+            <div>
+              <span>期末本金</span>
+              <strong id="final-bankroll">—</strong>
+            </div>
+            <div class="profit-card">
+              <span>最终总输赢</span>
+              <strong id="total-profit">—</strong>
+            </div>
+            <div>
+              <span>其中返水</span>
+              <strong id="rebate-income">—</strong>
+            </div>
+            <div>
+              <span>本金收益率</span>
+              <strong id="return-on-initial">—</strong>
+            </div>
+            <div>
+              <span>最大回撤</span>
+              <strong id="maximum-drawdown">—</strong>
+            </div>
+          </div>
+
+          <div class="quality-panel">
+            <div>
+              <span>CSV 总行数</span>
+              <strong id="dataset-rows">—</strong>
+            </div>
+            <div>
+              <span>完整牌靴</span>
+              <strong id="valid-sessions">—</strong>
+            </div>
+            <div>
+              <span>隔离局数</span>
+              <strong id="quarantined-rounds">—</strong>
+            </div>
+            <div>
+              <span>有效牌面行</span>
+              <strong id="valid-card-rows">—</strong>
+            </div>
+            <div>
+              <span>命中率</span>
+              <strong id="hit-rate">—</strong>
+            </div>
+            <div>
+              <span>计算耗时</span>
+              <strong id="replay-time">—</strong>
+            </div>
+          </div>
+
+          <div class="detail-heading">
+            <div>
+              <h3>可下注时间与真实结算</h3>
+              <p id="detail-note">只列出策略最终允许下注的局。</p>
+            </div>
+          </div>
+
+          <div class="table-wrap replay-detail-wrap">
+            <table class="replay-table">
+              <thead>
+                <tr>
+                  <th scope="col">开局时间</th>
+                  <th scope="col">桌 / 牌靴 / 局</th>
+                  <th scope="col">下注</th>
+                  <th scope="col">开奖结果</th>
+                  <th scope="col">有效 EV</th>
+                  <th scope="col">金额</th>
+                  <th scope="col">基础输赢</th>
+                  <th scope="col">返水</th>
+                  <th scope="col">本局净输赢</th>
+                  <th scope="col">结算后本金</th>
+                </tr>
+              </thead>
+              <tbody id="replay-body">
+                <tr class="placeholder-row">
+                  <td colspan="10">选择 CSV 并开始回放后显示下注明细。</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>标准佣金庄：闲胜 1，庄胜 0.95，和局 8；返水按你配置的规则加入。</span>
+      <span>历史收益不代表未来结果，EV 是概率期望，不是单局保证。</span>
+    </footer>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

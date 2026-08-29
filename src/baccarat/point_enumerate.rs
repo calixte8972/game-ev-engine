@@ -1,162 +1,230 @@
 //! 按百家乐点数聚合的标准主注概率枚举器。
+//!
+//! 主注不关心花色，也不区分 10、J、Q、K，因为它们都是 0 点。因此牌靴可
+//! 压缩成 `[0 点数量, 1 点数量, ..., 9 点数量]`。
+//!
+//! 最直观的算法会在每次计算时重新走完 `10^6` 条六张点数顺序。单次计算尚可，
+//! 但一天近十万局的回放会重复做大量与当前牌靴无关的工作。本文件采用等价的
+//! “组合系数表”算法：第一次调用时归并一百万种抽象顺序；六张牌的点数组合
+//! 只有 `C(15, 6) = 5,005` 种；之后每局只把当前点数数量代入这 5,005 项。
+//!
+//! 例如某项是“两张 0、三张 1、一张 7”，当前数量为 `n0、n1、n7`，每种
+//! 抽象排列代表的物理序列数就是 `(n0)₂ × (n1)₃ × (n7)₁`。`(n)ₖ` 是下降
+//! 阶乘，准确表达不放回抽牌，所以本算法不是概率近似。
+
+use std::{collections::HashMap, sync::OnceLock};
 
 use crate::{OutcomeWeights, ProbabilityError, RoundError, RoundOutcome, Shoe};
 
 use super::probability::falling_factorial;
 use super::resolve_point_round;
 
-/// 根据当前牌靴精确计算下一局庄、闲、和的概率权重。
+/// 六张牌分配到十种点数的组合数量：C(6 + 10 - 1, 10 - 1)。
+const COMPOSITION_COUNT: usize = 5_005;
+
+/// 与具体牌靴无关的一项组合系数。
 ///
-/// 主注只依赖百家乐点数，因此这里把 52 种具体牌聚合为 0～9 共十类，
-/// 避免为花色和同点数牌面建立不必要的分支。具体牌面的枚举器仍保留在
-/// 测试构建中，用于和本函数交叉验证。
+/// `multiplicities[point]` 是六个位置中该点数的张数；其余字段记录具有同一
+/// 组成的抽象排列分别产生多少种结果。计数最大不超过 `6! = 720`。
+#[derive(Debug)]
+struct CompositionCoefficient {
+    multiplicities: [u8; 10],
+    player_permutations: u16,
+    banker_permutations: u16,
+    tie_permutations: u16,
+    banker_win_on_six_permutations: u16,
+}
+
+/// 全进程共享系数表。同一 WASM 实例内的所有牌靴状态只初始化一次。
+static COMPOSITION_TABLE: OnceLock<Vec<CompositionCoefficient>> = OnceLock::new();
+
+/// 根据当前牌靴精确计算下一局庄、闲、和的概率权重。
 pub fn calculate_main_outcomes(shoe: &Shoe) -> Result<OutcomeWeights, ProbabilityError> {
-    let initial_total = shoe.total_remaining();
-    if initial_total < 6 {
+    let total_cards = shoe.total_remaining();
+    if total_cards < 6 {
         return Err(ProbabilityError::NotEnoughCards {
-            remaining: initial_total,
+            remaining: total_cards,
         });
     }
 
-    let mut point_counts = shoe.baccarat_point_counts();
-    let mut points = Vec::with_capacity(6);
-    let mut accumulator = OutcomeAccumulator::default();
+    let point_counts = shoe.baccarat_point_counts();
 
-    enumerate_point_paths(
-        &mut point_counts,
-        initial_total,
-        &mut points,
-        1,
-        &mut accumulator,
-    )?;
-
-    debug_assert!(points.is_empty());
-    debug_assert_eq!(point_counts.iter().sum::<u16>(), initial_total);
-
-    OutcomeWeights::from_detailed_weights(
-        initial_total,
-        accumulator.player,
-        accumulator.banker,
-        accumulator.tie,
-        accumulator.banker_win_on_six,
-    )
-}
-
-/// 递归枚举点数类别，并把每条终局路径转换为六张牌共同分母下的权重。
-fn enumerate_point_paths(
-    point_counts: &mut [u16; 10],
-    remaining: u16,
-    points: &mut Vec<u8>,
-    path_weight: u64,
-    accumulator: &mut OutcomeAccumulator,
-) -> Result<(), ProbabilityError> {
-    match resolve_point_round(points) {
-        Ok(result) => {
-            let missing_cards = 6 - result.card_count();
-            let completion_weight = falling_factorial(remaining, missing_cards);
-            let terminal_weight = path_weight
-                .checked_mul(completion_weight)
-                .ok_or(ProbabilityError::WeightOverflow)?;
-
-            let outcome = result.outcome();
-            accumulator.add(outcome, terminal_weight)?;
-
-            if outcome == RoundOutcome::Banker && result.banker_total() == 6 {
-                accumulator.add_banker_win_on_six(terminal_weight)?;
-            }
-
-            Ok(())
-        }
-        Err(
-            RoundError::NotEnoughInitialCards
-            | RoundError::MissingPlayerThirdCard
-            | RoundError::MissingBankerThirdCard,
-        ) => enumerate_next_point(point_counts, remaining, points, path_weight, accumulator),
-        Err(RoundError::UnexpectedExtraCards) => {
-            unreachable!("点数枚举器不应在牌局结束后继续发牌")
+    // 一项组合最多取同一点数六次。先计算每个点数的 (n)₀ 到 (n)₆，
+    // 避免在 5,005 项循环里反复计算相同下降阶乘。
+    let mut falling = [[0_u64; 7]; 10];
+    for (point, &available) in point_counts.iter().enumerate() {
+        falling[point][0] = 1;
+        for count in 1_u8..=6 {
+            falling[point][usize::from(count)] = if u16::from(count) <= available {
+                falling_factorial(available, count)
+            } else {
+                0
+            };
         }
     }
-}
 
-/// 遍历仍有剩余牌的十种百家乐点数，并递归处理每个分支。
-fn enumerate_next_point(
-    point_counts: &mut [u16; 10],
-    remaining: u16,
-    points: &mut Vec<u8>,
-    path_weight: u64,
-    accumulator: &mut OutcomeAccumulator,
-) -> Result<(), ProbabilityError> {
-    for point in 0_u8..=9 {
-        let index = usize::from(point);
-        let copies = point_counts[index];
-        if copies == 0 {
+    let mut player = 0_u64;
+    let mut banker = 0_u64;
+    let mut tie = 0_u64;
+    let mut banker_win_on_six = 0_u64;
+
+    for coefficient in composition_table() {
+        // 同一点数组成的所有抽象排列，对应相同数量的物理发牌序列。
+        // 数量不足时 falling 值为 0，整项自然不会贡献权重。
+        let mut physical_sequences_per_permutation = 1_u64;
+        for (point, &count) in coefficient.multiplicities.iter().enumerate() {
+            if count != 0 {
+                physical_sequences_per_permutation = physical_sequences_per_permutation
+                    .checked_mul(falling[point][usize::from(count)])
+                    .ok_or(ProbabilityError::WeightOverflow)?;
+            }
+        }
+
+        if physical_sequences_per_permutation == 0 {
             continue;
         }
 
-        let next_weight = path_weight
-            .checked_mul(u64::from(copies))
-            .ok_or(ProbabilityError::WeightOverflow)?;
-
-        point_counts[index] -= 1;
-        points.push(point);
-
-        let branch_result = enumerate_point_paths(
-            point_counts,
-            remaining - 1,
-            points,
-            next_weight,
-            accumulator,
-        );
-
-        points.pop();
-        point_counts[index] += 1;
-
-        branch_result?;
+        player = add_weight(
+            player,
+            physical_sequences_per_permutation,
+            coefficient.player_permutations,
+        )?;
+        banker = add_weight(
+            banker,
+            physical_sequences_per_permutation,
+            coefficient.banker_permutations,
+        )?;
+        tie = add_weight(
+            tie,
+            physical_sequences_per_permutation,
+            coefficient.tie_permutations,
+        )?;
+        banker_win_on_six = add_weight(
+            banker_win_on_six,
+            physical_sequences_per_permutation,
+            coefficient.banker_win_on_six_permutations,
+        )?;
     }
 
-    Ok(())
+    // 构造器会再次验证三种互斥结果是否恰好等于 (总牌数)₆。
+    OutcomeWeights::from_detailed_weights(total_cards, player, banker, tie, banker_win_on_six)
 }
 
-#[derive(Debug, Default)]
-struct OutcomeAccumulator {
-    player: u64,
-    banker: u64,
-    tie: u64,
-    banker_win_on_six: u64,
+/// 把“一种排列的物理权重 × 该结果排列数”安全加入结果桶。
+fn add_weight(
+    current: u64,
+    physical_weight: u64,
+    permutations: u16,
+) -> Result<u64, ProbabilityError> {
+    let contribution = physical_weight
+        .checked_mul(u64::from(permutations))
+        .ok_or(ProbabilityError::WeightOverflow)?;
+    current
+        .checked_add(contribution)
+        .ok_or(ProbabilityError::WeightOverflow)
 }
 
-impl OutcomeAccumulator {
-    fn add(&mut self, outcome: RoundOutcome, weight: u64) -> Result<(), ProbabilityError> {
-        let destination = match outcome {
-            RoundOutcome::Player => &mut self.player,
-            RoundOutcome::Banker => &mut self.banker,
-            RoundOutcome::Tie => &mut self.tie,
-        };
+fn composition_table() -> &'static [CompositionCoefficient] {
+    COMPOSITION_TABLE.get_or_init(build_composition_table)
+}
 
-        *destination = destination
-            .checked_add(weight)
-            .ok_or(ProbabilityError::WeightOverflow)?;
-        Ok(())
+/// 一次性把 10^6 种六张点数顺序归并为 5,005 项。
+fn build_composition_table() -> Vec<CompositionCoefficient> {
+    let mut coefficients =
+        HashMap::<[u8; 10], CompositionCoefficient>::with_capacity(COMPOSITION_COUNT);
+    let mut points = [0_u8; 6];
+    let mut multiplicities = [0_u8; 10];
+
+    enumerate_abstract_sequences(0, &mut points, &mut multiplicities, &mut coefficients);
+
+    let mut table: Vec<_> = coefficients.into_values().collect();
+    // HashMap 迭代顺序不稳定；排序让不同平台的执行顺序与基准一致。
+    table.sort_unstable_by_key(|coefficient| coefficient.multiplicities);
+    debug_assert_eq!(table.len(), COMPOSITION_COUNT);
+    table
+}
+
+/// 深度固定为六层的抽象点数枚举，只在构造系数表时运行一次。
+fn enumerate_abstract_sequences(
+    position: usize,
+    points: &mut [u8; 6],
+    multiplicities: &mut [u8; 10],
+    coefficients: &mut HashMap<[u8; 10], CompositionCoefficient>,
+) {
+    if position == points.len() {
+        let result = resolve_six_position_sequence(points);
+        let coefficient =
+            coefficients
+                .entry(*multiplicities)
+                .or_insert_with(|| CompositionCoefficient {
+                    multiplicities: *multiplicities,
+                    player_permutations: 0,
+                    banker_permutations: 0,
+                    tie_permutations: 0,
+                    banker_win_on_six_permutations: 0,
+                });
+
+        match result.outcome() {
+            RoundOutcome::Player => coefficient.player_permutations += 1,
+            RoundOutcome::Banker => coefficient.banker_permutations += 1,
+            RoundOutcome::Tie => coefficient.tie_permutations += 1,
+        }
+        if result.outcome() == RoundOutcome::Banker && result.banker_total() == 6 {
+            coefficient.banker_win_on_six_permutations += 1;
+        }
+        return;
     }
 
-    /// 把庄六点获胜路径加入对应的子集桶，并检查加法溢出。
-    fn add_banker_win_on_six(&mut self, weight: u64) -> Result<(), ProbabilityError> {
-        self.banker_win_on_six = self
-            .banker_win_on_six
-            .checked_add(weight)
-            .ok_or(ProbabilityError::WeightOverflow)?;
-        Ok(())
+    for point in 0_u8..=9 {
+        points[position] = point;
+        multiplicities[usize::from(point)] += 1;
+        enumerate_abstract_sequences(position + 1, points, multiplicities, coefficients);
+        multiplicities[usize::from(point)] -= 1;
     }
+}
+
+/// 六个候选位置中，真实牌局可能只使用前四、五或六个位置。
+///
+/// 逐个尝试合法前缀可复用生产补牌规则；自然牌或停牌后未使用的位置仍属于
+/// 共同六张分母中的补全位置，与原递归枚举器语义相同。
+fn resolve_six_position_sequence(points: &[u8; 6]) -> super::round::PointRoundResult {
+    for used in 4..=6 {
+        match resolve_point_round(&points[..used]) {
+            Ok(result) => return result,
+            Err(
+                RoundError::NotEnoughInitialCards
+                | RoundError::MissingPlayerThirdCard
+                | RoundError::MissingBankerThirdCard,
+            ) => continue,
+            Err(RoundError::UnexpectedExtraCards) => {
+                unreachable!("从四张开始递增前缀，不会越过已经完成的牌局")
+            }
+        }
+    }
+
+    unreachable!("标准百家乐最多使用六张牌")
 }
 
 #[cfg(test)]
 mod tests {
     use crate::{Card, Rank, Shoe, Suit};
 
-    use super::calculate_main_outcomes;
+    use super::{COMPOSITION_COUNT, calculate_main_outcomes, composition_table};
 
     fn card(input: &str) -> Card {
         input.parse().expect("测试使用的牌面必须合法")
+    }
+
+    #[test]
+    fn coefficient_table_contains_every_six_card_composition() {
+        assert_eq!(composition_table().len(), COMPOSITION_COUNT);
+        assert!(composition_table().iter().all(|coefficient| {
+            coefficient.multiplicities.iter().sum::<u8>() == 6
+                && coefficient.player_permutations
+                    + coefficient.banker_permutations
+                    + coefficient.tie_permutations
+                    > 0
+        }));
     }
 
     #[test]
@@ -175,7 +243,6 @@ mod tests {
             for suit in Suit::ALL {
                 let candidate = Card::new(rank, suit);
                 let copies_to_remove = if retained.contains(&candidate) { 1 } else { 2 };
-
                 for _ in 0..copies_to_remove {
                     removed.push(candidate);
                 }
@@ -185,7 +252,6 @@ mod tests {
         let mut shoe = Shoe::new(2).expect("两副牌必须是合法牌靴");
         shoe.remove_many(&removed).expect("测试牌必须能够扣除");
         let initial_shoe = shoe.clone();
-
         let weights = calculate_main_outcomes(&shoe).expect("六张 0 点牌应能够完成枚举");
 
         assert_eq!(shoe, initial_shoe);

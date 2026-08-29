@@ -1,4 +1,15 @@
 //! 百家乐手牌的数据结构与点数计算。
+//!
+//! 一方手牌始终有两张起手牌，并且最多只能再补一张。因此使用
+//! 两个必填 `Card` 和一个 `Option<Card>` 就能表示所有合法状态：
+//!
+//! ```text
+//! None        -> 两张牌，没有补牌
+//! Some(card)  -> 三张牌，card 是第三张牌
+//! ```
+//!
+//! 手牌只负责“保存牌和计算点数”，不在这里决定是否补牌。补牌决策
+//! 由 `rule.rs` 负责，整局发牌顺序由 `round.rs` 负责。
 
 use crate::Card;
 
@@ -44,6 +55,8 @@ impl BaccaratHand {
 
     /// 返回可选的第三张牌。
     pub const fn third_card(self) -> Option<Card> {
+        // Option 强迫调用者处理“有第三张”和“没有第三张”两种情况，
+        // 不需要用一张虚假 Card 表示缺失值。
         self.third_card
     }
 
@@ -65,6 +78,7 @@ impl BaccaratHand {
 
     /// 返回当前手牌的牌数。
     pub const fn card_count(self) -> u8 {
+        // match 会穷尽 Option 的两种可能，编译器会检查没有遗漏分支。
         match self.third_card {
             Some(_) => 3,
             None => 2,

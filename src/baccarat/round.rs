@@ -1,4 +1,19 @@
 //! 标准百家乐一局的发牌流程与最终结果。
+//!
+//! 输入必须按真实发牌顺序排列：
+//!
+//! ```text
+//! P1 -> B1 -> P2 -> B2 -> 可选 P3 -> 可选 B3
+//! ```
+//!
+//! 本文件有两个解析器，二者复用完全相同的补牌规则：
+//!
+//! - [`resolve_round`] 处理真正的 `Card`，用于 CLI、回放和参考枚举器；
+//! - `resolve_point_round` 只处理 0～9 点，用于高速概率枚举器。
+//!
+//! 两个函数都不主动摸牌，只消费调用者给出的序列。如果规则要求补牌而
+//! 输入还没有下一张，就返回“缺少补牌”错误；枚举器会把它解释成
+//! “当前路径还没走完，继续枚举下一张”。
 
 use std::{error::Error, fmt};
 
@@ -109,14 +124,31 @@ impl fmt::Display for RoundError {
 }
 
 impl Error for RoundError {}
+
+/// 点数枚举器使用的精简回合结果。
+///
+/// 主注概率只关心庄闲最终点数和本局用牌数，不关心花色或具体牌面，
+/// 所以不需要构造完整的 `BaccaratHand`。`pub(crate)` 表示只在当前
+/// crate 内可见，不作为对外 API。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PointRoundResult {
+    /// 闲家最终点数。
     player_total: u8,
+    /// 庄家最终点数；概率层用它统计庄 6 点获胜子集。
     banker_total: u8,
+    /// 回合实际消费的点数数量，可能是 4、5 或 6。
+    // 生产枚举器优化后不再读取它，但保留该状态用于规则单元测试与教学验证。
+    #[cfg_attr(not(test), allow(dead_code))]
     card_count: u8,
 }
-///计算点数结果
+
+/// 按标准发牌顺序解析一个只含百家乐点数的回合。
+///
+/// 例如 `[1, 4, 7, 3]` 表示：闲第一张 1 点、庄第一张 4 点、
+/// 闲第二张 7 点、庄第二张 3 点。闲起手 8 点是 Natural，因此四张结束。
 pub(crate) fn resolve_point_round(points: &[u8]) -> Result<PointRoundResult, RoundError> {
+    // 切片模式按顺序借用前四个点数。`..` 表示允许后面还有补牌；
+    // let-else 在不足四项时立即走 else 错误分支。
     let [
         player_first_point,
         banker_first_point,
@@ -128,21 +160,29 @@ pub(crate) fn resolve_point_round(points: &[u8]) -> Result<PointRoundResult, Rou
         return Err(RoundError::NotEnoughInitialCards);
     };
 
+    // 模式匹配得到的是 &u8，前面的 * 解引用取出 u8 值。
     let player_initial = (*player_first_point + *player_second_point) % 10;
 
     let banker_initial = (*banker_first_point + *banker_second_point) % 10;
 
+    // 先假设双方都不补牌，因此最终点数暂时等于起手点数。
+    // 如果后面确定补牌，再覆盖对应 total。
     let mut player_total = player_initial;
     let mut banker_total = banker_initial;
+    // 庄家补牌表需要知道闲家有没有补牌，以及补的是几点。
     let mut player_third_point: Option<u8> = None;
+    // 前四张已经被起手牌消费，下一张可选补牌的下标是 4。
     let mut consumed: u8 = 4;
 
     let player_is_natural = matches!(player_initial, 8 | 9);
 
     let banker_is_natural = matches!(banker_initial, 8 | 9);
 
+    // 任意一方是 Natural 8/9，整局必须立即结束，不查补牌表。
     if !player_is_natural && !banker_is_natural {
         if player_should_draw(player_initial) {
+            // get() 返回 Option<&u8>，copied() 把它变成 Option<u8>，
+            // ok_or() 在缺少这张牌时变成领域错误，? 再向上返回。
             let third_point = points
                 .get(usize::from(consumed))
                 .copied()
@@ -153,6 +193,7 @@ pub(crate) fn resolve_point_round(points: &[u8]) -> Result<PointRoundResult, Rou
             consumed += 1;
         }
 
+        // 闲家如果补过牌，player_third_point 是 Some(点数)；否则是 None。
         if banker_should_draw(banker_initial, player_third_point) {
             let third_point = points
                 .get(usize::from(consumed))
@@ -164,6 +205,8 @@ pub(crate) fn resolve_point_round(points: &[u8]) -> Result<PointRoundResult, Rou
         }
     }
 
+    // 规则需要的牌数必须与输入长度完全一致。例如 Natural 只用四张，
+    // 如果调用者还给了第五张，这张就是非法多余输入。
     if usize::from(consumed) != points.len() {
         return Err(RoundError::UnexpectedExtraCards);
     }
@@ -175,10 +218,12 @@ pub(crate) fn resolve_point_round(points: &[u8]) -> Result<PointRoundResult, Rou
     })
 }
 impl PointRoundResult {
+    /// 返回庄家最终点数，用于区分普通庄赢与庄 6 点赢。
     pub(crate) const fn banker_total(self) -> u8 {
         self.banker_total
     }
-    //判断结果
+
+    /// 直接比较双方最终点数，得到庄、闲或和。
     pub(crate) const fn outcome(self) -> RoundOutcome {
         if self.player_total > self.banker_total {
             RoundOutcome::Player
@@ -187,10 +232,6 @@ impl PointRoundResult {
         } else {
             RoundOutcome::Tie
         }
-    }
-
-    pub(crate) const fn card_count(self) -> u8 {
-        self.card_count
     }
 }
 
@@ -240,6 +281,7 @@ pub fn resolve_round(cards: &[Card]) -> Result<RoundResult, RoundError> {
         return Err(RoundError::UnexpectedExtraCards);
     }
 
+    // 只要长度和规则都合法，就用最终手牌构造自洽的 RoundResult。
     Ok(RoundResult::new(player_hand, banker_hand))
 }
 
@@ -250,6 +292,8 @@ mod tests {
     use super::{RoundError, RoundOutcome, resolve_point_round, resolve_round};
 
     fn cards(input: &str) -> Vec<Card> {
+        // split_whitespace 按任意数量的空白分隔；map 把每段文本变成 Card；
+        // collect 最终收集为 Vec<Card>。
         input
             .split_whitespace()
             .map(|card| card.parse().expect("测试使用的牌面必须合法"))

@@ -1,4 +1,16 @@
 //! 扑克牌的花色、牌面、解析、显示和百家乐点数。
+//!
+//! 这是整个项目最底层的领域模块。上层牌靴、百家乐手牌和枚举器最终都依赖
+//! 这里的三个核心类型：
+//!
+//! ```text
+//! Suit（花色） + Rank（牌面） -> Card（一张具体牌）
+//! ```
+//!
+//! 本模块还负责两种边界转换：
+//!
+//! - 文本 `"AS"`、`"10H"` -> `Card`，供 CLI 和以后 Python 输入使用；
+//! - `Card` -> `0..52` 的稳定下标，供 `Shoe` 的固定数组存储使用。
 
 use std::{error::Error, fmt, str::FromStr};
 
@@ -8,9 +20,13 @@ use std::{error::Error, fmt, str::FromStr};
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Suit {
+    /// 梅花，CLI 代码为 `C`。
     Clubs = 0,
+    /// 方块，CLI 代码为 `D`。
     Diamonds = 1,
+    /// 红桃，CLI 代码为 `H`。
     Hearts = 2,
+    /// 黑桃，CLI 代码为 `S`。
     Spades = 3,
 }
 
@@ -42,12 +58,16 @@ impl fmt::Display for Suit {
 }
 
 impl FromStr for Suit {
+    /// 实现 `FromStr` 后，字符串就可以调用 `"S".parse::<Suit>()`。
     type Err = CardParseError;
 
     /// 从 `C`、`D`、`H`、`S` 解析花色，忽略大小写和两端空白。
     fn from_str(input: &str) -> Result<Self, Self::Err> {
+        // trim() 返回去掉两端空白的 &str，不会复制原字符串。
         let input = input.trim();
 
+        // `_ if 条件` 是 match 的守卫写法。这里用忽略 ASCII 大小写的比较，
+        // 因此 C/c、D/d、H/h、S/s 都能解析。
         match input {
             _ if input.eq_ignore_ascii_case("C") => Ok(Self::Clubs),
             _ if input.eq_ignore_ascii_case("D") => Ok(Self::Diamonds),
@@ -64,18 +84,31 @@ impl FromStr for Suit {
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Rank {
+    /// A，在百家乐中计 1 点。
     Ace = 0,
+    /// 2，在百家乐中计 2 点。
     Two = 1,
+    /// 3，在百家乐中计 3 点。
     Three = 2,
+    /// 4，在百家乐中计 4 点。
     Four = 3,
+    /// 5，在百家乐中计 5 点。
     Five = 4,
+    /// 6，在百家乐中计 6 点。
     Six = 5,
+    /// 7，在百家乐中计 7 点。
     Seven = 6,
+    /// 8，在百家乐中计 8 点。
     Eight = 7,
+    /// 9，在百家乐中计 9 点。
     Nine = 8,
+    /// 10，在百家乐中计 0 点。
     Ten = 9,
+    /// J，在百家乐中计 0 点。
     Jack = 10,
+    /// Q，在百家乐中计 0 点。
     Queen = 11,
+    /// K，在百家乐中计 0 点。
     King = 12,
 }
 
@@ -146,12 +179,14 @@ impl fmt::Display for Rank {
 }
 
 impl FromStr for Rank {
+    /// Rank 和 Card 共用一套解析错误，便于上层统一处理。
     type Err = CardParseError;
 
     /// 从 ASCII 简写解析牌面；十既接受 `10`，也接受常见简写 `T`。
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         let input = input.trim();
 
+        // A、J、Q、K、T 不能通过普通数字区间匹配，所以先单独处理。
         if input.eq_ignore_ascii_case("A") {
             return Ok(Self::Ace);
         }
@@ -185,7 +220,9 @@ impl FromStr for Rank {
 /// 一张具体的扑克牌。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Card {
+    /// 牌面，例如 Ace、Ten、King。
     rank: Rank,
+    /// 花色，例如 Clubs、Spades。
     suit: Suit,
 }
 
@@ -227,6 +264,7 @@ impl fmt::Display for Card {
 }
 
 impl FromStr for Card {
+    /// `parse::<Card>()` 失败时返回可匹配的结构化错误，而不是 panic。
     type Err = CardParseError;
 
     /// 解析由“牌面 + 单字符花色”组成的具体牌文本。
@@ -247,6 +285,8 @@ impl FromStr for Card {
 
         // 使用最后一个字符的位置切分，才能同时兼容一字符牌面 `A` 和两字符牌面 `10`。
         let (rank_text, suit_text) = input.split_at(suit_start);
+        // 这里没有重复实现 Rank/Suit 的解析规则，而是复用它们各自的 FromStr。
+        // `?` 表示：解析成功就取出值；解析失败就立刻把错误返回给调用者。
         let rank = rank_text.parse()?;
         let suit = suit_text.parse()?;
         Ok(Self::new(rank, suit))
@@ -283,10 +323,13 @@ impl fmt::Display for CardParseError {
     }
 }
 
+// Error 是一个标记性质的标准库 trait。实现后，该错误可以被通用错误处理库接收。
 impl Error for CardParseError {}
 
 #[cfg(test)]
 mod tests {
+    // 单元测试放在同一文件中，因此能测试公开接口，也能帮助初学者从输入输出
+    // 反向理解每个类型的约束。
     use super::{Card, CardParseError, Rank, Suit};
 
     #[test]
