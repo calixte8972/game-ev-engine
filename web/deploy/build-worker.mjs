@@ -61,9 +61,10 @@ export default {
 
     const headers = new Headers({
       "Content-Type": asset.contentType,
-      "Cache-Control": requestedPath === "/index.html"
-        ? "no-cache"
-        : "public, max-age=3600",
+      // 首页、JavaScript 与 WASM 必须来自同一个部署版本。
+      // no-cache 仍允许浏览器保留副本，但每次访问都会确认资源是否变化，
+      // 避免发布后出现“新 HTML + 旧 JS/WASM”的混合状态。
+      "Cache-Control": "no-cache",
       "X-Content-Type-Options": "nosniff",
     });
 

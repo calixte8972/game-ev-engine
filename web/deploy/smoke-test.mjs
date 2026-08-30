@@ -11,7 +11,14 @@ import {
 const deployDirectory = dirname(fileURLToPath(import.meta.url));
 const webDirectory = resolve(deployDirectory, "..");
 const wasmBytes = readFileSync(resolve(webDirectory, "pkg/game_ev_engine_bg.wasm"));
+const pageHtml = readFileSync(resolve(webDirectory, "index.html"), "utf8");
 initSync({ module: wasmBytes });
+
+// min=0.01 与 step=100 会让 10000 产生 stepMismatch，浏览器会直接阻止
+// 表单提交。金额使用 0.01 步长，既允许整数本金，也允许带分的金额。
+if (!/<input id="bankroll"[^>]*step="0\.01"/.test(pageHtml)) {
+  throw new Error("初始本金输入框必须允许 0.01 精度，避免整数本金被判为非法");
+}
 
 const manual = JSON.parse(
   analyzeBaccaratStrategy(
