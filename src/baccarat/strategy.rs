@@ -14,7 +14,7 @@ use crate::{MainBet, MainBetAnalysis, SideBet, SideBetAnalysis};
 pub enum BetTarget {
     /// 闲、庄、和中的一种主注。
     Main(MainBet),
-    /// 任意对子、庄对、闲对、完美对子、幸运 7 或超级幸运 7。
+    /// 任意对子、庄对、闲对、完美对子、大、小、幸运 7 或超级幸运 7。
     Side(SideBet),
 }
 
@@ -43,7 +43,7 @@ pub struct BettingPolicy {
     rebate: RebateRule,
     /// 允许下注所需达到的最低有效 EV。
     minimum_effective_ev: f64,
-    /// 六种边注各自必须达到的最低基础 EV。边注目前不叠加主注返水。
+    /// 八种边注各自必须达到的最低基础 EV。边注目前不叠加主注返水。
     minimum_side_bet_ev: f64,
 }
 
@@ -56,7 +56,7 @@ pub enum CombinedBetAction {
     Skip { reason: SkipReason },
 }
 
-/// 九种下注目标共同比较后的可审计结果。
+/// 十一种下注目标共同比较后的可审计结果。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CombinedBetDecision {
     candidate: BetTarget,
@@ -153,7 +153,7 @@ impl BettingPolicy {
         self.minimum_effective_ev
     }
 
-    /// 返回六种边注共同使用的最低 EV 门槛。
+    /// 返回八种边注共同使用的最低 EV 门槛。
     pub const fn minimum_side_bet_ev(&self) -> f64 {
         self.minimum_side_bet_ev
     }
@@ -191,7 +191,7 @@ impl BettingPolicy {
         }
     }
 
-    /// 同时比较三种主注和六种边注，并选择达到各自门槛后的最高 EV。
+    /// 同时比较三种主注和八种边注，并选择达到各自门槛后的最高 EV。
     ///
     /// 这里先过滤门槛再比较，避免一个“EV 虽高但没有达到更严格边注门槛”的
     /// 候选挡住另一个已经满足主注门槛的可下注方向。
@@ -337,7 +337,7 @@ mod tests {
     }
 
     fn side_analysis_with_positive_any_pair() -> SideBetAnalysis {
-        let weights = SideBetWeights::new(100, 30, 0, 0, 0, 0, 0, 0, 0, 0);
+        let weights = SideBetWeights::new(100, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         SideBetAnalysis::calculate(weights, SideBetRules::default())
     }
 

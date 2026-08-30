@@ -38,6 +38,8 @@ struct CompositionCoefficient {
     super_lucky_seven_four_cards_permutations: u16,
     super_lucky_seven_five_cards_permutations: u16,
     super_lucky_seven_six_cards_permutations: u16,
+    small_permutations: u16,
+    big_permutations: u16,
 }
 
 /// 全进程共享系数表。同一 WASM 实例内的所有牌靴状态只初始化一次。
@@ -78,6 +80,8 @@ struct PointOutcomeAccumulator {
     super_lucky_seven_four_cards: u64,
     super_lucky_seven_five_cards: u64,
     super_lucky_seven_six_cards: u64,
+    small: u64,
+    big: u64,
 }
 
 impl PointOutcomeAccumulator {
@@ -99,6 +103,8 @@ impl PointOutcomeAccumulator {
             pairs.banker,
             pairs.player,
             pairs.perfect,
+            self.big,
+            self.small,
             self.lucky_seven_two_cards,
             self.lucky_seven_three_cards,
             self.super_lucky_seven_four_cards,
@@ -141,6 +147,8 @@ fn point_outcomes(shoe: &Shoe) -> Result<PointOutcomeAccumulator, ProbabilityErr
     let mut super_lucky_seven_four_cards = 0_u64;
     let mut super_lucky_seven_five_cards = 0_u64;
     let mut super_lucky_seven_six_cards = 0_u64;
+    let mut small = 0_u64;
+    let mut big = 0_u64;
 
     for coefficient in composition_table() {
         // 同一点数组成的所有抽象排列，对应相同数量的物理发牌序列。
@@ -203,6 +211,16 @@ fn point_outcomes(shoe: &Shoe) -> Result<PointOutcomeAccumulator, ProbabilityErr
             physical_sequences_per_permutation,
             coefficient.super_lucky_seven_six_cards_permutations,
         )?;
+        small = add_weight(
+            small,
+            physical_sequences_per_permutation,
+            coefficient.small_permutations,
+        )?;
+        big = add_weight(
+            big,
+            physical_sequences_per_permutation,
+            coefficient.big_permutations,
+        )?;
     }
 
     Ok(PointOutcomeAccumulator {
@@ -216,6 +234,8 @@ fn point_outcomes(shoe: &Shoe) -> Result<PointOutcomeAccumulator, ProbabilityErr
         super_lucky_seven_four_cards,
         super_lucky_seven_five_cards,
         super_lucky_seven_six_cards,
+        small,
+        big,
     })
 }
 
@@ -444,6 +464,8 @@ fn enumerate_abstract_sequences(
                     super_lucky_seven_four_cards_permutations: 0,
                     super_lucky_seven_five_cards_permutations: 0,
                     super_lucky_seven_six_cards_permutations: 0,
+                    small_permutations: 0,
+                    big_permutations: 0,
                 });
 
         match result.outcome() {
@@ -453,6 +475,11 @@ fn enumerate_abstract_sequences(
         }
         if result.outcome() == RoundOutcome::Banker && result.banker_total() == 6 {
             coefficient.banker_win_on_six_permutations += 1;
+        }
+        if result.card_count() == 4 {
+            coefficient.small_permutations += 1;
+        } else {
+            coefficient.big_permutations += 1;
         }
         if result.outcome() == RoundOutcome::Player && result.player_total() == 7 {
             if result.player_card_count() == 2 {
@@ -522,6 +549,10 @@ mod tests {
                     + coefficient.banker_permutations
                     + coefficient.tie_permutations
                     > 0
+                && coefficient.small_permutations + coefficient.big_permutations
+                    == coefficient.player_permutations
+                        + coefficient.banker_permutations
+                        + coefficient.tie_permutations
         }));
     }
 

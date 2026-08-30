@@ -284,7 +284,7 @@ pub fn analyze_baccarat_strategy_json_with_side_bets(
             banker: BrowserBetMetrics::from_analysis(analysis, MainBet::Banker, rebate),
             tie: BrowserBetMetrics::from_analysis(analysis, MainBet::Tie, rebate),
         },
-        side_bet_rules: "pairs_5_11_perfect_25_lucky_7_6_15_super_30_40_100",
+        side_bet_rules: "pairs_5_11_perfect_25_big_0_54_small_1_5_lucky_7_6_15_super_30_40_100",
         side_bets: BrowserSideBets {
             any_pair: BrowserSideBetMetrics::new(side_analysis.metrics(SideBet::AnyPair), "5:1"),
             banker_pair: BrowserSideBetMetrics::new(
@@ -299,6 +299,8 @@ pub fn analyze_baccarat_strategy_json_with_side_bets(
                 side_analysis.metrics(SideBet::PerfectPair),
                 "25:1",
             ),
+            big: BrowserSideBetMetrics::new(side_analysis.metrics(SideBet::Big), "0.54:1"),
+            small: BrowserSideBetMetrics::new(side_analysis.metrics(SideBet::Small), "1.5:1"),
             lucky_seven: BrowserSideBetMetrics::new(
                 side_analysis.metrics(SideBet::LuckySeven),
                 "闲2张 6:1 / 闲3张 15:1",
@@ -483,6 +485,8 @@ struct BrowserSideBets {
     banker_pair: BrowserSideBetMetrics,
     player_pair: BrowserSideBetMetrics,
     perfect_pair: BrowserSideBetMetrics,
+    big: BrowserSideBetMetrics,
+    small: BrowserSideBetMetrics,
     lucky_seven: BrowserSideBetMetrics,
     super_lucky_seven: BrowserSideBetMetrics,
 }
@@ -575,10 +579,12 @@ mod tests {
         assert_eq!(value["recommendation"]["candidate_bet"], "banker");
         assert_eq!(
             value["side_bet_rules"],
-            "pairs_5_11_perfect_25_lucky_7_6_15_super_30_40_100"
+            "pairs_5_11_perfect_25_big_0_54_small_1_5_lucky_7_6_15_super_30_40_100"
         );
         assert_eq!(value["side_bets"]["banker_pair"]["payout"], "11:1");
         assert_eq!(value["side_bets"]["perfect_pair"]["payout"], "25:1");
+        assert_eq!(value["side_bets"]["big"]["payout"], "0.54:1");
+        assert_eq!(value["side_bets"]["small"]["payout"], "1.5:1");
         assert!(
             value["side_bets"]["lucky_seven"]["probability"]
                 .as_f64()

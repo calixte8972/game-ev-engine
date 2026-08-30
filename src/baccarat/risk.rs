@@ -217,7 +217,7 @@ impl KellyPolicy {
         })
     }
 
-    /// 为六种边注增加独立金额上限。
+    /// 为八种边注增加独立金额上限。
     pub fn with_side_bet_limit(mut self, side_bet_limit: f64) -> Result<Self, KellyError> {
         validate_limit(
             side_bet_limit,
@@ -413,7 +413,7 @@ impl KellyPolicy {
         }
     }
 
-    /// 从九种下注目标中选择方向，并生成受边注独立上限保护的最终计划。
+    /// 从十一种下注目标中选择方向，并生成受边注独立上限保护的最终计划。
     pub fn plan_all(
         self,
         betting_policy: &BettingPolicy,
@@ -596,7 +596,7 @@ pub enum CombinedBetPlanAction {
     Skip { reason: BetPlanSkipReason },
 }
 
-/// 九种目标统一经过 EV 门槛、凯利公式和金额上限后的完整计划。
+/// 十一种目标统一经过 EV 门槛、凯利公式和金额上限后的完整计划。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CombinedBetPlan {
     decision: CombinedBetDecision,
@@ -711,7 +711,12 @@ pub fn side_bet_kelly_outcomes(
 ) -> Vec<KellyOutcome> {
     let total = weights.total_weight() as f64;
     let (tier_weights, payouts): (Vec<u64>, Vec<f64>) = match bet {
-        SideBet::AnyPair | SideBet::BankerPair | SideBet::PlayerPair | SideBet::PerfectPair => (
+        SideBet::AnyPair
+        | SideBet::BankerPair
+        | SideBet::PlayerPair
+        | SideBet::PerfectPair
+        | SideBet::Big
+        | SideBet::Small => (
             vec![weights.win_weight(bet)],
             vec![rules.payout(bet).expect("对子边注必须有单一赔付")],
         ),
@@ -1242,7 +1247,7 @@ mod tests {
 
     #[test]
     fn side_bet_kelly_uses_tier_distribution_and_the_side_limit() {
-        let weights = SideBetWeights::new(100, 30, 0, 0, 0, 0, 0, 0, 0, 0);
+        let weights = SideBetWeights::new(100, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
         let rules = SideBetRules::default();
         let outcomes = side_bet_kelly_outcomes(weights, rules, SideBet::AnyPair);
         let analysis = SideBetAnalysis::calculate(weights, rules);
