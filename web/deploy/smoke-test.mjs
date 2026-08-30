@@ -47,6 +47,11 @@ if (manual.side_bets.banker_pair.payout !== "11:1") {
   throw new Error("庄对赔付表没有进入 WASM 输出");
 }
 
+if (manual.side_bets.perfect_pair.payout !== "25:1"
+    || manual.side_bets.perfect_pair.probability <= 0) {
+  throw new Error("完美对子概率或赔付表没有进入 WASM 输出");
+}
+
 if (Math.abs(manual.side_bets.lucky_seven.rtp - 0.8170) > 0.00005) {
   throw new Error("幸运 7 的完整牌靴 RTP 偏离规则基线");
 }
@@ -74,6 +79,7 @@ const output = {
     amount: manual.recommendation.suggested_amount,
     side_bets: {
       banker_pair_probability: manual.side_bets.banker_pair.probability,
+      perfect_pair_probability: manual.side_bets.perfect_pair.probability,
       lucky_seven_rtp: manual.side_bets.lucky_seven.rtp,
       super_lucky_seven_rtp: manual.side_bets.super_lucky_seven.rtp,
     },

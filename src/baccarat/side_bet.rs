@@ -2,13 +2,13 @@
 //!
 //! 边注与主注分开建模，原因有两个：
 //!
-//! 1. 主注只需要最终庄、闲、和；对子必须查看起手牌 Rank；
+//! 1. 主注只需要最终庄、闲、和；普通对子必须查看 Rank，完美对子还要看花色；
 //! 2. 幸运 7 系列不是统一赔率，而是按闲家张数或全局总张数分档赔付。
 //!
 //! 当前默认赔付表如下，所有数字都是“净赔付”，本金另行返还：
 //!
 //! ```text
-//! 任意对子 5:1；庄对/闲对 11:1
+//! 任意对子 5:1；庄对/闲对 11:1；完美对子 25:1
 //! 幸运 7：闲两张 7 点胜 6:1；闲三张 7 点胜 15:1
 //! 超级幸运 7：闲 7 对庄 6，总牌数 4/5/6 时分别 30/40/100:1
 //! ```
@@ -20,7 +20,7 @@ use std::{error::Error, fmt};
 
 use super::RoundResult;
 
-/// 当前支持的五种边注。
+/// 当前支持的六种边注。
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SideBet {
     /// 庄家或闲家至少一方的起手两张牌 Rank 相同。
@@ -29,6 +29,8 @@ pub enum SideBet {
     BankerPair,
     /// 闲家起手两张牌 Rank 相同。
     PlayerPair,
+    /// 庄家或闲家至少一方的起手两张牌 Rank 和花色都相同。
+    PerfectPair,
     /// 闲家以 7 点获胜，并按闲家使用两张或三张牌分档。
     LuckySeven,
     /// 闲 7 点战胜庄 6 点，并按双方合计 4、5、6 张牌分档。
@@ -37,10 +39,11 @@ pub enum SideBet {
 
 impl SideBet {
     /// 策略比较时使用的稳定顺序。EV 完全相同时，排在前面的边注优先。
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::AnyPair,
         Self::BankerPair,
         Self::PlayerPair,
+        Self::PerfectPair,
         Self::LuckySeven,
         Self::SuperLuckySeven,
     ];
@@ -51,18 +54,20 @@ impl SideBet {
             Self::AnyPair => "any_pair",
             Self::BankerPair => "banker_pair",
             Self::PlayerPair => "player_pair",
+            Self::PerfectPair => "perfect_pair",
             Self::LuckySeven => "lucky_seven",
             Self::SuperLuckySeven => "super_lucky_seven",
         }
     }
 }
 
-/// 五种边注使用的净赔付表。
+/// 六种边注使用的净赔付表。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SideBetRules {
     any_pair: f64,
     banker_pair: f64,
     player_pair: f64,
+    perfect_pair: f64,
     lucky_seven_two_cards: f64,
     lucky_seven_three_cards: f64,
     super_lucky_seven_four_cards: f64,
@@ -77,6 +82,7 @@ impl SideBetRules {
             any_pair: 5.0,
             banker_pair: 11.0,
             player_pair: 11.0,
+            perfect_pair: 25.0,
             lucky_seven_two_cards: 6.0,
             lucky_seven_three_cards: 15.0,
             super_lucky_seven_four_cards: 30.0,
@@ -91,6 +97,7 @@ impl SideBetRules {
         any_pair: f64,
         banker_pair: f64,
         player_pair: f64,
+        perfect_pair: f64,
         lucky_seven_two_cards: f64,
         lucky_seven_three_cards: f64,
         super_lucky_seven_four_cards: f64,
@@ -101,6 +108,7 @@ impl SideBetRules {
             ("any_pair", any_pair),
             ("banker_pair", banker_pair),
             ("player_pair", player_pair),
+            ("perfect_pair", perfect_pair),
             ("lucky_seven_two_cards", lucky_seven_two_cards),
             ("lucky_seven_three_cards", lucky_seven_three_cards),
             ("super_lucky_seven_four_cards", super_lucky_seven_four_cards),
@@ -118,6 +126,7 @@ impl SideBetRules {
             any_pair,
             banker_pair,
             player_pair,
+            perfect_pair,
             lucky_seven_two_cards,
             lucky_seven_three_cards,
             super_lucky_seven_four_cards,
@@ -132,6 +141,7 @@ impl SideBetRules {
             SideBet::AnyPair => Some(self.any_pair),
             SideBet::BankerPair => Some(self.banker_pair),
             SideBet::PlayerPair => Some(self.player_pair),
+            SideBet::PerfectPair => Some(self.perfect_pair),
             SideBet::LuckySeven | SideBet::SuperLuckySeven => None,
         }
     }
@@ -159,11 +169,16 @@ impl SideBetRules {
         let banker = round.banker_hand();
         let player_pair = player.first_card().rank() == player.second_card().rank();
         let banker_pair = banker.first_card().rank() == banker.second_card().rank();
+        let player_perfect_pair = player.first_card() == player.second_card();
+        let banker_perfect_pair = banker.first_card() == banker.second_card();
 
         let payout = match bet {
             SideBet::AnyPair if player_pair || banker_pair => Some(self.any_pair),
             SideBet::BankerPair if banker_pair => Some(self.banker_pair),
             SideBet::PlayerPair if player_pair => Some(self.player_pair),
+            SideBet::PerfectPair if player_perfect_pair || banker_perfect_pair => {
+                Some(self.perfect_pair)
+            }
             SideBet::LuckySeven if player.total() == 7 && player.total() > banker.total() => {
                 Some(if player.card_count() == 2 {
                     self.lucky_seven_two_cards
@@ -199,6 +214,7 @@ pub struct SideBetWeights {
     any_pair: u64,
     banker_pair: u64,
     player_pair: u64,
+    perfect_pair: u64,
     lucky_seven_two_cards: u64,
     lucky_seven_three_cards: u64,
     super_lucky_seven_four_cards: u64,
@@ -214,6 +230,7 @@ impl SideBetWeights {
         any_pair: u64,
         banker_pair: u64,
         player_pair: u64,
+        perfect_pair: u64,
         lucky_seven_two_cards: u64,
         lucky_seven_three_cards: u64,
         super_lucky_seven_four_cards: u64,
@@ -225,6 +242,7 @@ impl SideBetWeights {
                 any_pair,
                 banker_pair,
                 player_pair,
+                perfect_pair,
                 lucky_seven_two_cards,
                 lucky_seven_three_cards,
                 super_lucky_seven_four_cards,
@@ -240,6 +258,7 @@ impl SideBetWeights {
             any_pair,
             banker_pair,
             player_pair,
+            perfect_pair,
             lucky_seven_two_cards,
             lucky_seven_three_cards,
             super_lucky_seven_four_cards,
@@ -259,6 +278,7 @@ impl SideBetWeights {
             SideBet::AnyPair => self.any_pair,
             SideBet::BankerPair => self.banker_pair,
             SideBet::PlayerPair => self.player_pair,
+            SideBet::PerfectPair => self.perfect_pair,
             SideBet::LuckySeven => self.lucky_seven_two_cards + self.lucky_seven_three_cards,
             SideBet::SuperLuckySeven => {
                 self.super_lucky_seven_four_cards
@@ -317,12 +337,13 @@ impl SideBetMetrics {
     }
 }
 
-/// 五种边注在同一牌靴和赔付表下的分析结果。
+/// 六种边注在同一牌靴和赔付表下的分析结果。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SideBetAnalysis {
     any_pair: SideBetMetrics,
     banker_pair: SideBetMetrics,
     player_pair: SideBetMetrics,
+    perfect_pair: SideBetMetrics,
     lucky_seven: SideBetMetrics,
     super_lucky_seven: SideBetMetrics,
 }
@@ -343,6 +364,7 @@ impl SideBetAnalysis {
             any_pair: single(SideBet::AnyPair),
             banker_pair: single(SideBet::BankerPair),
             player_pair: single(SideBet::PlayerPair),
+            perfect_pair: single(SideBet::PerfectPair),
             lucky_seven: metrics_from_tiers(
                 total,
                 &weights.lucky_seven_tier_weights(),
@@ -362,6 +384,7 @@ impl SideBetAnalysis {
             SideBet::AnyPair => self.any_pair,
             SideBet::BankerPair => self.banker_pair,
             SideBet::PlayerPair => self.player_pair,
+            SideBet::PerfectPair => self.perfect_pair,
             SideBet::LuckySeven => self.lucky_seven,
             SideBet::SuperLuckySeven => self.super_lucky_seven,
         }
@@ -446,6 +469,16 @@ mod tests {
             0.000_05,
         );
         assert_close(
+            analysis.metrics(SideBet::PerfectPair).probability(),
+            0.033_450_234_245_752_35,
+            1e-15,
+        );
+        assert_close(
+            analysis.metrics(SideBet::PerfectPair).rtp(),
+            0.869_706_090_389_561_1,
+            1e-12,
+        );
+        assert_close(
             analysis.metrics(SideBet::LuckySeven).rtp(),
             0.8170,
             0.000_05,
@@ -471,13 +504,30 @@ mod tests {
     }
 
     #[test]
+    fn perfect_pair_uses_exact_card_identity_and_is_impossible_in_one_deck() {
+        let eight_deck_weights =
+            calculate_side_bet_outcomes(&Shoe::default()).expect("完整八副牌应该能枚举边注");
+        let probability = eight_deck_weights.probability(SideBet::PerfectPair);
+
+        // 单方完美对概率为 7/415；本边注同时覆盖庄、闲任一方，并用容斥法
+        // 扣除双方同时命中的重叠，所以应低于简单的两倍。
+        assert!(probability > 7.0 / 415.0);
+        assert!(probability < 2.0 * 7.0 / 415.0);
+
+        let one_deck = Shoe::new(1).expect("一副牌应该合法");
+        let one_deck_weights =
+            calculate_side_bet_outcomes(&one_deck).expect("完整一副牌应该能枚举边注");
+        assert_eq!(one_deck_weights.probability(SideBet::PerfectPair), 0.0);
+    }
+
+    #[test]
     fn payout_changes_ev_without_changing_probability() {
         let weights =
             calculate_side_bet_outcomes(&Shoe::default()).expect("完整八副牌应该能枚举边注");
         let default = SideBetAnalysis::calculate(weights, SideBetRules::default());
         let generous = SideBetAnalysis::calculate(
             weights,
-            SideBetRules::with_payouts(6.0, 12.0, 12.0, 7.0, 16.0, 31.0, 41.0, 101.0)
+            SideBetRules::with_payouts(6.0, 12.0, 12.0, 26.0, 7.0, 16.0, 31.0, 41.0, 101.0)
                 .expect("测试赔付应合法"),
         );
 
@@ -492,10 +542,13 @@ mod tests {
     fn pair_side_bets_settle_from_the_two_initial_cards() {
         let rules = SideBetRules::default();
         let player_pair = round("4S AC 4H 2D");
+        let perfect_pair = round("4S AC 4S 2D");
 
         assert_eq!(rules.settle(SideBet::AnyPair, player_pair), 5.0);
         assert_eq!(rules.settle(SideBet::PlayerPair, player_pair), 11.0);
         assert_eq!(rules.settle(SideBet::BankerPair, player_pair), -1.0);
+        assert_eq!(rules.settle(SideBet::PerfectPair, player_pair), -1.0);
+        assert_eq!(rules.settle(SideBet::PerfectPair, perfect_pair), 25.0);
     }
 
     #[test]

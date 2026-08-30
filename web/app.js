@@ -33,6 +33,7 @@ const sideBetLabels = {
   any_pair: "任意对子",
   banker_pair: "庄对",
   player_pair: "闲对",
+  perfect_pair: "完美对子",
   lucky_seven: "幸运 7",
   super_lucky_seven: "超级幸运 7",
 };

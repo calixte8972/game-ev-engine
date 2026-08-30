@@ -67,6 +67,15 @@ impl Shoe {
         self.counts[card.index()]
     }
 
+    /// 返回 52 种具体牌的剩余数量快照。
+    ///
+    /// 数组下标与 [`Card::index`] 完全一致，所以这里既保留 Rank，也保留花色。
+    /// 普通对子只需要 [`Self::rank_counts`]；完美对子要求两张牌的 Rank 和花色
+    /// 都相同，因此概率枚举和 CSV 缓存必须使用这份更细粒度的快照。
+    pub const fn card_counts(&self) -> [u8; Card::DISTINCT_COUNT] {
+        self.counts
+    }
+
     /// 从牌靴中扣除一张已知的牌。
     pub fn remove(&mut self, card: Card) -> Result<(), ShoeError> {
         // &mut self 表示调用者必须提供可变借用，因为这个函数会修改牌靴。

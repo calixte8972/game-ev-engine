@@ -48,7 +48,7 @@ pub fn calculate_main_outcomes(shoe: &Shoe) -> Result<OutcomeWeights, Probabilit
     point_outcomes(shoe)?.main_weights()
 }
 
-/// 根据当前牌靴计算任意对子、庄对、闲对、幸运 7 和超级幸运 7 权重。
+/// 根据当前牌靴计算对子、完美对子、幸运 7 和超级幸运 7 权重。
 pub fn calculate_side_bet_outcomes(shoe: &Shoe) -> Result<SideBetWeights, ProbabilityError> {
     let point = point_outcomes(shoe)?;
     let pairs = pair_weights(shoe)?;
@@ -98,6 +98,7 @@ impl PointOutcomeAccumulator {
             pairs.any,
             pairs.banker,
             pairs.player,
+            pairs.perfect,
             self.lucky_seven_two_cards,
             self.lucky_seven_three_cards,
             self.super_lucky_seven_four_cards,
@@ -224,6 +225,7 @@ struct PairWeights {
     any: u64,
     banker: u64,
     player: u64,
+    perfect: u64,
 }
 
 fn pair_weights(shoe: &Shoe) -> Result<PairWeights, ProbabilityError> {
@@ -236,7 +238,12 @@ fn pair_weights(shoe: &Shoe) -> Result<PairWeights, ProbabilityError> {
 
     let mut counts = shoe.rank_counts();
     let completion_weight = falling_factorial(total_cards - 4, 2);
-    let mut result = PairWeights::default();
+    let mut result = PairWeights {
+        perfect: perfect_pair_first_four_weight(shoe)?
+            .checked_mul(completion_weight)
+            .ok_or(ProbabilityError::WeightOverflow)?,
+        ..PairWeights::default()
+    };
 
     // 发牌顺序仍是 P1、B1、P2、B2。循环中的 copies 让同 Rank 下不同花色、
     // 不同副牌的物理牌都被正确计入，同时扣减 counts 表达不放回抽牌。
@@ -307,6 +314,77 @@ fn pair_weights(shoe: &Shoe) -> Result<PairWeights, ProbabilityError> {
     }
 
     Ok(result)
+}
+
+/// 计算前四张牌中“闲完美对子或庄完美对子”的有序物理序列数。
+///
+/// 完美对子要求两张牌是完全相同的具体牌，例如两张黑桃 A。八副牌里每种
+/// 具体牌最多有 8 张，所以不能只看 Rank 聚合数量。
+///
+/// 设事件 P 为闲家 P1/P2 完美成对，事件 B 为庄家 B1/B2 完美成对：
+///
+/// ```text
+/// |P ∪ B| = |P| + |B| - |P ∩ B|
+/// ```
+///
+/// `single_hand` 计算一方完美成对后，另一方任取两张的序列数；两方对称，
+/// 所以乘 2。`both_hands` 再扣除同时命中的重复部分。这样只需遍历 52² 种
+/// 具体牌组合，不需要枚举 52⁴ 条前四张序列。
+fn perfect_pair_first_four_weight(shoe: &Shoe) -> Result<u64, ProbabilityError> {
+    let counts = shoe.card_counts();
+    let total = shoe.total_remaining();
+    let other_hand_weight = falling_factorial(total - 2, 2);
+
+    let mut single_hand = 0_u64;
+    for &count in &counts {
+        let pair_weight = if count >= 2 {
+            falling_factorial(u16::from(count), 2)
+        } else {
+            0
+        };
+        single_hand = single_hand
+            .checked_add(
+                pair_weight
+                    .checked_mul(other_hand_weight)
+                    .ok_or(ProbabilityError::WeightOverflow)?,
+            )
+            .ok_or(ProbabilityError::WeightOverflow)?;
+    }
+
+    let mut both_hands = 0_u64;
+    for (player_card, &player_count) in counts.iter().enumerate() {
+        for (banker_card, &banker_count) in counts.iter().enumerate() {
+            let weight = if player_card == banker_card {
+                if player_count >= 4 {
+                    falling_factorial(u16::from(player_count), 4)
+                } else {
+                    0
+                }
+            } else {
+                let player_pair = if player_count >= 2 {
+                    falling_factorial(u16::from(player_count), 2)
+                } else {
+                    0
+                };
+                let banker_pair = if banker_count >= 2 {
+                    falling_factorial(u16::from(banker_count), 2)
+                } else {
+                    0
+                };
+                player_pair
+                    .checked_mul(banker_pair)
+                    .ok_or(ProbabilityError::WeightOverflow)?
+            };
+            both_hands = both_hands
+                .checked_add(weight)
+                .ok_or(ProbabilityError::WeightOverflow)?;
+        }
+    }
+
+    single_hand
+        .checked_mul(2)
+        .and_then(|both_sides| both_sides.checked_sub(both_hands))
+        .ok_or(ProbabilityError::WeightOverflow)
 }
 
 /// 把“一种排列的物理权重 × 该结果排列数”安全加入结果桶。

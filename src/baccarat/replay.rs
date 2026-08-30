@@ -102,7 +102,7 @@ impl CsvReplayConfig {
         )
     }
 
-    /// 创建允许五种边注参与方向选择的完整回放配置。
+    /// 创建允许六种边注参与方向选择的完整回放配置。
     #[allow(clippy::too_many_arguments)]
     pub fn with_side_bets(
         decks: u8,
@@ -245,6 +245,7 @@ pub struct CsvBetCounts {
     pub any_pair: u64,
     pub banker_pair: u64,
     pub player_pair: u64,
+    pub perfect_pair: u64,
     pub lucky_seven: u64,
     pub super_lucky_seven: u64,
 }
@@ -258,6 +259,7 @@ impl CsvBetCounts {
             BetTarget::Side(SideBet::AnyPair) => self.any_pair += 1,
             BetTarget::Side(SideBet::BankerPair) => self.banker_pair += 1,
             BetTarget::Side(SideBet::PlayerPair) => self.player_pair += 1,
+            BetTarget::Side(SideBet::PerfectPair) => self.perfect_pair += 1,
             BetTarget::Side(SideBet::LuckySeven) => self.lucky_seven += 1,
             BetTarget::Side(SideBet::SuperLuckySeven) => self.super_lucky_seven += 1,
         }
@@ -634,9 +636,11 @@ fn replay_rounds(
         shoes.insert(key, shoe);
     }
 
-    // 对子概率需要 13 种 Rank 的剩余数量；这份键也足以推导主注使用的
-    // 0～9 点数组，因此主注与边注可以安全共用同一个缓存条目。
-    let mut probability_cache = HashMap::<[u16; 13], (OutcomeWeights, SideBetWeights)>::new();
+    // 完美对子概率必须区分 52 种“Rank + 花色”。如果仍用 13 种 Rank 数量
+    // 作为键，不同花色耗牌状态会错误命中同一个缓存条目。52 类具体牌快照也
+    // 足以推导普通对子和主注点数，因此三类概率可以安全共用同一个缓存。
+    let mut probability_cache =
+        HashMap::<[u8; Card::DISTINCT_COUNT], (OutcomeWeights, SideBetWeights)>::new();
     let mut summary = CsvReplaySummary {
         replayed_sessions: eligible_sessions.len() as u64,
         initial_bankroll: config.initial_bankroll,
@@ -656,8 +660,8 @@ fn replay_rounds(
         let shoe = shoes.get_mut(&key).expect("可回放场次应该已经创建牌靴");
 
         // 先使用本局发牌前的牌靴计算，随后才允许查看真实结果并扣牌。
-        let rank_counts = shoe.rank_counts();
-        let (weights, side_weights) = if let Some(weights) = probability_cache.get(&rank_counts) {
+        let card_counts = shoe.card_counts();
+        let (weights, side_weights) = if let Some(weights) = probability_cache.get(&card_counts) {
             summary.probability_cache_hits += 1;
             *weights
         } else {
@@ -670,7 +674,7 @@ fn replay_rounds(
                 }
             })?;
             summary.probability_cache_misses += 1;
-            probability_cache.insert(rank_counts, weights);
+            probability_cache.insert(card_counts, weights);
             weights
         };
 
