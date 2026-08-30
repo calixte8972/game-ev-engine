@@ -12,9 +12,10 @@
 use serde::Serialize;
 
 use crate::{
-    BetPlanSkipReason, BettingPolicy, Card, CombinedBetPlanAction, CsvReplayConfig,
-    EffectiveBetMetrics, KellyPolicy, MainBet, MainBetAnalysis, MainBetRules, RebateRule, Shoe,
-    SideBet, SideBetAnalysis, SideBetMetrics, SideBetRules, SkipReason, StakeSizingStrategy,
+    BetPlanSkipReason, BettingPolicy, BlackjackAnalysis, BlackjackRules, Card,
+    CombinedBetPlanAction, CsvReplayConfig, EffectiveBetMetrics, KellyPolicy, MainBet,
+    MainBetAnalysis, MainBetRules, RebateRule, Shoe, SideBet, SideBetAnalysis, SideBetMetrics,
+    SideBetRules, SkipReason, StakeSizingStrategy, analyze_blackjack_hand,
     calculate_main_and_side_outcomes, replay_csv_text,
 };
 
@@ -119,6 +120,117 @@ pub fn replay_baccarat_csv(
         side_bet_limit,
     )
     .map_err(|message| JsValue::from_str(&message))
+}
+
+/// 在浏览器中分析一手已经发出的二十一点起手牌。
+///
+/// 与百家乐下一局预测不同，这个入口位于“玩家已下注并看到起手牌”之后：
+/// 它负责比较停牌、补牌、加倍、分牌和投降，不会拿动作 EV 倒推初始下注金额。
+/// `current_base_stake` 只用于告诉页面加倍或分牌还需要追加多少钱。
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = analyzeBlackjack)]
+pub fn analyze_blackjack(
+    source_mode: &str,
+    decks: u8,
+    shoe_cards_text: &str,
+    player_cards_text: &str,
+    dealer_upcard_text: &str,
+    dealer_hits_soft_17: bool,
+    blackjack_payout: f64,
+    late_surrender: bool,
+    current_base_stake: f64,
+) -> Result<String, JsValue> {
+    analyze_blackjack_json(
+        source_mode,
+        decks,
+        shoe_cards_text,
+        player_cards_text,
+        dealer_upcard_text,
+        dealer_hits_soft_17,
+        blackjack_payout,
+        late_surrender,
+        current_base_stake,
+    )
+    .map_err(|message| JsValue::from_str(&message))
+}
+
+/// 普通 Rust 测试与 WebAssembly 共用的二十一点 JSON 适配函数。
+///
+/// `consumed` 模式中的 `shoe_cards_text` 只填写本手开始前已经离开牌靴的牌；
+/// 本函数随后再扣除玩家两张牌与庄家明牌。`remaining` 模式则要求输入当前未知
+/// 牌靴的完整集合，玩家牌和庄家明牌已经不在其中，因此不会重复扣除。
+#[allow(clippy::too_many_arguments)]
+pub fn analyze_blackjack_json(
+    source_mode: &str,
+    decks: u8,
+    shoe_cards_text: &str,
+    player_cards_text: &str,
+    dealer_upcard_text: &str,
+    dealer_hits_soft_17: bool,
+    blackjack_payout: f64,
+    late_surrender: bool,
+    current_base_stake: f64,
+) -> Result<String, String> {
+    if !current_base_stake.is_finite() || current_base_stake <= 0.0 {
+        return Err("当前底注必须是有限正数".to_owned());
+    }
+
+    let shoe_cards = parse_cards(shoe_cards_text)?;
+    let player_cards = parse_cards(player_cards_text)?;
+    if player_cards.len() != 2 {
+        return Err(format!(
+            "玩家起手牌必须正好是 2 张，当前输入了 {} 张",
+            player_cards.len()
+        ));
+    }
+    let dealer_cards = parse_cards(dealer_upcard_text)?;
+    if dealer_cards.len() != 1 {
+        return Err(format!(
+            "庄家明牌必须正好是 1 张，当前输入了 {} 张",
+            dealer_cards.len()
+        ));
+    }
+    let dealer_upcard = dealer_cards[0];
+    let normalized_mode = source_mode.trim().to_ascii_lowercase();
+    let shoe = match normalized_mode.as_str() {
+        "consumed" => {
+            let mut shoe = Shoe::new(decks).map_err(|error| format!("副牌数不合法：{error}"))?;
+            shoe.remove_many(&shoe_cards)
+                .map_err(|error| format!("历史已消耗牌无法从牌靴扣除：{error}"))?;
+            shoe.remove_many(&player_cards)
+                .map_err(|error| format!("玩家起手牌无法从牌靴扣除：{error}"))?;
+            shoe.remove(dealer_upcard)
+                .map_err(|error| format!("庄家明牌无法从牌靴扣除：{error}"))?;
+            shoe
+        }
+        "remaining" => Shoe::from_remaining(decks, &shoe_cards)
+            .map_err(|error| format!("剩余牌无法构成合法牌靴：{error}"))?,
+        _ => return Err("输入模式必须是 consumed 或 remaining".to_owned()),
+    };
+
+    let rules = BlackjackRules {
+        dealer_hits_soft_17,
+        blackjack_payout,
+        late_surrender,
+        ..BlackjackRules::standard()
+    };
+    let analysis = analyze_blackjack_hand(&shoe, &player_cards, dealer_upcard, rules)
+        .map_err(|error| format!("二十一点 EV 计算失败：{error}"))?;
+    let additional_stake_units = match analysis.optimal_action.as_str() {
+        "double" | "split" => 1.0,
+        _ => 0.0,
+    };
+    let response = BrowserBlackjackAnalysis {
+        source_mode: normalized_mode,
+        decks,
+        input_shoe_card_count: shoe_cards.len(),
+        remaining_card_count: shoe.total_remaining(),
+        current_base_stake,
+        additional_stake_units,
+        suggested_additional_stake: additional_stake_units * current_base_stake,
+        analysis,
+    };
+    serde_json::to_string(&response).map_err(|error| format!("无法生成 JSON：{error}"))
 }
 
 /// 使用与 WASM 入口相同的规则生成浏览器 JSON。
@@ -469,6 +581,23 @@ fn parse_cards(input: &str) -> Result<Vec<Card>, String> {
         .collect()
 }
 
+/// 二十一点页面需要的结果包装。
+///
+/// `analysis` 保留 Rust 核心的完整动作 EV；外层只增加输入概要和“本手还需
+/// 追加多少筹码”。初始底注在看到牌之前已经发生，不能用事后动作 EV 重新决定。
+#[derive(Debug, Serialize)]
+struct BrowserBlackjackAnalysis {
+    source_mode: String,
+    decks: u8,
+    input_shoe_card_count: usize,
+    remaining_card_count: u16,
+    current_base_stake: f64,
+    additional_stake_units: f64,
+    suggested_additional_stake: f64,
+    #[serde(flatten)]
+    analysis: BlackjackAnalysis,
+}
+
 /// 浏览器需要的一次完整分析结果。
 #[derive(Debug, Serialize)]
 struct BrowserAnalysis {
@@ -583,8 +712,46 @@ mod tests {
 
     use super::{
         analyze_baccarat_json, analyze_baccarat_strategy_json,
-        analyze_baccarat_strategy_json_with_side_bets, replay_baccarat_csv_json,
+        analyze_baccarat_strategy_json_with_side_bets, analyze_blackjack_json,
+        replay_baccarat_csv_json,
     };
+
+    #[test]
+    fn blackjack_browser_api_removes_visible_cards_and_returns_action_evs() {
+        let json = analyze_blackjack_json(
+            "consumed",
+            "8".parse().unwrap(),
+            "",
+            "5S 6H",
+            "6C",
+            false,
+            1.5,
+            true,
+            100.0,
+        )
+        .expect("完整八副牌的 11 对 6 应能分析");
+        let value: Value = serde_json::from_str(&json).expect("接口应返回合法 JSON");
+
+        assert_eq!(value["source_mode"], "consumed");
+        assert_eq!(value["remaining_card_count"], 413);
+        assert_eq!(value["player_total"], 11);
+        assert_eq!(value["optimal_action"], "double");
+        assert_eq!(value["suggested_additional_stake"], 100.0);
+        assert!(value["actions"]["double"].as_f64().is_some());
+    }
+
+    #[test]
+    fn blackjack_browser_api_rejects_wrong_visible_card_counts() {
+        let player_error =
+            analyze_blackjack_json("consumed", 8, "", "5S", "6C", false, 1.5, true, 100.0)
+                .expect_err("玩家只有一张牌必须报错");
+        assert!(player_error.contains("正好是 2 张"));
+
+        let dealer_error =
+            analyze_blackjack_json("consumed", 8, "", "5S 6H", "", false, 1.5, true, 100.0)
+                .expect_err("缺少庄家明牌必须报错");
+        assert!(dealer_error.contains("正好是 1 张"));
+    }
 
     #[test]
     fn empty_consumed_input_analyzes_a_full_eight_deck_shoe() {

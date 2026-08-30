@@ -5,17 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="使用 Rust WebAssembly 在浏览器中计算百家乐牌靴 EV、凯利下注金额并回放游戏 CSV。"
+      content="使用 Rust WebAssembly 在浏览器中计算百家乐与二十一点有限牌靴 EV。"
     />
-    <title>百家乐牌靴策略与回放</title>
+    <title>牌靴 EV 策略实验室</title>
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
     <header class="app-header">
       <div>
         <p class="eyebrow">Rust · WebAssembly · Kelly</p>
-        <h1>百家乐牌靴策略与回放</h1>
-        <p class="subtitle">同一套 Rust 核心完成概率、EV、下注金额和历史盈亏计算。</p>
+        <h1>牌靴 EV 策略实验室</h1>
+        <p class="subtitle">同一套 Rust 核心在浏览器完成百家乐与二十一点有限牌靴计算。</p>
       </div>
       <div class="header-badges">
         <span class="privacy-badge"><span class="status-dot"></span>CSV 只在当前浏览器处理</span>
@@ -23,8 +23,13 @@
       </div>
     </header>
 
+    <nav class="game-tabs" aria-label="选择游戏">
+      <button class="game-tab active" type="button" data-game="baccarat" aria-selected="true">百家乐</button>
+      <button class="game-tab" type="button" data-game="blackjack" aria-selected="false">21 点</button>
+    </nav>
+
     <main class="workspace">
-      <section class="panel input-panel" aria-labelledby="strategy-title">
+      <section class="panel input-panel baccarat-section" aria-labelledby="strategy-title">
         <div class="section-heading">
           <div>
             <p class="section-number">01</p>
@@ -201,7 +206,7 @@
         <div id="error-message" class="error-message" role="alert" hidden></div>
       </section>
 
-      <section class="panel result-panel" aria-labelledby="result-title">
+      <section class="panel result-panel baccarat-section" aria-labelledby="result-title">
         <div class="section-heading">
           <div>
             <p class="section-number">02</p>
@@ -318,7 +323,7 @@
         </p>
       </section>
 
-      <section class="panel replay-panel" aria-labelledby="replay-title">
+      <section class="panel replay-panel baccarat-section" aria-labelledby="replay-title">
         <div class="section-heading replay-heading">
           <div>
             <p class="section-number">03</p>
@@ -467,10 +472,151 @@
           </div>
         </div>
       </section>
+
+      <section class="panel input-panel blackjack-section" aria-labelledby="blackjack-input-title" hidden>
+        <div class="section-heading">
+          <div>
+            <p class="section-number">21 · 01</p>
+            <h2 id="blackjack-input-title">起手牌与当前牌靴</h2>
+          </div>
+        </div>
+
+        <form id="blackjack-form">
+          <div class="strategy-grid">
+            <label class="field">
+              <span>牌靴副数</span>
+              <select id="blackjack-decks">
+                <option value="8" selected>8 副牌</option>
+                <option value="6">6 副牌</option>
+                <option value="4">4 副牌</option>
+                <option value="2">2 副牌</option>
+                <option value="1">1 副牌</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>天然 21 点赔付</span>
+              <select id="blackjack-payout">
+                <option value="1.5" selected>3:2</option>
+                <option value="1.2">6:5</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>庄家软 17</span>
+              <select id="dealer-soft-17">
+                <option value="stand" selected>S17 · 停牌</option>
+                <option value="hit">H17 · 补牌</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>晚投降</span>
+              <select id="late-surrender">
+                <option value="yes" selected>允许</option>
+                <option value="no">不允许</option>
+              </select>
+            </label>
+            <label class="field">
+              <span>当前原始底注</span>
+              <span class="input-prefix">
+                <span>¥</span>
+                <input id="blackjack-base-stake" type="number" value="100" min="0.01" step="1" />
+              </span>
+            </label>
+          </div>
+
+          <p class="field-help policy-help">
+            固定规则：美式暗牌与 Peek、任意两张可加倍、DAS、最多 4 手、可再次分 A；分 A 后每手只补一张。
+          </p>
+
+          <fieldset class="mode-switch shoe-heading">
+            <legend>牌靴输入表示什么</legend>
+            <label class="mode-option">
+              <input type="radio" name="blackjack-source-mode" value="consumed" checked />
+              <span><strong>本手前已消耗牌</strong><small>程序还会扣除玩家牌与庄家明牌</small></span>
+            </label>
+            <label class="mode-option">
+              <input type="radio" name="blackjack-source-mode" value="remaining" />
+              <span><strong>当前未知剩余牌</strong><small>不得再包含三张可见牌</small></span>
+            </label>
+          </fieldset>
+
+          <label class="field card-field" for="blackjack-shoe-cards">
+            <span>历史已消耗牌／当前未知剩余牌</span>
+            <textarea id="blackjack-shoe-cards" rows="6" spellcheck="false" placeholder="已消耗模式可留空"></textarea>
+          </label>
+          <p id="blackjack-mode-help" class="field-help">留空表示从完整牌靴开始分析本手。</p>
+
+          <div class="blackjack-visible-grid">
+            <label class="field">
+              <span>玩家起手牌（正好 2 张）</span>
+              <input id="blackjack-player-cards" value="5S 6H" spellcheck="false" />
+            </label>
+            <label class="field">
+              <span>庄家明牌（正好 1 张）</span>
+              <input id="blackjack-dealer-upcard" value="6C" spellcheck="false" />
+            </label>
+          </div>
+          <p class="card-format">格式与百家乐一致，例如 <code>AS</code>、<code>10H</code>。花色用于验证真实牌靴，21 点点数计算会聚合 10/J/Q/K。</p>
+
+          <div class="form-actions">
+            <button id="blackjack-analyze-button" class="primary-button" type="button" disabled>计算动作 EV</button>
+            <button id="blackjack-sample-button" class="secondary-button" type="button">载入 11 对 6</button>
+          </div>
+        </form>
+        <div id="blackjack-error" class="error-message" role="alert" hidden></div>
+      </section>
+
+      <section class="panel result-panel blackjack-section" aria-labelledby="blackjack-result-title" hidden>
+        <div class="section-heading">
+          <div>
+            <p class="section-number">21 · 02</p>
+            <h2 id="blackjack-result-title">动作决策</h2>
+          </div>
+          <span id="blackjack-calculation-time" class="calculation-time">—</span>
+        </div>
+
+        <div class="shoe-summary blackjack-summary">
+          <div><span>玩家点数</span><strong id="blackjack-player-total">—</strong></div>
+          <div><span>庄家明牌</span><strong id="blackjack-upcard">—</strong></div>
+          <div><span>未知剩余</span><strong id="blackjack-remaining">—</strong></div>
+          <div><span>建议追加</span><strong id="blackjack-additional-stake">—</strong></div>
+        </div>
+
+        <div id="blackjack-recommendation" class="recommendation" data-action="place">
+          <div>
+            <span class="recommendation-label">最优动作</span>
+            <strong id="blackjack-optimal-action">等待计算</strong>
+          </div>
+          <div class="recommendation-metric">
+            <span>动作 EV</span>
+            <strong id="blackjack-optimal-ev">—</strong>
+          </div>
+          <span id="blackjack-action-pill" class="action-pill">—</span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th scope="col">动作</th><th scope="col">净 EV / 原始底注</th><th scope="col">是否可用</th></tr></thead>
+            <tbody id="blackjack-action-body">
+              <tr class="placeholder-row"><td colspan="3">WASM 加载后显示每个动作的有限牌靴 EV。</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="blackjack-facts">
+          <div><span>Peek 前庄家 Blackjack 概率</span><strong id="dealer-blackjack-probability">—</strong></div>
+          <div><span>保险 EV（每 1 单位保险注）</span><strong id="insurance-ev">—</strong></div>
+        </div>
+        <p id="blackjack-result-note" class="result-note">
+          动作 EV 以已经投入的原始底注 1 单位计量；加倍与分牌结果包含两单位总风险。保险是独立边注。
+        </p>
+        <p class="result-note warning-note">
+          当前分牌 EV 是有限牌靴“单手边际 EV × 2”的估算，尚未联合枚举两手互相耗牌和再次分牌；停牌、补牌、加倍、投降及保险为有限牌靴计算。
+        </p>
+      </section>
     </main>
 
     <footer>
-      <span>标准庄赢赔 0.95；庄免佣时普通庄赢赔 1，庄以 6 点获胜赔 0.5；返水按配置加入。</span>
+      <span>百家乐支持策略与回放；21 点支持当前起手牌的有限牌靴动作 EV。</span>
       <span>历史收益不代表未来结果，EV 是概率期望，不是单局保证。</span>
     </footer>
 

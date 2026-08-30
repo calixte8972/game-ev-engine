@@ -1,4 +1,4 @@
-import init, { analyzeBaccaratStrategy } from "./pkg/game_ev_engine.js";
+import init, { analyzeBaccaratStrategy, analyzeBlackjack } from "./pkg/game_ev_engine.js";
 
 const form = document.querySelector("#analysis-form");
 const analyzeButton = document.querySelector("#analyze-button");
@@ -35,6 +35,16 @@ const strategyParameterWrapper = document.querySelector("#strategy-parameter-wra
 const strategyParameterInput = document.querySelector("#strategy-parameter");
 const strategyParameterPrefix = document.querySelector("#strategy-parameter-prefix");
 const strategyParameterSuffix = document.querySelector("#strategy-parameter-suffix");
+const gameTabs = document.querySelectorAll(".game-tab");
+const blackjackForm = document.querySelector("#blackjack-form");
+const blackjackAnalyzeButton = document.querySelector("#blackjack-analyze-button");
+const blackjackSampleButton = document.querySelector("#blackjack-sample-button");
+const blackjackShoeCards = document.querySelector("#blackjack-shoe-cards");
+const blackjackPlayerCards = document.querySelector("#blackjack-player-cards");
+const blackjackDealerUpcard = document.querySelector("#blackjack-dealer-upcard");
+const blackjackModeHelp = document.querySelector("#blackjack-mode-help");
+const blackjackError = document.querySelector("#blackjack-error");
+const blackjackActionBody = document.querySelector("#blackjack-action-body");
 
 const betLabels = {
   player: "闲",
@@ -91,6 +101,15 @@ const skipReasonLabels = {
   risk_limit_is_zero: "资金比例或金额上限为 0，本局跳过。",
 };
 
+const blackjackActionLabels = {
+  blackjack: "天然 21 点",
+  stand: "停牌",
+  hit: "补牌",
+  double: "加倍",
+  split: "分牌",
+  surrender: "投降",
+};
+
 const moneyFormatter = new Intl.NumberFormat("zh-CN", {
   minimumFractionDigits: 2,
   maximumFractionDigits: 2,
@@ -112,6 +131,10 @@ const replayWorker = new Worker(new URL("./replay-worker.js", import.meta.url), 
 
 function selectedMode() {
   return form.elements["source-mode"].value;
+}
+
+function selectedBlackjackMode() {
+  return blackjackForm.elements["blackjack-source-mode"].value;
 }
 
 function setText(selector, value) {
@@ -208,6 +231,31 @@ function updateModeHelp() {
   cardsInput.placeholder = consumed
     ? "例如：AS, 10H, KD, 7C"
     : "例如：AS, 2S, 3S, 4S, 5S, 6S…（全部剩余牌）";
+}
+
+function updateBlackjackModeHelp() {
+  const consumed = selectedBlackjackMode() === "consumed";
+  blackjackModeHelp.textContent = consumed
+    ? "填写本手开始前已经发走的牌；可留空。程序会另外扣除玩家两张牌和庄家明牌。"
+    : "填写扣除玩家两张牌、庄家明牌和未知暗牌之前，当前牌靴中所有未知牌的完整集合。";
+  blackjackShoeCards.placeholder = consumed
+    ? "已消耗模式可留空，例如：AS 10H KD 7C"
+    : "必须输入当前所有未知剩余牌（不得包含三张可见牌）";
+}
+
+function setActiveGame(game) {
+  for (const tab of gameTabs) {
+    const active = tab.dataset.game === game;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  }
+  for (const section of document.querySelectorAll(".baccarat-section")) {
+    section.hidden = game !== "baccarat";
+  }
+  for (const section of document.querySelectorAll(".blackjack-section")) {
+    section.hidden = game !== "blackjack";
+  }
+  if (game === "blackjack" && wasmReady) calculateBlackjack();
 }
 
 function metricCell(value, emphasize = false) {
@@ -325,6 +373,84 @@ function calculate() {
   } finally {
     analyzeButton.disabled = false;
     analyzeButton.textContent = "计算策略";
+  }
+}
+
+function blackjackActionCell(action, ev, optimalAction) {
+  const row = document.createElement("tr");
+  const name = detailCell(blackjackActionLabels[action]);
+  const available = ev != null;
+  const evCell = detailCell(available ? percent(ev) : "—", available ? evClass(ev) : "");
+  const status = detailCell(available ? (action === optimalAction ? "最优" : "可用") : "不可用");
+  if (action === optimalAction) row.classList.add("optimal-row");
+  row.append(name, evCell, status);
+  return row;
+}
+
+function renderBlackjack(data, elapsedMilliseconds) {
+  blackjackError.hidden = true;
+  const totalLabel = `${data.player_total}${data.player_soft ? "（软）" : "（硬）"}`;
+  setText("#blackjack-player-total", data.player_blackjack ? "天然 21 点" : totalLabel);
+  setText("#blackjack-upcard", data.dealer_upcard);
+  setText("#blackjack-remaining", `${data.remaining_card_count} 张`);
+  setText("#blackjack-additional-stake", money(data.suggested_additional_stake));
+  setText("#blackjack-calculation-time", `${elapsedMilliseconds.toFixed(1)} ms`);
+  setText("#blackjack-optimal-action", blackjackActionLabels[data.optimal_action]);
+  setText("#blackjack-optimal-ev", percent(data.optimal_ev));
+  applySignedClass(document.querySelector("#blackjack-optimal-ev"), data.optimal_ev);
+  setText("#blackjack-action-pill", blackjackActionLabels[data.optimal_action]);
+  setText(
+    "#dealer-blackjack-probability",
+    percent(data.dealer_blackjack_probability_before_peek),
+  );
+  setText("#insurance-ev", percent(data.insurance_ev));
+  if (data.insurance_ev != null) {
+    applySignedClass(document.querySelector("#insurance-ev"), data.insurance_ev);
+  } else {
+    document.querySelector("#insurance-ev").classList.remove("value-positive", "value-negative");
+  }
+
+  blackjackActionBody.replaceChildren();
+  for (const action of ["stand", "hit", "double", "split", "surrender"]) {
+    blackjackActionBody.append(
+      blackjackActionCell(action, data.actions[action], data.optimal_action),
+    );
+  }
+
+  const condition = data.conditional_on_no_dealer_blackjack
+    ? "庄家 A/10 明牌已按美式 Peek 排除暗牌 Blackjack；后续补牌仍保留未知暗牌的后验占牌影响。"
+    : "庄家明牌无需 Peek；未知暗牌仍真实占用牌靴。";
+  const extra = data.additional_stake_units > 0
+    ? `最优动作需在原底注 ${money(data.current_base_stake)} 之外追加 ${money(data.suggested_additional_stake)}。`
+    : "最优动作不需要追加筹码。";
+  setText("#blackjack-result-note", `${condition} ${extra}`);
+}
+
+function calculateBlackjack() {
+  if (!wasmReady) return;
+  blackjackAnalyzeButton.disabled = true;
+  blackjackAnalyzeButton.textContent = "正在枚举…";
+  blackjackError.hidden = true;
+
+  try {
+    const started = performance.now();
+    const json = analyzeBlackjack(
+      selectedBlackjackMode(),
+      Number.parseInt(document.querySelector("#blackjack-decks").value, 10),
+      blackjackShoeCards.value,
+      blackjackPlayerCards.value,
+      blackjackDealerUpcard.value,
+      document.querySelector("#dealer-soft-17").value === "hit",
+      Number.parseFloat(document.querySelector("#blackjack-payout").value),
+      document.querySelector("#late-surrender").value === "yes",
+      readNumber("#blackjack-base-stake", "当前原始底注", { positive: true }),
+    );
+    renderBlackjack(JSON.parse(json), performance.now() - started);
+  } catch (error) {
+    showError(blackjackError, error);
+  } finally {
+    blackjackAnalyzeButton.disabled = false;
+    blackjackAnalyzeButton.textContent = "计算动作 EV";
   }
 }
 
@@ -456,6 +582,30 @@ form.addEventListener("submit", (event) => {
   calculate();
 });
 
+blackjackForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  calculateBlackjack();
+});
+
+blackjackAnalyzeButton.addEventListener("click", calculateBlackjack);
+
+for (const tab of gameTabs) {
+  tab.addEventListener("click", () => setActiveGame(tab.dataset.game));
+}
+
+blackjackForm.elements["blackjack-source-mode"].forEach((radio) => {
+  radio.addEventListener("change", updateBlackjackModeHelp);
+});
+
+blackjackSampleButton.addEventListener("click", () => {
+  blackjackForm.elements["blackjack-source-mode"].value = "consumed";
+  blackjackShoeCards.value = "";
+  blackjackPlayerCards.value = "5S 6H";
+  blackjackDealerUpcard.value = "6C";
+  updateBlackjackModeHelp();
+  calculateBlackjack();
+});
+
 form.elements["source-mode"].forEach((radio) => {
   radio.addEventListener("change", updateModeHelp);
 });
@@ -577,6 +727,7 @@ async function start() {
     wasmStatus.textContent = "WASM 核心已就绪";
     wasmStatus.classList.add("ready");
     analyzeButton.disabled = false;
+    blackjackAnalyzeButton.disabled = false;
     calculate();
   } catch (error) {
     wasmStatus.textContent = "WASM 加载失败";
@@ -585,5 +736,6 @@ async function start() {
 }
 
 updateModeHelp();
+updateBlackjackModeHelp();
 updateStakeStrategyFields();
 start();

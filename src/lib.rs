@@ -18,6 +18,8 @@ pub mod shoe;
 
 /// 标准百家乐手牌、补牌规则、回合结果和概率计算。
 pub mod baccarat;
+/// 有限牌靴二十一点手牌、桌规和动作 EV。
+pub mod blackjack;
 /// 命令行字符串到核心领域类型的输入适配层。
 pub mod cli;
 /// 浏览器输入到核心牌靴和分析结果的 WebAssembly 适配层。
@@ -39,6 +41,10 @@ pub use baccarat::{
     calculate_main_and_side_outcomes, calculate_main_outcomes, calculate_side_bet_outcomes,
     decision_snapshot_from_weights, effective_ev, main_bet_kelly_outcomes, replay_csv_text,
     resolve_round, side_bet_kelly_outcomes,
+};
+pub use blackjack::{
+    BlackjackAction, BlackjackActionEvs, BlackjackAnalysis, BlackjackError, BlackjackRules,
+    analyze_blackjack_hand,
 };
 pub use card::{Card, CardParseError, Rank, Suit};
 pub use shoe::{DEFAULT_DECKS, MAX_DECKS, MIN_DECKS, Shoe, ShoeError};
