@@ -23,12 +23,24 @@ if (!/<input id="bankroll"[^>]*step="0\.01"/.test(pageHtml)) {
 const manual = JSON.parse(
   analyzeBaccaratStrategy(
     "consumed", 8, "", 0.009, 0, 10_000, 0.05, 500, 10_000,
-    "standard", "full_kelly", 0,
+    "standard", "full_kelly", 0, 0, 100,
   ),
 );
 
 if (manual.remaining_card_count !== 416) {
   throw new Error("完整八副牌的剩余张数不正确");
+}
+
+const sideRecommendation = JSON.parse(
+  analyzeBaccaratStrategy(
+    "remaining", 8, "AS AC AD AH AS AC", 0, 0, 1_000, 1, 500, 1_000,
+    "standard", "full_kelly", 0, 0, 25,
+  ),
+);
+
+if (sideRecommendation.recommendation.candidate_bet !== "banker_pair"
+    || sideRecommendation.recommendation.suggested_amount !== 25) {
+  throw new Error("边注没有参与策略，或没有应用独立金额上限");
 }
 
 if (manual.side_bets.banker_pair.payout !== "11:1") {
@@ -46,7 +58,7 @@ b,1,9001,2,2026-08-20 00:00:54,2026-08-20 00:01:17,"b:73,62,;p:53,8,",322
 const tinyReplay = JSON.parse(
   replayBaccaratCsv(
     tinyCsv, 8, 0.02, 0, 10_000, 0.05, 1_000, 1_000,
-    "no_commission", "half_kelly", 0,
+    "no_commission", "half_kelly", 0, 0, 100,
   ),
 );
 
@@ -80,7 +92,7 @@ if (csvPath) {
   const replay = JSON.parse(
     replayBaccaratCsv(
       csvText, 8, 0.009, 0, 10_000, 0.05, 500, 10_000,
-      "no_commission", "half_kelly", 0,
+      "no_commission", "half_kelly", 0, 0, 100,
     ),
   );
   output.full_replay = {
@@ -89,6 +101,7 @@ if (csvPath) {
     complete_sessions: replay.quality.fully_observable_sessions,
     replayed_rounds: replay.summary.replayed_rounds,
     placed_bets: replay.summary.placed_bet_count,
+    placed_bets_by_target: replay.summary.placed_bets,
     total_profit: replay.summary.total_profit,
     final_bankroll: replay.summary.final_bankroll,
     omitted_bet_details: replay.omitted_bet_details,

@@ -20,8 +20,9 @@ use serde::{Deserialize, Serialize};
 use crate::{Card, Rank, Shoe, Suit};
 
 use super::{
-    BetPlanAction, BettingPolicy, KellyPolicy, MainBet, MainBetRules, OutcomeWeights, RebateRule,
-    RoundOutcome, StakeSizingStrategy, calculate_main_outcomes, resolve_round,
+    BetTarget, BettingPolicy, CombinedBetPlanAction, KellyPolicy, MainBet, MainBetRules,
+    OutcomeWeights, RebateRule, RoundOutcome, SideBet, SideBetRules, SideBetWeights,
+    StakeSizingStrategy, calculate_main_and_side_outcomes, resolve_round,
 };
 
 /// JSON 中最多保留多少条真实下注明细。
@@ -38,10 +39,12 @@ pub struct CsvReplayConfig {
     stake_strategy: StakeSizingStrategy,
     rebate_rate: f64,
     minimum_effective_ev: f64,
+    minimum_side_bet_ev: f64,
     initial_bankroll: f64,
     max_fraction: f64,
     max_round_stake: f64,
     table_limit: f64,
+    side_bet_limit: f64,
 }
 
 impl CsvReplayConfig {
@@ -84,6 +87,36 @@ impl CsvReplayConfig {
         max_round_stake: f64,
         table_limit: f64,
     ) -> Result<Self, CsvReplayError> {
+        Self::with_side_bets(
+            decks,
+            rules,
+            stake_strategy,
+            rebate_rate,
+            minimum_effective_ev,
+            minimum_effective_ev,
+            initial_bankroll,
+            max_fraction,
+            max_round_stake,
+            table_limit,
+            max_round_stake,
+        )
+    }
+
+    /// 创建允许五种边注参与方向选择的完整回放配置。
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_side_bets(
+        decks: u8,
+        rules: MainBetRules,
+        stake_strategy: StakeSizingStrategy,
+        rebate_rate: f64,
+        minimum_effective_ev: f64,
+        minimum_side_bet_ev: f64,
+        initial_bankroll: f64,
+        max_fraction: f64,
+        max_round_stake: f64,
+        table_limit: f64,
+        side_bet_limit: f64,
+    ) -> Result<Self, CsvReplayError> {
         Shoe::new(decks).map_err(|error| CsvReplayError::Configuration(error.to_string()))?;
 
         if !rebate_rate.is_finite() || !(0.0..=1.0).contains(&rebate_rate) {
@@ -96,6 +129,11 @@ impl CsvReplayConfig {
                 "最低有效 EV 必须是有限数字".to_owned(),
             ));
         }
+        if !minimum_side_bet_ev.is_finite() {
+            return Err(CsvReplayError::Configuration(
+                "边注最低 EV 必须是有限数字".to_owned(),
+            ));
+        }
         if !initial_bankroll.is_finite() || initial_bankroll <= 0.0 {
             return Err(CsvReplayError::Configuration(
                 "初始本金必须是有限正数".to_owned(),
@@ -104,6 +142,7 @@ impl CsvReplayConfig {
 
         // 资金上限的边界统一交给生产 KellyPolicy 验证，避免回放复制另一套规则。
         KellyPolicy::with_strategy(stake_strategy, max_fraction, max_round_stake, table_limit)
+            .and_then(|policy| policy.with_side_bet_limit(side_bet_limit))
             .map_err(|error| CsvReplayError::Configuration(error.to_string()))?;
 
         Ok(Self {
@@ -112,10 +151,12 @@ impl CsvReplayConfig {
             stake_strategy,
             rebate_rate,
             minimum_effective_ev,
+            minimum_side_bet_ev,
             initial_bankroll,
             max_fraction,
             max_round_stake,
             table_limit,
+            side_bet_limit,
         })
     }
 
@@ -153,11 +194,13 @@ pub struct CsvReplayConfigSnapshot {
     pub rebate_rule: &'static str,
     pub rebate_rate: f64,
     pub minimum_effective_ev: f64,
+    pub minimum_side_bet_ev: f64,
     pub initial_bankroll: f64,
     pub bankroll_mode: &'static str,
     pub max_fraction: f64,
     pub max_round_stake: f64,
     pub table_limit: f64,
+    pub side_bet_limit: f64,
 }
 
 /// CSV 文件与时间范围的基础画像。
@@ -199,14 +242,24 @@ pub struct CsvBetCounts {
     pub player: u64,
     pub banker: u64,
     pub tie: u64,
+    pub any_pair: u64,
+    pub banker_pair: u64,
+    pub player_pair: u64,
+    pub lucky_seven: u64,
+    pub super_lucky_seven: u64,
 }
 
 impl CsvBetCounts {
-    fn increment(&mut self, bet: MainBet) {
+    fn increment(&mut self, bet: BetTarget) {
         match bet {
-            MainBet::Player => self.player += 1,
-            MainBet::Banker => self.banker += 1,
-            MainBet::Tie => self.tie += 1,
+            BetTarget::Main(MainBet::Player) => self.player += 1,
+            BetTarget::Main(MainBet::Banker) => self.banker += 1,
+            BetTarget::Main(MainBet::Tie) => self.tie += 1,
+            BetTarget::Side(SideBet::AnyPair) => self.any_pair += 1,
+            BetTarget::Side(SideBet::BankerPair) => self.banker_pair += 1,
+            BetTarget::Side(SideBet::PlayerPair) => self.player_pair += 1,
+            BetTarget::Side(SideBet::LuckySeven) => self.lucky_seven += 1,
+            BetTarget::Side(SideBet::SuperLuckySeven) => self.super_lucky_seven += 1,
         }
     }
 }
@@ -319,11 +372,13 @@ pub fn replay_csv_text(
             },
             rebate_rate: config.rebate_rate,
             minimum_effective_ev: config.minimum_effective_ev,
+            minimum_side_bet_ev: config.minimum_side_bet_ev,
             initial_bankroll: config.initial_bankroll,
             bankroll_mode: "shared_running_bankroll_chronological",
             max_fraction: config.max_fraction,
             max_round_stake: config.max_round_stake,
             table_limit: config.table_limit,
+            side_bet_limit: config.side_bet_limit,
         },
         dataset,
         quality,
@@ -556,14 +611,20 @@ fn replay_rounds(
     });
 
     let rules = config.rules;
+    let side_rules = SideBetRules::default();
     let rebate = config.rebate();
-    let betting_policy = BettingPolicy::new(rebate, config.minimum_effective_ev);
+    let betting_policy = BettingPolicy::with_side_bet_minimum(
+        rebate,
+        config.minimum_effective_ev,
+        config.minimum_side_bet_ev,
+    );
     let kelly_policy = KellyPolicy::with_strategy(
         config.stake_strategy,
         config.max_fraction,
         config.max_round_stake,
         config.table_limit,
     )
+    .and_then(|policy| policy.with_side_bet_limit(config.side_bet_limit))
     .map_err(|error| CsvReplayError::Configuration(error.to_string()))?;
 
     let mut shoes = HashMap::new();
@@ -573,7 +634,9 @@ fn replay_rounds(
         shoes.insert(key, shoe);
     }
 
-    let mut probability_cache = HashMap::<[u16; 10], OutcomeWeights>::new();
+    // 对子概率需要 13 种 Rank 的剩余数量；这份键也足以推导主注使用的
+    // 0～9 点数组，因此主注与边注可以安全共用同一个缓存条目。
+    let mut probability_cache = HashMap::<[u16; 13], (OutcomeWeights, SideBetWeights)>::new();
     let mut summary = CsvReplaySummary {
         replayed_sessions: eligible_sessions.len() as u64,
         initial_bankroll: config.initial_bankroll,
@@ -593,25 +656,33 @@ fn replay_rounds(
         let shoe = shoes.get_mut(&key).expect("可回放场次应该已经创建牌靴");
 
         // 先使用本局发牌前的牌靴计算，随后才允许查看真实结果并扣牌。
-        let point_counts = shoe.baccarat_point_counts();
-        let weights = if let Some(weights) = probability_cache.get(&point_counts) {
+        let rank_counts = shoe.rank_counts();
+        let (weights, side_weights) = if let Some(weights) = probability_cache.get(&rank_counts) {
             summary.probability_cache_hits += 1;
             *weights
         } else {
-            let weights =
-                calculate_main_outcomes(shoe).map_err(|error| CsvReplayError::Probability {
+            let weights = calculate_main_and_side_outcomes(shoe).map_err(|error| {
+                CsvReplayError::Probability {
                     table_id: round.table_id,
                     session_id: round.session_id,
                     round_no: round.round_no,
                     message: error.to_string(),
-                })?;
+                }
+            })?;
             summary.probability_cache_misses += 1;
-            probability_cache.insert(point_counts, weights);
+            probability_cache.insert(rank_counts, weights);
             weights
         };
 
         let plan = kelly_policy
-            .plan(&betting_policy, weights, rules, current_bankroll)
+            .plan_all(
+                &betting_policy,
+                weights,
+                rules,
+                side_weights,
+                side_rules,
+                current_bankroll,
+            )
             .map_err(|error| CsvReplayError::Strategy(error.to_string()))?;
         let decision = *plan.decision();
         let candidate = decision.candidate();
@@ -629,14 +700,21 @@ fn replay_rounds(
                 .map_or(effective_ev, |current| current.max(effective_ev)),
         );
 
-        if let BetPlanAction::Place { bet, amount } = *plan.action() {
+        if let CombinedBetPlanAction::Place { bet, amount } = *plan.action() {
             let outcome = round.outcome.expect("可回放局应该有经过验证的结果");
             let banker_total = round.banker_total.expect("可回放局应该有庄家最终点数");
             let quote = plan.quote().expect("Place 动作应该保留凯利报价");
+            let cards = round.cards.as_deref().expect("可回放局应该有牌面");
+            let round_result = resolve_round(cards).expect("可回放牌局已通过规则验证");
 
             // 基础输赢和返水分别结算，既方便审计，也能在报告中看出利润来源。
-            let base_profit_per_unit = rules.settle_with_banker_total(bet, outcome, banker_total);
-            let rebate_per_unit = rebate.rate_for(bet, outcome);
+            let (base_profit_per_unit, rebate_per_unit) = match bet {
+                BetTarget::Main(main_bet) => (
+                    rules.settle_with_banker_total(main_bet, outcome, banker_total),
+                    rebate.rate_for(main_bet, outcome),
+                ),
+                BetTarget::Side(side_bet) => (side_rules.settle(side_bet, round_result), 0.0),
+            };
             let base_game_profit = amount * base_profit_per_unit;
             let rebate_income = amount * rebate_per_unit;
             let actual_profit = base_game_profit + rebate_income;

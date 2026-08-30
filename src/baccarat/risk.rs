@@ -28,8 +28,9 @@
 use std::{error::Error, fmt};
 
 use super::{
-    BetAction, BetDecision, BettingPolicy, MainBet, MainBetAnalysis, MainBetRules, OutcomeWeights,
-    RebateRule, RoundOutcome, SkipReason,
+    BetAction, BetDecision, BetTarget, BettingPolicy, CombinedBetAction, CombinedBetDecision,
+    MainBet, MainBetAnalysis, MainBetRules, OutcomeWeights, RebateRule, RoundOutcome, SideBet,
+    SideBetAnalysis, SideBetRules, SideBetWeights, SkipReason,
 };
 
 /// 浮点概率求和时允许的舍入误差。
@@ -151,6 +152,8 @@ pub struct KellyPolicy {
     max_round_stake: f64,
     /// 赌场或桌台允许的最大下注金额。
     table_limit: f64,
+    /// 边注额外使用的单笔金额上限；主注不会读取这个字段。
+    side_bet_limit: f64,
 }
 
 impl KellyPolicy {
@@ -209,7 +212,21 @@ impl KellyPolicy {
             max_fraction,
             max_round_stake,
             table_limit,
+            // 旧调用者没有边注参数时，默认不比系统单局上限更宽松。
+            side_bet_limit: max_round_stake,
         })
+    }
+
+    /// 为五种边注增加独立金额上限。
+    pub fn with_side_bet_limit(mut self, side_bet_limit: f64) -> Result<Self, KellyError> {
+        validate_limit(
+            side_bet_limit,
+            KellyError::InvalidSideBetLimit {
+                value: side_bet_limit,
+            },
+        )?;
+        self.side_bet_limit = side_bet_limit;
+        Ok(self)
     }
 
     /// 返回当前使用的金额算法。
@@ -230,6 +247,11 @@ impl KellyPolicy {
     /// 返回赌场桌台金额上限。
     pub const fn table_limit(self) -> f64 {
         self.table_limit
+    }
+
+    /// 返回边注单笔金额上限。
+    pub const fn side_bet_limit(self) -> f64 {
+        self.side_bet_limit
     }
 
     /// 为一个已经确定方向的百家乐主注计算完整凯利报价。
@@ -255,20 +277,39 @@ impl KellyPolicy {
         bet: MainBet,
         bankroll: f64,
     ) -> Result<KellyQuote, KellyError> {
-        validate_bankroll(bankroll)?;
-
-        // 第一步：把百家乐业务规则转换成凯利公式认识的通用格式。
-        // 例如下注 Player 后，可能得到“Player 赢时盈利 1.015”、
-        // “Banker 赢时亏损 0.985”、“Tie 时不输不赢”这三个结果。
         let outcomes = main_bet_kelly_outcomes(weights, rules, rebate, bet);
+        self.quote_outcomes(BetTarget::Main(bet), &outcomes, bankroll)
+    }
+
+    /// 为一个已经选定的边注计算多结果凯利报价。
+    pub fn quote_side(
+        self,
+        weights: SideBetWeights,
+        rules: SideBetRules,
+        bet: SideBet,
+        bankroll: f64,
+    ) -> Result<KellyQuote, KellyError> {
+        let outcomes = side_bet_kelly_outcomes(weights, rules, bet);
+        self.quote_outcomes(BetTarget::Side(bet), &outcomes, bankroll)
+    }
+
+    /// 主注和边注最终都转换为相同的“概率 + 单位净收益”分布后，共用这一份
+    /// 凯利与金额上限逻辑。这样幸运 7 的分档赔率也不需要另一套近似公式。
+    fn quote_outcomes(
+        self,
+        target: BetTarget,
+        outcomes: &[KellyOutcome],
+        bankroll: f64,
+    ) -> Result<KellyQuote, KellyError> {
+        validate_bankroll(bankroll)?;
 
         // 第二步：重新从完整收益分布计算有效 EV。
         // 这里的结果应该与 analysis 层的 effective_ev 一致；测试会检查这一点。
-        let effective_ev = validate_outcomes(&outcomes)?;
+        let effective_ev = validate_outcomes(outcomes)?;
 
         // 先计算不打折的完整凯利比例，再应用系统配置的资金比例上限。
         // 这样日志中可以同时看到数学结果和实际执行结果。
-        let kelly_fraction = calculate_kelly_fraction(&outcomes, 1.0)?;
+        let kelly_fraction = calculate_kelly_fraction(outcomes, 1.0)?;
 
         // 第三步：金额策略先把完整凯利转换成目标比例。半凯利、四分之一凯利
         // 会缩小公式比例；固定金额则用 amount / bankroll 得到等价比例。
@@ -280,17 +321,20 @@ impl KellyPolicy {
 
         // 上限按从“理论金额”到“最终金额”的顺序逐项收紧。
         // 最后的 bankroll 保护保证任何配置都不会下注超过当前资金。
-        let amount = (bankroll * fraction_after_policy)
+        let mut amount = (bankroll * fraction_after_policy)
             .min(self.max_round_stake)
             .min(self.table_limit)
             .min(bankroll);
+        if target.is_side() {
+            amount = amount.min(self.side_bet_limit);
+        }
 
         // applied_fraction 使用“最终金额”反除 bankroll，所以它已经反映了
         // max_fraction、单局上限和桌台上限的共同影响。
         let applied_fraction = amount / bankroll;
 
         Ok(KellyQuote {
-            bet,
+            bet: target,
             effective_ev,
             kelly_fraction,
             strategy_fraction,
@@ -368,13 +412,76 @@ impl KellyPolicy {
             }
         }
     }
+
+    /// 从八种下注目标中选择方向，并生成受边注独立上限保护的最终计划。
+    pub fn plan_all(
+        self,
+        betting_policy: &BettingPolicy,
+        main_weights: OutcomeWeights,
+        main_rules: MainBetRules,
+        side_weights: SideBetWeights,
+        side_rules: SideBetRules,
+        bankroll: f64,
+    ) -> Result<CombinedBetPlan, KellyError> {
+        validate_bankroll(bankroll)?;
+
+        let main_analysis = MainBetAnalysis::from_weights(main_weights, main_rules);
+        let side_analysis = SideBetAnalysis::calculate(side_weights, side_rules);
+        let decision = betting_policy.decide_all(main_analysis, side_analysis);
+
+        match *decision.action() {
+            CombinedBetAction::Skip { reason } => Ok(CombinedBetPlan {
+                decision,
+                quote: None,
+                action: CombinedBetPlanAction::Skip {
+                    reason: BetPlanSkipReason::Strategy(reason),
+                },
+            }),
+            CombinedBetAction::Place { bet } => {
+                let quote = match bet {
+                    BetTarget::Main(main_bet) => self.quote(
+                        main_weights,
+                        main_rules,
+                        betting_policy.rebate(),
+                        main_bet,
+                        bankroll,
+                    )?,
+                    BetTarget::Side(side_bet) => {
+                        self.quote_side(side_weights, side_rules, side_bet, bankroll)?
+                    }
+                };
+
+                let action =
+                    if self.strategy.requires_positive_kelly() && quote.kelly_fraction() <= 0.0 {
+                        CombinedBetPlanAction::Skip {
+                            reason: BetPlanSkipReason::NonPositiveKelly,
+                        }
+                    } else if quote.amount() <= 0.0 {
+                        CombinedBetPlanAction::Skip {
+                            reason: BetPlanSkipReason::RiskLimitIsZero,
+                        }
+                    } else {
+                        CombinedBetPlanAction::Place {
+                            bet,
+                            amount: quote.amount(),
+                        }
+                    };
+
+                Ok(CombinedBetPlan {
+                    decision,
+                    quote: Some(quote),
+                    action,
+                })
+            }
+        }
+    }
 }
 
 /// 一次凯利金额计算的可审计结果。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct KellyQuote {
     /// 凯利金额所对应的下注方向。
-    bet: MainBet,
+    bet: BetTarget,
     /// 该方向每下注 1 单位的期望净收益，已经包含返水。
     effective_ev: f64,
     /// 不打折的完整凯利比例。
@@ -391,7 +498,7 @@ pub struct KellyQuote {
 
 impl KellyQuote {
     /// 返回报价对应的下注方向。
-    pub const fn bet(self) -> MainBet {
+    pub const fn bet(self) -> BetTarget {
         self.bet
     }
 
@@ -482,6 +589,35 @@ impl BetPlan {
     }
 }
 
+/// 主注和边注共同比较后的最终动作。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CombinedBetPlanAction {
+    Place { bet: BetTarget, amount: f64 },
+    Skip { reason: BetPlanSkipReason },
+}
+
+/// 八种目标统一经过 EV 门槛、凯利公式和金额上限后的完整计划。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CombinedBetPlan {
+    decision: CombinedBetDecision,
+    quote: Option<KellyQuote>,
+    action: CombinedBetPlanAction,
+}
+
+impl CombinedBetPlan {
+    pub const fn decision(&self) -> &CombinedBetDecision {
+        &self.decision
+    }
+
+    pub const fn quote(self) -> Option<KellyQuote> {
+        self.quote
+    }
+
+    pub const fn action(&self) -> &CombinedBetPlanAction {
+        &self.action
+    }
+}
+
 /// 把百家乐结果转成凯利公式真正需要的“概率 + 单位净收益”分布。
 ///
 /// 下注庄时必须把庄赢拆成“非 6 点庄赢”和“6 点庄赢”。标准佣金庄的
@@ -562,6 +698,43 @@ pub fn main_bet_kelly_outcomes(
         })
         .collect()
     }
+}
+
+/// 把边注的命中档位转换为凯利公式使用的完整互斥收益分布。
+///
+/// 对子类只有“命中赔率”和“未命中 -1”两个结果；幸运 7 系列必须保留每个
+/// 赔率档位，不能用平均赔率代替，否则对数增长最优点会产生偏差。
+pub fn side_bet_kelly_outcomes(
+    weights: SideBetWeights,
+    rules: SideBetRules,
+    bet: SideBet,
+) -> Vec<KellyOutcome> {
+    let total = weights.total_weight() as f64;
+    let (tier_weights, payouts): (Vec<u64>, Vec<f64>) = match bet {
+        SideBet::AnyPair | SideBet::BankerPair | SideBet::PlayerPair => (
+            vec![weights.win_weight(bet)],
+            vec![rules.payout(bet).expect("对子边注必须有单一赔付")],
+        ),
+        SideBet::LuckySeven => (
+            weights.lucky_seven_tier_weights().to_vec(),
+            rules.lucky_seven_payouts().to_vec(),
+        ),
+        SideBet::SuperLuckySeven => (
+            weights.super_lucky_seven_tier_weights().to_vec(),
+            rules.super_lucky_seven_payouts().to_vec(),
+        ),
+    };
+    let win_weight = tier_weights.iter().sum::<u64>();
+    let mut outcomes = tier_weights
+        .into_iter()
+        .zip(payouts)
+        .map(|(weight, payout)| KellyOutcome::new(weight as f64 / total, payout))
+        .collect::<Vec<_>>();
+    outcomes.push(KellyOutcome::new(
+        (weights.total_weight() - win_weight) as f64 / total,
+        -1.0,
+    ));
+    outcomes
 }
 
 /// 对任意互斥收益分布计算凯利比例。
@@ -759,6 +932,11 @@ pub enum KellyError {
         /// 调用者实际提供的桌台金额上限。
         value: f64,
     },
+    /// 边注单笔上限不是有限非负数。
+    InvalidSideBetLimit {
+        /// 调用者实际提供的边注金额上限。
+        value: f64,
+    },
     /// 可管理资金不是有限正数。
     InvalidBankroll {
         /// 调用者实际提供的可管理资金。
@@ -807,6 +985,12 @@ impl fmt::Display for KellyError {
                     "table limit must be finite and non-negative; got {value}"
                 )
             }
+            Self::InvalidSideBetLimit { value } => {
+                write!(
+                    formatter,
+                    "side bet limit must be finite and non-negative; got {value}"
+                )
+            }
             Self::InvalidBankroll { value } => {
                 write!(
                     formatter,
@@ -823,10 +1007,11 @@ impl Error for KellyError {}
 mod tests {
     use super::{
         BetPlanAction, BetPlanSkipReason, KellyOutcome, KellyPolicy, StakeSizingStrategy,
-        calculate_kelly_fraction, main_bet_kelly_outcomes,
+        calculate_kelly_fraction, main_bet_kelly_outcomes, side_bet_kelly_outcomes,
     };
     use crate::{
-        BettingPolicy, MainBet, MainBetAnalysis, MainBetRules, OutcomeWeights, RebateRule, Shoe,
+        BetTarget, BettingPolicy, MainBet, MainBetAnalysis, MainBetRules, OutcomeWeights,
+        RebateRule, Shoe, SideBet, SideBetAnalysis, SideBetRules, SideBetWeights,
         calculate_main_outcomes,
     };
 
@@ -924,7 +1109,7 @@ mod tests {
 
         // 此测试分布下 Tie 的 EV 为 0.5，完整凯利比例为 1/16。
         // 1000 × 1/16 = 62.5，但单局上限 40 更低，因此最终下 40。
-        assert_eq!(quote.bet(), MainBet::Tie);
+        assert_eq!(quote.bet(), BetTarget::Main(MainBet::Tie));
         assert_close(quote.effective_ev(), 0.5);
         assert_close(quote.kelly_fraction(), 1.0 / 16.0);
         assert_close(quote.applied_fraction(), 0.04);
@@ -975,7 +1160,7 @@ mod tests {
             .expect("完整牌靴应该生成下注计划");
         let quote = plan.quote().expect("1.5% 返水下应该通过零 EV 门槛");
 
-        assert_eq!(quote.bet(), MainBet::Banker);
+        assert_eq!(quote.bet(), BetTarget::Main(MainBet::Banker));
         assert!(quote.effective_ev() > 0.0);
         assert!(quote.kelly_fraction() > 0.0);
         assert!(quote.amount() > 0.0);
@@ -1053,5 +1238,27 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn side_bet_kelly_uses_tier_distribution_and_the_side_limit() {
+        let weights = SideBetWeights::new(100, 30, 0, 0, 0, 0, 0, 0, 0);
+        let rules = SideBetRules::default();
+        let outcomes = side_bet_kelly_outcomes(weights, rules, SideBet::AnyPair);
+        let analysis = SideBetAnalysis::calculate(weights, rules);
+        let outcome_ev = outcomes
+            .iter()
+            .map(|outcome| outcome.probability() * outcome.net_profit())
+            .sum::<f64>();
+        assert_close(outcome_ev, analysis.metrics(SideBet::AnyPair).ev());
+
+        let quote = KellyPolicy::full(500.0, 1_000.0)
+            .and_then(|policy| policy.with_side_bet_limit(25.0))
+            .expect("边注限额应该合法")
+            .quote_side(weights, rules, SideBet::AnyPair, 1_000.0)
+            .expect("正 EV 边注应该得到凯利报价");
+
+        assert_eq!(quote.bet(), BetTarget::Side(SideBet::AnyPair));
+        assert_close(quote.amount(), 25.0);
     }
 }

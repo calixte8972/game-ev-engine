@@ -12,9 +12,9 @@
 use serde::Serialize;
 
 use crate::{
-    BetPlanAction, BetPlanSkipReason, BettingPolicy, Card, CsvReplayConfig, EffectiveBetMetrics,
-    KellyPolicy, MainBet, MainBetAnalysis, MainBetRules, RebateRule, Shoe, SideBet,
-    SideBetAnalysis, SideBetMetrics, SideBetRules, SkipReason, StakeSizingStrategy,
+    BetPlanSkipReason, BettingPolicy, Card, CombinedBetPlanAction, CsvReplayConfig,
+    EffectiveBetMetrics, KellyPolicy, MainBet, MainBetAnalysis, MainBetRules, RebateRule, Shoe,
+    SideBet, SideBetAnalysis, SideBetMetrics, SideBetRules, SkipReason, StakeSizingStrategy,
     calculate_main_and_side_outcomes, replay_csv_text,
 };
 
@@ -60,8 +60,10 @@ pub fn analyze_baccarat_strategy(
     payout_rule: &str,
     stake_strategy: &str,
     fixed_stake: f64,
+    minimum_side_bet_ev: f64,
+    side_bet_limit: f64,
 ) -> Result<String, JsValue> {
-    analyze_baccarat_strategy_json(
+    analyze_baccarat_strategy_json_with_side_bets(
         source_mode,
         decks,
         cards_text,
@@ -74,6 +76,8 @@ pub fn analyze_baccarat_strategy(
         payout_rule,
         stake_strategy,
         fixed_stake,
+        minimum_side_bet_ev,
+        side_bet_limit,
     )
     .map_err(|message| JsValue::from_str(&message))
 }
@@ -96,8 +100,10 @@ pub fn replay_baccarat_csv(
     payout_rule: &str,
     stake_strategy: &str,
     fixed_stake: f64,
+    minimum_side_bet_ev: f64,
+    side_bet_limit: f64,
 ) -> Result<String, JsValue> {
-    replay_baccarat_csv_json(
+    replay_baccarat_csv_json_with_side_bets(
         csv_text,
         decks,
         rebate_rate,
@@ -109,6 +115,8 @@ pub fn replay_baccarat_csv(
         payout_rule,
         stake_strategy,
         fixed_stake,
+        minimum_side_bet_ev,
+        side_bet_limit,
     )
     .map_err(|message| JsValue::from_str(&message))
 }
@@ -155,11 +163,50 @@ pub fn analyze_baccarat_strategy_json(
     stake_strategy: &str,
     fixed_stake: f64,
 ) -> Result<String, String> {
+    analyze_baccarat_strategy_json_with_side_bets(
+        source_mode,
+        decks,
+        cards_text,
+        rebate_rate,
+        minimum_effective_ev,
+        bankroll,
+        max_fraction,
+        max_round_stake,
+        table_limit,
+        payout_rule,
+        stake_strategy,
+        fixed_stake,
+        minimum_effective_ev,
+        max_round_stake,
+    )
+}
+
+/// 主注和边注共同参与策略时使用的完整浏览器分析函数。
+#[allow(clippy::too_many_arguments)]
+pub fn analyze_baccarat_strategy_json_with_side_bets(
+    source_mode: &str,
+    decks: u8,
+    cards_text: &str,
+    rebate_rate: f64,
+    minimum_effective_ev: f64,
+    bankroll: f64,
+    max_fraction: f64,
+    max_round_stake: f64,
+    table_limit: f64,
+    payout_rule: &str,
+    stake_strategy: &str,
+    fixed_stake: f64,
+    minimum_side_bet_ev: f64,
+    side_bet_limit: f64,
+) -> Result<String, String> {
     if !rebate_rate.is_finite() || !(0.0..=1.0).contains(&rebate_rate) {
         return Err("返水比例必须是 0% 到 100% 之间的有限数字".to_owned());
     }
     if !minimum_effective_ev.is_finite() {
         return Err("最低有效 EV 必须是有限数字".to_owned());
+    }
+    if !minimum_side_bet_ev.is_finite() {
+        return Err("边注最低 EV 必须是有限数字".to_owned());
     }
     if !bankroll.is_finite() || bankroll <= 0.0 {
         return Err("本金必须是有限正数".to_owned());
@@ -193,22 +240,31 @@ pub fn analyze_baccarat_strategy_json(
     } else {
         RebateRule::AllExceptMainBetTie { rate: rebate_rate }
     };
-    let policy = BettingPolicy::new(rebate, minimum_effective_ev);
+    let policy =
+        BettingPolicy::with_side_bet_minimum(rebate, minimum_effective_ev, minimum_side_bet_ev);
     let kelly_policy =
         KellyPolicy::with_strategy(stake_strategy, max_fraction, max_round_stake, table_limit)
+            .and_then(|policy| policy.with_side_bet_limit(side_bet_limit))
             .map_err(|error| format!("资金策略不合法：{error}"))?;
     let (weights, side_weights) = calculate_main_and_side_outcomes(&shoe)
         .map_err(|error| format!("概率与 EV 计算失败：{error}"))?;
     let analysis = MainBetAnalysis::from_weights(weights, rules);
     let side_analysis = SideBetAnalysis::calculate(side_weights, SideBetRules::default());
     let plan = kelly_policy
-        .plan(&policy, weights, rules, bankroll)
+        .plan_all(
+            &policy,
+            weights,
+            rules,
+            side_weights,
+            SideBetRules::default(),
+            bankroll,
+        )
         .map_err(|error| format!("下注策略计算失败：{error}"))?;
     let decision = *plan.decision();
     let quote = plan.quote();
     let (action, reason) = match *plan.action() {
-        BetPlanAction::Place { .. } => ("place", None),
-        BetPlanAction::Skip { reason } => ("skip", Some(skip_reason_code(reason))),
+        CombinedBetPlanAction::Place { .. } => ("place", None),
+        CombinedBetPlanAction::Skip { reason } => ("skip", Some(skip_reason_code(reason))),
     };
 
     let response = BrowserAnalysis {
@@ -220,6 +276,9 @@ pub fn analyze_baccarat_strategy_json(
         payout_rule: payout_rule_code,
         stake_strategy: stake_strategy.as_str(),
         fixed_stake: stake_strategy.fixed_amount(),
+        minimum_main_bet_ev: minimum_effective_ev,
+        minimum_side_bet_ev,
+        side_bet_limit,
         bets: BrowserBets {
             player: BrowserBetMetrics::from_analysis(analysis, MainBet::Player, rebate),
             banker: BrowserBetMetrics::from_analysis(analysis, MainBet::Banker, rebate),
@@ -247,6 +306,11 @@ pub fn analyze_baccarat_strategy_json(
         },
         recommendation: BrowserRecommendation {
             candidate_bet: decision.candidate().as_str(),
+            bet_category: if decision.candidate().is_side() {
+                "side"
+            } else {
+                "main"
+            },
             base_ev: decision.base_ev(),
             rebate_ev: decision.rebate_ev(),
             effective_ev: decision.effective_ev(),
@@ -279,18 +343,54 @@ pub fn replay_baccarat_csv_json(
     stake_strategy: &str,
     fixed_stake: f64,
 ) -> Result<String, String> {
-    let (rules, _) = parse_payout_rule(payout_rule)?;
-    let stake_strategy = parse_stake_strategy(stake_strategy, fixed_stake)?;
-    let config = CsvReplayConfig::with_strategy(
+    replay_baccarat_csv_json_with_side_bets(
+        csv_text,
         decks,
-        rules,
-        stake_strategy,
         rebate_rate,
         minimum_effective_ev,
         initial_bankroll,
         max_fraction,
         max_round_stake,
         table_limit,
+        payout_rule,
+        stake_strategy,
+        fixed_stake,
+        minimum_effective_ev,
+        max_round_stake,
+    )
+}
+
+/// 主注与边注使用独立门槛和金额上限的 CSV 回放入口。
+#[allow(clippy::too_many_arguments)]
+pub fn replay_baccarat_csv_json_with_side_bets(
+    csv_text: &str,
+    decks: u8,
+    rebate_rate: f64,
+    minimum_effective_ev: f64,
+    initial_bankroll: f64,
+    max_fraction: f64,
+    max_round_stake: f64,
+    table_limit: f64,
+    payout_rule: &str,
+    stake_strategy: &str,
+    fixed_stake: f64,
+    minimum_side_bet_ev: f64,
+    side_bet_limit: f64,
+) -> Result<String, String> {
+    let (rules, _) = parse_payout_rule(payout_rule)?;
+    let stake_strategy = parse_stake_strategy(stake_strategy, fixed_stake)?;
+    let config = CsvReplayConfig::with_side_bets(
+        decks,
+        rules,
+        stake_strategy,
+        rebate_rate,
+        minimum_effective_ev,
+        minimum_side_bet_ev,
+        initial_bankroll,
+        max_fraction,
+        max_round_stake,
+        table_limit,
+        side_bet_limit,
     )
     .map_err(|error| format!("回放配置不合法：{error}"))?;
     let report = replay_csv_text(csv_text, config).map_err(|error| error.to_string())?;
@@ -355,6 +455,9 @@ struct BrowserAnalysis {
     payout_rule: &'static str,
     stake_strategy: &'static str,
     fixed_stake: Option<f64>,
+    minimum_main_bet_ev: f64,
+    minimum_side_bet_ev: f64,
+    side_bet_limit: f64,
     bets: BrowserBets,
     side_bet_rules: &'static str,
     side_bets: BrowserSideBets,
@@ -431,6 +534,7 @@ impl BrowserBetMetrics {
 #[derive(Debug, Serialize)]
 struct BrowserRecommendation {
     candidate_bet: &'static str,
+    bet_category: &'static str,
     base_ev: f64,
     rebate_ev: f64,
     effective_ev: f64,
@@ -448,7 +552,10 @@ struct BrowserRecommendation {
 mod tests {
     use serde_json::Value;
 
-    use super::{analyze_baccarat_json, analyze_baccarat_strategy_json, replay_baccarat_csv_json};
+    use super::{
+        analyze_baccarat_json, analyze_baccarat_strategy_json,
+        analyze_baccarat_strategy_json_with_side_bets, replay_baccarat_csv_json,
+    };
 
     #[test]
     fn empty_consumed_input_analyzes_a_full_eight_deck_shoe() {
@@ -627,6 +734,36 @@ mod tests {
         assert_eq!(value["fixed_stake"], 100.0);
         assert_eq!(value["recommendation"]["action"], "place");
         assert_eq!(value["recommendation"]["suggested_amount"], 80.0);
+    }
+
+    #[test]
+    fn side_bet_can_be_recommended_and_is_clipped_by_its_own_limit() {
+        let value: Value = serde_json::from_str(
+            &analyze_baccarat_strategy_json_with_side_bets(
+                "remaining",
+                8,
+                "AS AC AD AH AS AC",
+                0.0,
+                0.0,
+                1_000.0,
+                1.0,
+                500.0,
+                1_000.0,
+                "standard",
+                "full_kelly",
+                0.0,
+                0.0,
+                25.0,
+            )
+            .expect("全是 A 的六张测试牌靴应推荐对子边注"),
+        )
+        .expect("接口应返回合法 JSON");
+
+        // 两边都必然成对时，庄对与闲对 EV 相同且高于任意对子；稳定顺序优先庄对。
+        assert_eq!(value["recommendation"]["candidate_bet"], "banker_pair");
+        assert_eq!(value["recommendation"]["bet_category"], "side");
+        assert_eq!(value["recommendation"]["action"], "place");
+        assert_eq!(value["recommendation"]["suggested_amount"], 25.0);
     }
 
     #[test]

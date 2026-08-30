@@ -54,8 +54,9 @@ pub use replay::{
     CsvReplayConfigSnapshot, CsvReplayError, CsvReplayReport, CsvReplaySummary, replay_csv_text,
 };
 pub use risk::{
-    BetPlan, BetPlanAction, BetPlanSkipReason, KellyError, KellyOutcome, KellyPolicy, KellyQuote,
-    StakeSizingStrategy, calculate_kelly_fraction, main_bet_kelly_outcomes,
+    BetPlan, BetPlanAction, BetPlanSkipReason, CombinedBetPlan, CombinedBetPlanAction, KellyError,
+    KellyOutcome, KellyPolicy, KellyQuote, StakeSizingStrategy, calculate_kelly_fraction,
+    main_bet_kelly_outcomes, side_bet_kelly_outcomes,
 };
 pub(crate) use round::resolve_point_round;
 pub use round::{RoundError, RoundOutcome, RoundResult, compare_hands, resolve_round};
@@ -67,7 +68,10 @@ pub use snapshot::{
     ActionSnapshot, BetSnapshot, DECISION_SNAPSHOT_SCHEMA_VERSION, DecisionSnapshot,
     ENGINE_VERSION, SnapshotError, analyze_snapshot, decision_snapshot_from_weights,
 };
-pub use strategy::{BetAction, BetDecision, BettingPolicy, SkipReason};
+pub use strategy::{
+    BetAction, BetDecision, BetTarget, BettingPolicy, CombinedBetAction, CombinedBetDecision,
+    SkipReason,
+};
 
 #[cfg(test)]
 mod cross_algorithm_tests {

@@ -4,7 +4,34 @@
 //! 下注金额由 `risk` 模块中的 `KellyPolicy` 根据这里的决策继续计算。
 
 use crate::baccarat::RebateRule;
-use crate::{MainBet, MainBetAnalysis};
+use crate::{MainBet, MainBetAnalysis, SideBet, SideBetAnalysis};
+
+/// 自动策略能够选择的完整下注目标。
+///
+/// 用一个枚举统一主注和边注后，策略、凯利金额、JSON 与 CSV 回放都可以传递
+/// 同一个明确类型，避免依靠字符串猜测当前到底是哪一种玩法。
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub enum BetTarget {
+    /// 闲、庄、和中的一种主注。
+    Main(MainBet),
+    /// 任意对子、庄对、闲对、幸运 7 或超级幸运 7。
+    Side(SideBet),
+}
+
+impl BetTarget {
+    /// 返回供 JSON、日志和前端使用的稳定名称。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Main(bet) => bet.as_str(),
+            Self::Side(bet) => bet.as_str(),
+        }
+    }
+
+    /// 判断当前目标是否为边注，资金层据此应用单独的边注金额上限。
+    pub const fn is_side(self) -> bool {
+        matches!(self, Self::Side(_))
+    }
+}
 
 /// 方向选择配置。
 ///
@@ -16,6 +43,37 @@ pub struct BettingPolicy {
     rebate: RebateRule,
     /// 允许下注所需达到的最低有效 EV。
     minimum_effective_ev: f64,
+    /// 五种边注各自必须达到的最低基础 EV。边注目前不叠加主注返水。
+    minimum_side_bet_ev: f64,
+}
+
+/// 主注与边注共同参与比较时的方向动作。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CombinedBetAction {
+    /// 至少一个目标达到自己的 EV 门槛，选择其中 EV 最大者。
+    Place { bet: BetTarget },
+    /// 八个目标都没有达到各自门槛。
+    Skip { reason: SkipReason },
+}
+
+/// 八种下注目标共同比较后的可审计结果。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CombinedBetDecision {
+    candidate: BetTarget,
+    base_ev: f64,
+    rebate_ev: f64,
+    effective_ev: f64,
+    minimum_ev: f64,
+    action: CombinedBetAction,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CandidateMetrics {
+    target: BetTarget,
+    base_ev: f64,
+    rebate_ev: f64,
+    effective_ev: f64,
+    minimum_ev: f64,
 }
 
 /// 方向策略给出的动作。这里只包含方向，不包含金额。
@@ -68,6 +126,20 @@ impl BettingPolicy {
         Self {
             rebate,
             minimum_effective_ev,
+            minimum_side_bet_ev: minimum_effective_ev,
+        }
+    }
+
+    /// 创建主注和边注使用不同 EV 门槛的统一策略。
+    pub const fn with_side_bet_minimum(
+        rebate: RebateRule,
+        minimum_effective_ev: f64,
+        minimum_side_bet_ev: f64,
+    ) -> Self {
+        Self {
+            rebate,
+            minimum_effective_ev,
+            minimum_side_bet_ev,
         }
     }
 
@@ -79,6 +151,11 @@ impl BettingPolicy {
     /// 返回允许下注所需达到的最低有效 EV。
     pub const fn minimum_effective_ev(&self) -> f64 {
         self.minimum_effective_ev
+    }
+
+    /// 返回五种边注共同使用的最低 EV 门槛。
+    pub const fn minimum_side_bet_ev(&self) -> f64 {
+        self.minimum_side_bet_ev
     }
 
     /// 比较三个方向的有效 EV，并根据最低门槛生成方向决策。
@@ -113,6 +190,79 @@ impl BettingPolicy {
             action,
         }
     }
+
+    /// 同时比较三种主注和五种边注，并选择达到各自门槛后的最高 EV。
+    ///
+    /// 这里先过滤门槛再比较，避免一个“EV 虽高但没有达到更严格边注门槛”的
+    /// 候选挡住另一个已经满足主注门槛的可下注方向。
+    pub fn decide_all(
+        &self,
+        main_analysis: MainBetAnalysis,
+        side_analysis: SideBetAnalysis,
+    ) -> CombinedBetDecision {
+        let main_candidates = [MainBet::Player, MainBet::Banker, MainBet::Tie].map(|bet| {
+            let metrics = main_analysis.effective_metrics(bet, self.rebate);
+            CandidateMetrics {
+                target: BetTarget::Main(bet),
+                base_ev: metrics.base_ev(),
+                rebate_ev: metrics.rebate_ev(),
+                effective_ev: metrics.effective_ev(),
+                minimum_ev: self.minimum_effective_ev,
+            }
+        });
+        let side_candidates = SideBet::ALL.map(|bet| {
+            let metrics = side_analysis.metrics(bet);
+            CandidateMetrics {
+                target: BetTarget::Side(bet),
+                base_ev: metrics.ev(),
+                rebate_ev: 0.0,
+                effective_ev: metrics.ev(),
+                minimum_ev: self.minimum_side_bet_ev,
+            }
+        });
+
+        let mut best_overall = main_candidates[0];
+        let mut best_eligible: Option<CandidateMetrics> = None;
+
+        for candidate in main_candidates.into_iter().chain(side_candidates) {
+            if candidate.effective_ev > best_overall.effective_ev {
+                best_overall = candidate;
+            }
+            if candidate.effective_ev >= candidate.minimum_ev
+                && best_eligible.is_none_or(|current| candidate.effective_ev > current.effective_ev)
+            {
+                best_eligible = Some(candidate);
+            }
+        }
+
+        let (candidate, action) = if let Some(candidate) = best_eligible {
+            (
+                candidate,
+                CombinedBetAction::Place {
+                    bet: candidate.target,
+                },
+            )
+        } else {
+            (
+                best_overall,
+                CombinedBetAction::Skip {
+                    reason: SkipReason::BelowMinimumEv {
+                        effective_ev: best_overall.effective_ev,
+                        minimum_ev: best_overall.minimum_ev,
+                    },
+                },
+            )
+        };
+
+        CombinedBetDecision {
+            candidate: candidate.target,
+            base_ev: candidate.base_ev,
+            rebate_ev: candidate.rebate_ev,
+            effective_ev: candidate.effective_ev,
+            minimum_ev: candidate.minimum_ev,
+            action,
+        }
+    }
 }
 impl BetDecision {
     /// 返回有效 EV 最大的候选下注方向。
@@ -141,10 +291,39 @@ impl BetDecision {
     }
 }
 
+impl CombinedBetDecision {
+    pub const fn candidate(self) -> BetTarget {
+        self.candidate
+    }
+
+    pub const fn base_ev(self) -> f64 {
+        self.base_ev
+    }
+
+    pub const fn rebate_ev(self) -> f64 {
+        self.rebate_ev
+    }
+
+    pub const fn effective_ev(self) -> f64 {
+        self.effective_ev
+    }
+
+    pub const fn minimum_ev(self) -> f64 {
+        self.minimum_ev
+    }
+
+    pub const fn action(&self) -> &CombinedBetAction {
+        &self.action
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{BetAction, BettingPolicy, SkipReason};
-    use crate::{MainBet, MainBetAnalysis, MainBetRules, OutcomeWeights, RebateRule};
+    use super::{BetAction, BetTarget, BettingPolicy, CombinedBetAction, SkipReason};
+    use crate::{
+        MainBet, MainBetAnalysis, MainBetRules, OutcomeWeights, RebateRule, SideBet,
+        SideBetAnalysis, SideBetRules, SideBetWeights,
+    };
 
     fn sample_analysis() -> MainBetAnalysis {
         let weights =
@@ -155,6 +334,11 @@ mod tests {
 
     fn assert_close(actual: f64, expected: f64) {
         assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
+    }
+
+    fn side_analysis_with_positive_any_pair() -> SideBetAnalysis {
+        let weights = SideBetWeights::new(100, 30, 0, 0, 0, 0, 0, 0, 0);
+        SideBetAnalysis::calculate(weights, SideBetRules::default())
     }
 
     #[test]
@@ -219,5 +403,36 @@ mod tests {
             BetAction::Place { bet } => assert_eq!(*bet, MainBet::Tie),
             BetAction::Skip { .. } => panic!("有效 EV 等于门槛时应该允许下注"),
         }
+    }
+
+    #[test]
+    fn decide_all_can_select_a_side_bet_over_all_main_bets() {
+        let policy = BettingPolicy::with_side_bet_minimum(RebateRule::None, 0.0, 0.0);
+        let decision = policy.decide_all(sample_analysis(), side_analysis_with_positive_any_pair());
+
+        assert_eq!(decision.candidate(), BetTarget::Side(SideBet::AnyPair));
+        assert_close(decision.effective_ev(), 0.8);
+        assert!(matches!(
+            decision.action(),
+            CombinedBetAction::Place {
+                bet: BetTarget::Side(SideBet::AnyPair)
+            }
+        ));
+    }
+
+    #[test]
+    fn stricter_side_threshold_does_not_block_an_eligible_main_bet() {
+        let policy = BettingPolicy::with_side_bet_minimum(RebateRule::None, 0.5, 0.9);
+        let decision = policy.decide_all(sample_analysis(), side_analysis_with_positive_any_pair());
+
+        // 任意对子 EV=0.8 高于和注 EV=0.5，但没有通过边注 0.9 门槛；
+        // 和注已经通过主注 0.5 门槛，所以策略应下注和，而不是整局跳过。
+        assert_eq!(decision.candidate(), BetTarget::Main(MainBet::Tie));
+        assert!(matches!(
+            decision.action(),
+            CombinedBetAction::Place {
+                bet: BetTarget::Main(MainBet::Tie)
+            }
+        ));
     }
 }

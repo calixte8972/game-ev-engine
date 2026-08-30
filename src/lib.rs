@@ -27,7 +27,8 @@ pub mod web_api;
 // 这里只改变访问路径，不会复制类型，也不会产生运行时开销。
 pub use baccarat::{
     ActionSnapshot, BaccaratHand, BankerPayoutRule, BetAction, BetDecision, BetMetrics, BetPlan,
-    BetPlanAction, BetPlanSkipReason, BetSnapshot, BettingPolicy, CsvBetCounts, CsvBetDetail,
+    BetPlanAction, BetPlanSkipReason, BetSnapshot, BetTarget, BettingPolicy, CombinedBetAction,
+    CombinedBetDecision, CombinedBetPlan, CombinedBetPlanAction, CsvBetCounts, CsvBetDetail,
     CsvDatasetReport, CsvQualityReport, CsvReplayConfig, CsvReplayConfigSnapshot, CsvReplayError,
     CsvReplayReport, CsvReplaySummary, DECISION_SNAPSHOT_SCHEMA_VERSION, DecisionSnapshot,
     ENGINE_VERSION, EffectiveBetMetrics, KellyError, KellyOutcome, KellyPolicy, KellyQuote,
@@ -37,7 +38,7 @@ pub use baccarat::{
     analyze_main_bets, analyze_snapshot, calculate_kelly_fraction,
     calculate_main_and_side_outcomes, calculate_main_outcomes, calculate_side_bet_outcomes,
     decision_snapshot_from_weights, effective_ev, main_bet_kelly_outcomes, replay_csv_text,
-    resolve_round,
+    resolve_round, side_bet_kelly_outcomes,
 };
 pub use card::{Card, CardParseError, Rank, Suit};
 pub use shoe::{DEFAULT_DECKS, MAX_DECKS, MIN_DECKS, Shoe, ShoeError};

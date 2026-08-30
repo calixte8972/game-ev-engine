@@ -31,6 +31,8 @@ self.addEventListener("message", async (event) => {
       config.payoutRule,
       config.stakeStrategy,
       config.fixedStake,
+      config.minimumSideBetEv,
+      config.sideBetLimit,
     );
     self.postMessage({
       type: "complete",

@@ -37,6 +37,8 @@ const sideBetLabels = {
   super_lucky_seven: "超级幸运 7",
 };
 
+const allBetLabels = { ...betLabels, ...sideBetLabels };
+
 const resultLabels = {
   win: "赢",
   loss: "输",
@@ -129,12 +131,14 @@ function strategyConfig() {
     decks: Number.parseInt(deckCount.value, 10),
     rebateRate: readNumber("#rebate-rate", "返水比例", { min: 0, max: 100 }) / 100,
     minimumEffectiveEv: readNumber("#minimum-ev", "最低有效 EV") / 100,
+    minimumSideBetEv: readNumber("#minimum-side-bet-ev", "边注最低 EV") / 100,
     bankroll: readNumber("#bankroll", "本金", { positive: true }),
     maxFraction: readNumber("#max-fraction", "单局本金比例上限", {
       min: 0,
       max: 100,
     }) / 100,
     maxRoundStake: readNumber("#max-round-stake", "单局金额上限", { min: 0 }),
+    sideBetLimit: readNumber("#side-bet-limit", "边注单笔金额上限", { min: 0 }),
     tableLimit: readNumber("#table-limit", "桌台金额上限", { min: 0 }),
     payoutRule: payoutRule.value,
     stakeStrategy: selectedStakeStrategy,
@@ -214,7 +218,7 @@ function renderResults(data, elapsedMilliseconds) {
 
   const decision = data.recommendation;
   recommendation.dataset.action = decision.action;
-  setText("#recommended-bet", betLabels[decision.candidate_bet]);
+  setText("#recommended-bet", allBetLabels[decision.candidate_bet]);
   setText("#recommended-ev", percent(decision.effective_ev));
   applySignedClass(document.querySelector("#recommended-ev"), decision.effective_ev);
   setText("#recommended-action", decision.action === "place" ? "可下注" : "跳过");
@@ -226,8 +230,11 @@ function renderResults(data, elapsedMilliseconds) {
   setText("#expected-profit", money(decision.expected_profit));
   applySignedClass(document.querySelector("#expected-profit"), decision.expected_profit);
 
+  const targetLimitText = decision.bet_category === "side"
+    ? "，并应用边注单独金额上限"
+    : "";
   const reason = decision.action === "place"
-    ? `采用${payoutRuleLabels[data.payout_rule]}与${stakeStrategyLabels[data.stake_strategy]}，已通过最低 EV 门槛；建议下${betLabels[decision.candidate_bet]}，金额已经过三项风险上限。`
+    ? `采用${payoutRuleLabels[data.payout_rule]}与${stakeStrategyLabels[data.stake_strategy]}，已通过对应 EV 门槛；建议下${allBetLabels[decision.candidate_bet]}，金额已经过共同风险上限${targetLimitText}。`
     : skipReasonLabels[decision.reason] ?? "当前策略决定跳过本局。";
   setText("#decision-reason", reason);
 }
@@ -261,6 +268,8 @@ function calculate() {
       config.payoutRule,
       config.stakeStrategy,
       config.fixedStake,
+      config.minimumSideBetEv,
+      config.sideBetLimit,
     );
     renderResults(JSON.parse(json), performance.now() - started);
   } catch (error) {
@@ -328,7 +337,7 @@ function renderReplay(report, elapsedMilliseconds) {
     row.append(
       detailCell(bet.started_at),
       detailCell(`${bet.table_id} / ${bet.session_id} / ${bet.round_no}`),
-      detailCell(betLabels[bet.bet]),
+      detailCell(allBetLabels[bet.bet]),
       detailCell(`${betLabels[bet.outcome]} · ${resultLabels[bet.result]}`),
       detailCell(percent(bet.effective_ev), evClass(bet.effective_ev)),
       detailCell(money(bet.amount)),

@@ -18,6 +18,8 @@
 
 use std::{error::Error, fmt};
 
+use super::RoundResult;
+
 /// 当前支持的五种边注。
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SideBet {
@@ -34,6 +36,15 @@ pub enum SideBet {
 }
 
 impl SideBet {
+    /// 策略比较时使用的稳定顺序。EV 完全相同时，排在前面的边注优先。
+    pub const ALL: [Self; 5] = [
+        Self::AnyPair,
+        Self::BankerPair,
+        Self::PlayerPair,
+        Self::LuckySeven,
+        Self::SuperLuckySeven,
+    ];
+
     /// 返回供 JSON、日志和前端使用的稳定名称。
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -137,6 +148,41 @@ impl SideBetRules {
             self.super_lucky_seven_five_cards,
             self.super_lucky_seven_six_cards,
         ]
+    }
+
+    /// 使用已经开奖的完整牌局结算一笔边注。
+    ///
+    /// 返回值统一使用“每下注 1 单位的净盈利”口径：命中返回对应档位净赔付，
+    /// 未命中返回 `-1.0`。边注没有主注和局 Push，也不会叠加主注返水。
+    pub fn settle(self, bet: SideBet, round: RoundResult) -> f64 {
+        let player = round.player_hand();
+        let banker = round.banker_hand();
+        let player_pair = player.first_card().rank() == player.second_card().rank();
+        let banker_pair = banker.first_card().rank() == banker.second_card().rank();
+
+        let payout = match bet {
+            SideBet::AnyPair if player_pair || banker_pair => Some(self.any_pair),
+            SideBet::BankerPair if banker_pair => Some(self.banker_pair),
+            SideBet::PlayerPair if player_pair => Some(self.player_pair),
+            SideBet::LuckySeven if player.total() == 7 && player.total() > banker.total() => {
+                Some(if player.card_count() == 2 {
+                    self.lucky_seven_two_cards
+                } else {
+                    self.lucky_seven_three_cards
+                })
+            }
+            SideBet::SuperLuckySeven if player.total() == 7 && banker.total() == 6 => {
+                Some(match round.card_count() {
+                    4 => self.super_lucky_seven_four_cards,
+                    5 => self.super_lucky_seven_five_cards,
+                    6 => self.super_lucky_seven_six_cards,
+                    _ => unreachable!("百家乐一局只能使用 4、5 或 6 张牌"),
+                })
+            }
+            _ => None,
+        };
+
+        payout.unwrap_or(-1.0)
     }
 }
 
@@ -363,7 +409,7 @@ impl Error for SideBetRuleError {}
 
 #[cfg(test)]
 mod tests {
-    use crate::{Shoe, calculate_side_bet_outcomes};
+    use crate::{Card, Shoe, calculate_side_bet_outcomes, resolve_round};
 
     use super::{SideBet, SideBetAnalysis, SideBetRules};
 
@@ -372,6 +418,14 @@ mod tests {
             (actual - expected).abs() <= tolerance,
             "{actual} differs from {expected} by more than {tolerance}"
         );
+    }
+
+    fn round(input: &str) -> crate::RoundResult {
+        let cards = input
+            .split_whitespace()
+            .map(|card| card.parse::<Card>().expect("测试牌面必须合法"))
+            .collect::<Vec<_>>();
+        resolve_round(&cards).expect("测试牌局必须符合补牌规则")
     }
 
     #[test]
@@ -432,5 +486,27 @@ mod tests {
             generous.metrics(SideBet::AnyPair).probability()
         );
         assert!(generous.metrics(SideBet::AnyPair).ev() > default.metrics(SideBet::AnyPair).ev());
+    }
+
+    #[test]
+    fn pair_side_bets_settle_from_the_two_initial_cards() {
+        let rules = SideBetRules::default();
+        let player_pair = round("4S AC 4H 2D");
+
+        assert_eq!(rules.settle(SideBet::AnyPair, player_pair), 5.0);
+        assert_eq!(rules.settle(SideBet::PlayerPair, player_pair), 11.0);
+        assert_eq!(rules.settle(SideBet::BankerPair, player_pair), -1.0);
+    }
+
+    #[test]
+    fn lucky_seven_and_super_lucky_seven_use_the_correct_card_tier() {
+        let rules = SideBetRules::default();
+        let four_cards = round("3S 2C 4H 4D");
+        let five_cards = round("2S 2C 3H 4D 2D");
+
+        assert_eq!(rules.settle(SideBet::LuckySeven, four_cards), 6.0);
+        assert_eq!(rules.settle(SideBet::SuperLuckySeven, four_cards), 30.0);
+        assert_eq!(rules.settle(SideBet::LuckySeven, five_cards), 15.0);
+        assert_eq!(rules.settle(SideBet::SuperLuckySeven, five_cards), 40.0);
     }
 }
