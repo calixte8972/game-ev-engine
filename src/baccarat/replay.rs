@@ -190,6 +190,7 @@ pub struct CsvReplayConfigSnapshot {
     pub decks: u8,
     pub payout_rule: &'static str,
     pub stake_strategy: &'static str,
+    pub strategy_parameter: Option<f64>,
     pub fixed_stake: Option<f64>,
     pub rebate_rule: &'static str,
     pub rebate_rate: f64,
@@ -370,6 +371,7 @@ pub fn replay_csv_text(
                 "standard_banker_commission_5_percent"
             },
             stake_strategy: config.stake_strategy.as_str(),
+            strategy_parameter: config.stake_strategy.parameter(),
             fixed_stake: config.stake_strategy.fixed_amount(),
             rebate_rule: if config.rebate_rate == 0.0 {
                 "none"

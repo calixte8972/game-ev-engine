@@ -30,7 +30,7 @@ self.addEventListener("message", async (event) => {
       config.tableLimit,
       config.payoutRule,
       config.stakeStrategy,
-      config.fixedStake,
+      config.strategyParameter,
       config.minimumSideBetEv,
       config.sideBetLimit,
     );

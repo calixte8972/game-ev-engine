@@ -31,6 +31,20 @@ if (manual.remaining_card_count !== 416) {
   throw new Error("完整八副牌的剩余张数不正确");
 }
 
+const bankrollFraction = JSON.parse(
+  analyzeBaccaratStrategy(
+    "consumed", 8, "", 0.02, 0, 10_000, 1, 1_000, 1_000,
+    "standard", "bankroll_fraction", 0.02, 0, 100,
+  ),
+);
+
+if (bankrollFraction.stake_strategy !== "bankroll_fraction"
+    || bankrollFraction.strategy_parameter !== 0.02
+    || bankrollFraction.recommendation.action !== "place"
+    || bankrollFraction.recommendation.suggested_amount !== 200) {
+  throw new Error("固定本金比例策略没有按当前本金计算下注金额");
+}
+
 const sideRecommendation = JSON.parse(
   analyzeBaccaratStrategy(
     "remaining", 8, "AS AC AD AH AS AC", 0, 0, 1_000, 1, 500, 1_000,
@@ -91,6 +105,10 @@ const output = {
       lucky_seven_rtp: manual.side_bets.lucky_seven.rtp,
       super_lucky_seven_rtp: manual.side_bets.super_lucky_seven.rtp,
     },
+  },
+  bankroll_fraction: {
+    parameter: bankrollFraction.strategy_parameter,
+    amount: bankrollFraction.recommendation.suggested_amount,
   },
   tiny_replay: {
     rounds: tinyReplay.summary.replayed_rounds,

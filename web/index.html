@@ -53,15 +53,20 @@
                 <option value="full_kelly" selected>完整凯利</option>
                 <option value="half_kelly">半凯利</option>
                 <option value="quarter_kelly">四分之一凯利</option>
+                <option value="custom_kelly">自定义分数凯利</option>
                 <option value="fixed">固定金额</option>
+                <option value="bankroll_fraction">固定本金比例</option>
+                <option value="target_expected_profit">固定期望盈利</option>
+                <option value="target_volatility">目标波动率</option>
               </select>
             </label>
 
-            <label id="fixed-stake-field" class="field" hidden>
-              <span>固定下注金额</span>
-              <span class="input-prefix">
-                <span>¥</span>
-                <input id="fixed-stake" type="number" value="100" min="0" step="10" />
+            <label id="strategy-parameter-field" class="field" hidden>
+              <span id="strategy-parameter-label">策略参数</span>
+              <span id="strategy-parameter-wrapper" class="input-prefix">
+                <span id="strategy-parameter-prefix">¥</span>
+                <input id="strategy-parameter" type="number" value="100" min="0" step="10" />
+                <span id="strategy-parameter-suffix" hidden>%</span>
               </span>
             </label>
 
@@ -131,7 +136,7 @@
           </div>
 
           <p class="field-help policy-help">
-            十一种目标先分别通过主注或边注 EV 门槛，再选择有效 EV 最高者。凯利策略按完整、二分之一或四分之一比例缩放；边注还会额外受到单独金额上限约束。
+            方向仍由 EV 门槛决定；金额可以使用分数凯利、固定金额、固定本金比例、固定期望盈利或目标波动率。所有策略都会经过本金比例、单局金额、桌台和边注上限。
           </p>
 
           <div class="subsection-heading shoe-heading">

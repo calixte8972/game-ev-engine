@@ -52,10 +52,30 @@ pub enum StakeSizingStrategy {
     HalfKelly,
     /// 使用完整凯利比例的四分之一，进一步降低回撤。
     QuarterKelly,
+    /// 使用调用者指定的完整凯利倍数，例如 `0.3` 表示三成凯利。
+    CustomKelly {
+        /// `0.0..=1.0` 内的完整凯利缩放系数。
+        fraction: f64,
+    },
     /// 每次通过 EV 门槛后尝试下注固定金额。
     Fixed {
         /// 风控上限生效前的目标金额。
         amount: f64,
+    },
+    /// 每次下注当前本金的固定比例，不读取凯利结果。
+    FixedBankrollFraction {
+        /// `0.0..=1.0` 内的本金比例。
+        fraction: f64,
+    },
+    /// 反推达到指定“单笔期望盈利金额”所需的下注额。
+    TargetExpectedProfit {
+        /// 风控上限生效前希望获得的单笔期望盈利。
+        amount: f64,
+    },
+    /// 根据单位收益分布的标准差控制单笔资金波动。
+    TargetVolatility {
+        /// 希望单笔收益标准差占当前本金的比例。
+        fraction: f64,
     },
 }
 
@@ -66,30 +86,77 @@ impl StakeSizingStrategy {
             Self::FullKelly => "full_kelly",
             Self::HalfKelly => "half_kelly",
             Self::QuarterKelly => "quarter_kelly",
+            Self::CustomKelly { .. } => "custom_kelly",
             Self::Fixed { .. } => "fixed",
+            Self::FixedBankrollFraction { .. } => "bankroll_fraction",
+            Self::TargetExpectedProfit { .. } => "target_expected_profit",
+            Self::TargetVolatility { .. } => "target_volatility",
         }
     }
 
-    /// 把完整凯利比例或固定金额转换为本策略的目标本金比例。
-    fn target_fraction(self, full_kelly_fraction: f64, bankroll: f64) -> f64 {
+    /// 把所选金额策略转换为目标本金比例。
+    fn target_fraction(
+        self,
+        full_kelly_fraction: f64,
+        bankroll: f64,
+        effective_ev: f64,
+        outcomes: &[KellyOutcome],
+    ) -> f64 {
         match self {
             Self::FullKelly => full_kelly_fraction,
             Self::HalfKelly => full_kelly_fraction * 0.5,
             Self::QuarterKelly => full_kelly_fraction * 0.25,
+            Self::CustomKelly { fraction } => full_kelly_fraction * fraction,
             Self::Fixed { amount } => amount / bankroll,
+            Self::FixedBankrollFraction { fraction } => fraction,
+            Self::TargetExpectedProfit { amount } => {
+                if effective_ev > 0.0 {
+                    amount / (bankroll * effective_ev)
+                } else {
+                    0.0
+                }
+            }
+            Self::TargetVolatility { fraction } => {
+                let variance = outcomes
+                    .iter()
+                    .map(|outcome| {
+                        let deviation = outcome.net_profit - effective_ev;
+                        outcome.probability * deviation * deviation
+                    })
+                    .sum::<f64>();
+                if variance > 0.0 {
+                    fraction / variance.sqrt()
+                } else {
+                    0.0
+                }
+            }
         }
     }
 
     /// 只有凯利类策略需要用“完整凯利必须为正”作为额外放行条件。
     const fn requires_positive_kelly(self) -> bool {
-        !matches!(self, Self::Fixed { .. })
+        matches!(
+            self,
+            Self::FullKelly | Self::HalfKelly | Self::QuarterKelly | Self::CustomKelly { .. }
+        )
     }
 
-    /// 固定金额策略返回配置金额；凯利策略没有固定金额。
+    /// 固定金额策略返回配置金额；其他策略没有“固定下注额”。
     pub const fn fixed_amount(self) -> Option<f64> {
         match self {
             Self::Fixed { amount } => Some(amount),
             _ => None,
+        }
+    }
+
+    /// 返回前端配置该策略时使用的单一数值参数。
+    pub const fn parameter(self) -> Option<f64> {
+        match self {
+            Self::FullKelly | Self::HalfKelly | Self::QuarterKelly => None,
+            Self::CustomKelly { fraction }
+            | Self::FixedBankrollFraction { fraction }
+            | Self::TargetVolatility { fraction } => Some(fraction),
+            Self::Fixed { amount } | Self::TargetExpectedProfit { amount } => Some(amount),
         }
     }
 }
@@ -195,6 +262,29 @@ impl KellyPolicy {
             && (!amount.is_finite() || amount < 0.0)
         {
             return Err(KellyError::InvalidFixedStake { value: amount });
+        }
+        match strategy {
+            StakeSizingStrategy::CustomKelly { fraction }
+            | StakeSizingStrategy::FixedBankrollFraction { fraction }
+            | StakeSizingStrategy::TargetVolatility { fraction }
+                if !fraction.is_finite() || !(0.0..=1.0).contains(&fraction) =>
+            {
+                return Err(KellyError::InvalidStrategyParameter {
+                    strategy: strategy.as_str(),
+                    value: fraction,
+                    expected: "a finite fraction in 0..=1",
+                });
+            }
+            StakeSizingStrategy::TargetExpectedProfit { amount }
+                if !amount.is_finite() || amount < 0.0 =>
+            {
+                return Err(KellyError::InvalidStrategyParameter {
+                    strategy: strategy.as_str(),
+                    value: amount,
+                    expected: "a finite non-negative amount",
+                });
+            }
+            _ => {}
         }
         validate_limit(
             max_round_stake,
@@ -311,9 +401,13 @@ impl KellyPolicy {
         // 这样日志中可以同时看到数学结果和实际执行结果。
         let kelly_fraction = calculate_kelly_fraction(outcomes, 1.0)?;
 
-        // 第三步：金额策略先把完整凯利转换成目标比例。半凯利、四分之一凯利
-        // 会缩小公式比例；固定金额则用 amount / bankroll 得到等价比例。
-        let strategy_fraction = self.strategy.target_fraction(kelly_fraction, bankroll);
+        // 第三步：金额策略统一转换成“目标本金比例”。凯利类缩放完整凯利，
+        // 固定金额用 amount / bankroll，固定本金比例直接使用配置比例；
+        // 目标期望盈利和目标波动率则分别从 EV、收益标准差反推比例。
+        // 后面的限额逻辑因此不需要知道具体使用了哪一种金额算法。
+        let strategy_fraction =
+            self.strategy
+                .target_fraction(kelly_fraction, bankroll, effective_ev, outcomes);
 
         // 第四步再应用共同的本金比例上限。金额策略和安全上限是两个概念：
         // 前者回答“想下多少”，后者回答“最多允许下多少”。
@@ -927,6 +1021,15 @@ pub enum KellyError {
         /// 调用者提供的固定金额。
         value: f64,
     },
+    /// 某个可配置金额策略收到不在允许范围内的参数。
+    InvalidStrategyParameter {
+        /// 稳定策略名称。
+        strategy: &'static str,
+        /// 调用者提供的非法数值。
+        value: f64,
+        /// 该策略要求的范围说明。
+        expected: &'static str,
+    },
     /// 系统单局金额上限不是有限非负数。
     InvalidMaxRoundStake {
         /// 调用者实际提供的单局金额上限。
@@ -978,6 +1081,14 @@ impl fmt::Display for KellyError {
                     "fixed stake must be finite and non-negative; got {value}"
                 )
             }
+            Self::InvalidStrategyParameter {
+                strategy,
+                value,
+                expected,
+            } => write!(
+                formatter,
+                "strategy {strategy} requires {expected}; got {value}"
+            ),
             Self::InvalidMaxRoundStake { value } => {
                 write!(
                     formatter,
@@ -1207,6 +1318,122 @@ mod tests {
         assert_close(half.kelly_fraction(), full.kelly_fraction());
         assert_close(half.strategy_fraction(), full.kelly_fraction() * 0.5);
         assert_close(half.amount(), full.amount() * 0.5);
+    }
+
+    #[test]
+    fn custom_kelly_accepts_an_arbitrary_safe_fraction() {
+        let weights = sample_weights();
+        let full =
+            KellyPolicy::with_strategy(StakeSizingStrategy::FullKelly, 1.0, 10_000.0, 10_000.0)
+                .expect("完整凯利配置合法")
+                .quote(
+                    weights,
+                    MainBetRules::standard(),
+                    RebateRule::None,
+                    MainBet::Tie,
+                    1_000.0,
+                )
+                .expect("完整凯利报价合法");
+        let custom = KellyPolicy::with_strategy(
+            StakeSizingStrategy::CustomKelly { fraction: 0.3 },
+            1.0,
+            10_000.0,
+            10_000.0,
+        )
+        .expect("三成凯利配置合法")
+        .quote(
+            weights,
+            MainBetRules::standard(),
+            RebateRule::None,
+            MainBet::Tie,
+            1_000.0,
+        )
+        .expect("三成凯利报价合法");
+
+        assert_close(custom.strategy_fraction(), full.kelly_fraction() * 0.3);
+        assert_close(custom.amount(), full.amount() * 0.3);
+    }
+
+    #[test]
+    fn non_kelly_strategies_convert_their_objective_into_a_stake() {
+        let weights = sample_weights();
+        let fixed_fraction = KellyPolicy::with_strategy(
+            StakeSizingStrategy::FixedBankrollFraction { fraction: 0.02 },
+            1.0,
+            10_000.0,
+            10_000.0,
+        )
+        .expect("固定本金比例配置合法")
+        .quote(
+            weights,
+            MainBetRules::standard(),
+            RebateRule::None,
+            MainBet::Tie,
+            1_000.0,
+        )
+        .expect("固定本金比例报价合法");
+        assert_close(fixed_fraction.strategy_fraction(), 0.02);
+        assert_close(fixed_fraction.amount(), 20.0);
+
+        // 测试分布中的和注 EV 为 0.5。若目标期望盈利是 10，所需下注额为
+        // 10 / 0.5 = 20，因此同样占 1000 本金的 2%。
+        let target_profit = KellyPolicy::with_strategy(
+            StakeSizingStrategy::TargetExpectedProfit { amount: 10.0 },
+            1.0,
+            10_000.0,
+            10_000.0,
+        )
+        .expect("目标期望盈利配置合法")
+        .quote(
+            weights,
+            MainBetRules::standard(),
+            RebateRule::None,
+            MainBet::Tie,
+            1_000.0,
+        )
+        .expect("目标期望盈利报价合法");
+        assert_close(target_profit.strategy_fraction(), 0.02);
+        assert_close(target_profit.amount(), 20.0);
+
+        let target_volatility = KellyPolicy::with_strategy(
+            StakeSizingStrategy::TargetVolatility { fraction: 0.01 },
+            1.0,
+            10_000.0,
+            10_000.0,
+        )
+        .expect("目标波动率配置合法")
+        .quote(
+            weights,
+            MainBetRules::standard(),
+            RebateRule::None,
+            MainBet::Tie,
+            1_000.0,
+        )
+        .expect("目标波动率报价合法");
+        assert!(target_volatility.amount() > 0.0);
+        assert!(target_volatility.amount() < 1_000.0);
+    }
+
+    #[test]
+    fn percentage_strategy_parameters_must_be_between_zero_and_one() {
+        assert!(
+            KellyPolicy::with_strategy(
+                StakeSizingStrategy::FixedBankrollFraction { fraction: 1.01 },
+                1.0,
+                100.0,
+                100.0,
+            )
+            .is_err()
+        );
+        assert!(
+            KellyPolicy::with_strategy(
+                StakeSizingStrategy::CustomKelly { fraction: f64::NAN },
+                1.0,
+                100.0,
+                100.0,
+            )
+            .is_err()
+        );
     }
 
     #[test]

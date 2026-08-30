@@ -21,7 +21,12 @@ const replayResults = document.querySelector("#replay-results");
 const replayBody = document.querySelector("#replay-body");
 const payoutRule = document.querySelector("#payout-rule");
 const stakeStrategy = document.querySelector("#stake-strategy");
-const fixedStakeField = document.querySelector("#fixed-stake-field");
+const strategyParameterField = document.querySelector("#strategy-parameter-field");
+const strategyParameterLabel = document.querySelector("#strategy-parameter-label");
+const strategyParameterWrapper = document.querySelector("#strategy-parameter-wrapper");
+const strategyParameterInput = document.querySelector("#strategy-parameter");
+const strategyParameterPrefix = document.querySelector("#strategy-parameter-prefix");
+const strategyParameterSuffix = document.querySelector("#strategy-parameter-suffix");
 
 const betLabels = {
   player: "闲",
@@ -57,7 +62,19 @@ const stakeStrategyLabels = {
   full_kelly: "完整凯利",
   half_kelly: "半凯利",
   quarter_kelly: "四分之一凯利",
+  custom_kelly: "自定义分数凯利",
   fixed: "固定金额",
+  bankroll_fraction: "固定本金比例",
+  target_expected_profit: "固定期望盈利",
+  target_volatility: "目标波动率",
+};
+
+const stakeStrategyParameters = {
+  custom_kelly: { label: "完整凯利缩放系数", unit: "percent", defaultValue: 30, step: 1 },
+  fixed: { label: "固定下注金额", unit: "money", defaultValue: 100, step: 10 },
+  bankroll_fraction: { label: "每局本金比例", unit: "percent", defaultValue: 1, step: 0.1 },
+  target_expected_profit: { label: "单笔目标期望盈利", unit: "money", defaultValue: 10, step: 1 },
+  target_volatility: { label: "单笔目标波动率", unit: "percent", defaultValue: 1, step: 0.1 },
 };
 
 const skipReasonLabels = {
@@ -130,6 +147,15 @@ function readNumber(selector, label, options = {}) {
 
 function strategyConfig() {
   const selectedStakeStrategy = stakeStrategy.value;
+  const parameterDefinition = stakeStrategyParameters[selectedStakeStrategy];
+  let strategyParameter = 0;
+  if (parameterDefinition) {
+    strategyParameter = readNumber("#strategy-parameter", parameterDefinition.label, {
+      min: 0,
+      max: parameterDefinition.unit === "percent" ? 100 : undefined,
+    });
+    if (parameterDefinition.unit === "percent") strategyParameter /= 100;
+  }
   return {
     decks: Number.parseInt(deckCount.value, 10),
     rebateRate: readNumber("#rebate-rate", "返水比例", { min: 0, max: 100 }) / 100,
@@ -145,14 +171,23 @@ function strategyConfig() {
     tableLimit: readNumber("#table-limit", "桌台金额上限", { min: 0 }),
     payoutRule: payoutRule.value,
     stakeStrategy: selectedStakeStrategy,
-    fixedStake: selectedStakeStrategy === "fixed"
-      ? readNumber("#fixed-stake", "固定下注金额", { min: 0 })
-      : 0,
+    strategyParameter,
   };
 }
 
 function updateStakeStrategyFields() {
-  fixedStakeField.hidden = stakeStrategy.value !== "fixed";
+  const definition = stakeStrategyParameters[stakeStrategy.value];
+  strategyParameterField.hidden = !definition;
+  if (!definition) return;
+
+  strategyParameterLabel.textContent = definition.label;
+  strategyParameterInput.value = String(definition.defaultValue);
+  strategyParameterInput.step = String(definition.step);
+  strategyParameterInput.max = definition.unit === "percent" ? "100" : "";
+  const isMoney = definition.unit === "money";
+  strategyParameterWrapper.className = isMoney ? "input-prefix" : "input-suffix";
+  strategyParameterPrefix.hidden = !isMoney;
+  strategyParameterSuffix.hidden = isMoney;
 }
 
 function updateModeHelp() {
@@ -270,7 +305,7 @@ function calculate() {
       config.tableLimit,
       config.payoutRule,
       config.stakeStrategy,
-      config.fixedStake,
+      config.strategyParameter,
       config.minimumSideBetEv,
       config.sideBetLimit,
     );
