@@ -136,10 +136,10 @@ pub(crate) struct PointRoundResult {
     player_total: u8,
     /// 庄家最终点数；概率层用它统计庄 6 点获胜子集。
     banker_total: u8,
-    /// 回合实际消费的点数数量，可能是 4、5 或 6。
-    // 生产枚举器优化后不再读取它，但保留该状态用于规则单元测试与教学验证。
-    #[cfg_attr(not(test), allow(dead_code))]
-    card_count: u8,
+    /// 闲家最终使用两张还是三张牌；幸运 7 的分档赔付需要这个信息。
+    player_card_count: u8,
+    /// 庄家最终使用两张还是三张牌；与闲家张数相加可得到超级幸运 7 档位。
+    banker_card_count: u8,
 }
 
 /// 按标准发牌顺序解析一个只含百家乐点数的回合。
@@ -173,6 +173,8 @@ pub(crate) fn resolve_point_round(points: &[u8]) -> Result<PointRoundResult, Rou
     let mut player_third_point: Option<u8> = None;
     // 前四张已经被起手牌消费，下一张可选补牌的下标是 4。
     let mut consumed: u8 = 4;
+    let mut player_card_count = 2;
+    let mut banker_card_count = 2;
 
     let player_is_natural = matches!(player_initial, 8 | 9);
 
@@ -190,6 +192,7 @@ pub(crate) fn resolve_point_round(points: &[u8]) -> Result<PointRoundResult, Rou
 
             player_third_point = Some(third_point);
             player_total = (player_initial + third_point) % 10;
+            player_card_count += 1;
             consumed += 1;
         }
 
@@ -201,6 +204,7 @@ pub(crate) fn resolve_point_round(points: &[u8]) -> Result<PointRoundResult, Rou
                 .ok_or(RoundError::MissingBankerThirdCard)?;
 
             banker_total = (banker_initial + third_point) % 10;
+            banker_card_count += 1;
             consumed += 1;
         }
     }
@@ -214,13 +218,34 @@ pub(crate) fn resolve_point_round(points: &[u8]) -> Result<PointRoundResult, Rou
     Ok(PointRoundResult {
         player_total,
         banker_total,
-        card_count: consumed,
+        player_card_count,
+        banker_card_count,
     })
 }
 impl PointRoundResult {
+    /// 返回闲家最终点数，用于幸运 7 与超级幸运 7 判定。
+    pub(crate) const fn player_total(self) -> u8 {
+        self.player_total
+    }
+
     /// 返回庄家最终点数，用于区分普通庄赢与庄 6 点赢。
     pub(crate) const fn banker_total(self) -> u8 {
         self.banker_total
+    }
+
+    /// 返回闲家最终手牌张数。
+    pub(crate) const fn player_card_count(self) -> u8 {
+        self.player_card_count
+    }
+
+    /// 返回庄家最终手牌张数。
+    pub(crate) const fn banker_card_count(self) -> u8 {
+        self.banker_card_count
+    }
+
+    /// 返回双方实际使用的总牌数。
+    pub(crate) const fn card_count(self) -> u8 {
+        self.player_card_count() + self.banker_card_count()
     }
 
     /// 直接比较双方最终点数，得到庄、闲或和。
@@ -367,7 +392,7 @@ mod tests {
 
         assert_eq!(result.player_total, 8);
         assert_eq!(result.banker_total, 7);
-        assert_eq!(result.card_count, 4);
+        assert_eq!(result.card_count(), 4);
         assert_eq!(result.outcome(), RoundOutcome::Player);
     }
 
@@ -377,7 +402,7 @@ mod tests {
 
         assert_eq!(result.player_total, 5);
         assert_eq!(result.banker_total, 6);
-        assert_eq!(result.card_count, 6);
+        assert_eq!(result.card_count(), 6);
         assert_eq!(result.outcome(), RoundOutcome::Banker);
     }
 
@@ -388,7 +413,7 @@ mod tests {
 
         assert_eq!(result.player_total, 6);
         assert_eq!(result.banker_total, 3);
-        assert_eq!(result.card_count, 5);
+        assert_eq!(result.card_count(), 5);
         assert_eq!(result.outcome(), RoundOutcome::Player);
     }
 
@@ -398,7 +423,7 @@ mod tests {
 
         assert_eq!(result.player_total, 6);
         assert_eq!(result.banker_total, 6);
-        assert_eq!(result.card_count, 4);
+        assert_eq!(result.card_count(), 4);
         assert_eq!(result.outcome(), RoundOutcome::Tie);
     }
 

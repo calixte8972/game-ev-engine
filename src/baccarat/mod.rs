@@ -33,6 +33,7 @@ mod replay;
 mod risk;
 mod round;
 mod rule;
+mod side_bet;
 mod snapshot;
 mod strategy;
 
@@ -43,7 +44,9 @@ pub use analysis::{
 pub use bet::{BankerPayoutRule, MainBet, MainBetRules};
 pub use ev::MainBetEv;
 pub use hand::BaccaratHand;
-pub use point_enumerate::calculate_main_outcomes;
+pub use point_enumerate::{
+    calculate_main_and_side_outcomes, calculate_main_outcomes, calculate_side_bet_outcomes,
+};
 pub use probability::{OutcomeWeights, ProbabilityError};
 pub use rebate::RebateRule;
 pub use replay::{
@@ -57,6 +60,9 @@ pub use risk::{
 pub(crate) use round::resolve_point_round;
 pub use round::{RoundError, RoundOutcome, RoundResult, compare_hands, resolve_round};
 pub use rule::{banker_should_draw, player_should_draw};
+pub use side_bet::{
+    SideBet, SideBetAnalysis, SideBetMetrics, SideBetRuleError, SideBetRules, SideBetWeights,
+};
 pub use snapshot::{
     ActionSnapshot, BetSnapshot, DECISION_SNAPSHOT_SCHEMA_VERSION, DecisionSnapshot,
     ENGINE_VERSION, SnapshotError, analyze_snapshot, decision_snapshot_from_weights,

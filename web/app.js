@@ -10,6 +10,7 @@ const modeHelp = document.querySelector("#mode-help");
 const wasmStatus = document.querySelector("#wasm-status");
 const errorMessage = document.querySelector("#error-message");
 const resultBody = document.querySelector("#result-body");
+const sideResultBody = document.querySelector("#side-result-body");
 const recommendation = document.querySelector("#recommendation");
 const csvFileInput = document.querySelector("#csv-file");
 const selectedFile = document.querySelector("#selected-file");
@@ -26,6 +27,14 @@ const betLabels = {
   player: "闲",
   banker: "庄",
   tie: "和",
+};
+
+const sideBetLabels = {
+  any_pair: "任意对子",
+  banker_pair: "庄对",
+  player_pair: "闲对",
+  lucky_seven: "幸运 7",
+  super_lucky_seven: "超级幸运 7",
 };
 
 const resultLabels = {
@@ -184,6 +193,23 @@ function renderResults(data, elapsedMilliseconds) {
       metricCell(metrics.rtp),
     );
     resultBody.append(row);
+  }
+
+  sideResultBody.replaceChildren();
+  for (const key of Object.keys(sideBetLabels)) {
+    const metrics = data.side_bets[key];
+    const row = document.createElement("tr");
+    const name = document.createElement("td");
+    name.textContent = sideBetLabels[key];
+    row.append(
+      name,
+      metricCell(metrics.probability),
+      detailCell(metrics.payout),
+      metricCell(metrics.ev, true),
+      metricCell(metrics.house_edge),
+      metricCell(metrics.rtp),
+    );
+    sideResultBody.append(row);
   }
 
   const decision = data.recommendation;

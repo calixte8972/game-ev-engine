@@ -305,6 +305,14 @@ textarea:focus-visible {
   margin: 10px 0 0;
 }
 
+.side-bet-heading {
+  margin-top: 22px;
+}
+
+.side-bet-note {
+  margin-bottom: 0;
+}
+
 .deck-field {
   margin-bottom: 18px;
 }

@@ -13,8 +13,9 @@ use serde::Serialize;
 
 use crate::{
     BetPlanAction, BetPlanSkipReason, BettingPolicy, Card, CsvReplayConfig, EffectiveBetMetrics,
-    KellyPolicy, MainBet, MainBetAnalysis, MainBetRules, RebateRule, Shoe, SkipReason,
-    StakeSizingStrategy, calculate_main_outcomes, replay_csv_text,
+    KellyPolicy, MainBet, MainBetAnalysis, MainBetRules, RebateRule, Shoe, SideBet,
+    SideBetAnalysis, SideBetMetrics, SideBetRules, SkipReason, StakeSizingStrategy,
+    calculate_main_and_side_outcomes, replay_csv_text,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -196,9 +197,10 @@ pub fn analyze_baccarat_strategy_json(
     let kelly_policy =
         KellyPolicy::with_strategy(stake_strategy, max_fraction, max_round_stake, table_limit)
             .map_err(|error| format!("资金策略不合法：{error}"))?;
-    let weights =
-        calculate_main_outcomes(&shoe).map_err(|error| format!("概率与 EV 计算失败：{error}"))?;
+    let (weights, side_weights) = calculate_main_and_side_outcomes(&shoe)
+        .map_err(|error| format!("概率与 EV 计算失败：{error}"))?;
     let analysis = MainBetAnalysis::from_weights(weights, rules);
+    let side_analysis = SideBetAnalysis::calculate(side_weights, SideBetRules::default());
     let plan = kelly_policy
         .plan(&policy, weights, rules, bankroll)
         .map_err(|error| format!("下注策略计算失败：{error}"))?;
@@ -222,6 +224,26 @@ pub fn analyze_baccarat_strategy_json(
             player: BrowserBetMetrics::from_analysis(analysis, MainBet::Player, rebate),
             banker: BrowserBetMetrics::from_analysis(analysis, MainBet::Banker, rebate),
             tie: BrowserBetMetrics::from_analysis(analysis, MainBet::Tie, rebate),
+        },
+        side_bet_rules: "macau_lucky_seven_6_15_super_30_40_100",
+        side_bets: BrowserSideBets {
+            any_pair: BrowserSideBetMetrics::new(side_analysis.metrics(SideBet::AnyPair), "5:1"),
+            banker_pair: BrowserSideBetMetrics::new(
+                side_analysis.metrics(SideBet::BankerPair),
+                "11:1",
+            ),
+            player_pair: BrowserSideBetMetrics::new(
+                side_analysis.metrics(SideBet::PlayerPair),
+                "11:1",
+            ),
+            lucky_seven: BrowserSideBetMetrics::new(
+                side_analysis.metrics(SideBet::LuckySeven),
+                "闲2张 6:1 / 闲3张 15:1",
+            ),
+            super_lucky_seven: BrowserSideBetMetrics::new(
+                side_analysis.metrics(SideBet::SuperLuckySeven),
+                "总4张 30:1 / 5张 40:1 / 6张 100:1",
+            ),
         },
         recommendation: BrowserRecommendation {
             candidate_bet: decision.candidate().as_str(),
@@ -334,6 +356,8 @@ struct BrowserAnalysis {
     stake_strategy: &'static str,
     fixed_stake: Option<f64>,
     bets: BrowserBets,
+    side_bet_rules: &'static str,
+    side_bets: BrowserSideBets,
     recommendation: BrowserRecommendation,
 }
 
@@ -343,6 +367,38 @@ struct BrowserBets {
     player: BrowserBetMetrics,
     banker: BrowserBetMetrics,
     tie: BrowserBetMetrics,
+}
+
+/// 第一批边注的浏览器展示结果。
+#[derive(Debug, Serialize)]
+struct BrowserSideBets {
+    any_pair: BrowserSideBetMetrics,
+    banker_pair: BrowserSideBetMetrics,
+    player_pair: BrowserSideBetMetrics,
+    lucky_seven: BrowserSideBetMetrics,
+    super_lucky_seven: BrowserSideBetMetrics,
+}
+
+/// 边注的一行概率、基础 EV 与赔付说明。
+#[derive(Debug, Serialize)]
+struct BrowserSideBetMetrics {
+    probability: f64,
+    ev: f64,
+    house_edge: f64,
+    rtp: f64,
+    payout: &'static str,
+}
+
+impl BrowserSideBetMetrics {
+    fn new(metrics: SideBetMetrics, payout: &'static str) -> Self {
+        Self {
+            probability: metrics.probability(),
+            ev: metrics.ev(),
+            house_edge: metrics.house_edge(),
+            rtp: metrics.rtp(),
+            payout,
+        }
+    }
 }
 
 /// 页面表格中一行需要显示的概率和 EV 指标。
@@ -405,6 +461,17 @@ mod tests {
         assert_eq!(value["remaining_card_count"], 416);
         assert_eq!(value["rebate_rate"], 0.009);
         assert_eq!(value["recommendation"]["candidate_bet"], "banker");
+        assert_eq!(
+            value["side_bet_rules"],
+            "macau_lucky_seven_6_15_super_30_40_100"
+        );
+        assert_eq!(value["side_bets"]["banker_pair"]["payout"], "11:1");
+        assert!(
+            value["side_bets"]["lucky_seven"]["probability"]
+                .as_f64()
+                .expect("幸运 7 概率应为数字")
+                > 0.0
+        );
 
         let probability_sum = value["bets"]["player"]["probability"]
             .as_f64()

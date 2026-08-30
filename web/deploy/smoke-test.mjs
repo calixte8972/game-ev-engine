@@ -24,6 +24,14 @@ if (manual.remaining_card_count !== 416) {
   throw new Error("完整八副牌的剩余张数不正确");
 }
 
+if (manual.side_bets.banker_pair.payout !== "11:1") {
+  throw new Error("庄对赔付表没有进入 WASM 输出");
+}
+
+if (Math.abs(manual.side_bets.lucky_seven.rtp - 0.8170) > 0.00005) {
+  throw new Error("幸运 7 的完整牌靴 RTP 偏离规则基线");
+}
+
 const tinyCsv = `__source_pk,table_id,session_id,round_no,started_at,settled_at,raw_cards,result_code
 a,1,9001,1,2026-08-20 00:00:12,2026-08-20 00:00:44,"b:24,31,45;p:31,42,47",36
 b,1,9001,2,2026-08-20 00:00:54,2026-08-20 00:01:17,"b:73,62,;p:53,8,",322
@@ -45,6 +53,11 @@ const output = {
     candidate: manual.recommendation.candidate_bet,
     action: manual.recommendation.action,
     amount: manual.recommendation.suggested_amount,
+    side_bets: {
+      banker_pair_probability: manual.side_bets.banker_pair.probability,
+      lucky_seven_rtp: manual.side_bets.lucky_seven.rtp,
+      super_lucky_seven_rtp: manual.side_bets.super_lucky_seven.rtp,
+    },
   },
   tiny_replay: {
     rounds: tinyReplay.summary.replayed_rounds,

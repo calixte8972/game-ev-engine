@@ -113,6 +113,9 @@ pub enum Rank {
 }
 
 impl Rank {
+    /// 标准牌共有 13 种不同 Rank。
+    pub const DISTINCT_COUNT: usize = 13;
+
     /// 一副牌中的全部牌面。
     pub const ALL: [Self; 13] = [
         Self::Ace,

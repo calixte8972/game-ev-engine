@@ -267,6 +267,34 @@
         <p class="result-note">
           “最优”不等于“下注”：还要通过最低 EV 门槛和金额上限；凯利类策略还要求完整凯利比例为正。
         </p>
+
+        <div class="subsection-heading side-bet-heading">
+          <h3>边注概率与基础 EV</h3>
+          <span>按当前剩余牌靴精确计算</span>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">边注</th>
+                <th scope="col">命中率</th>
+                <th scope="col">净赔付</th>
+                <th scope="col">基础 EV</th>
+                <th scope="col">庄家优势</th>
+                <th scope="col">RTP</th>
+              </tr>
+            </thead>
+            <tbody id="side-result-body">
+              <tr class="placeholder-row">
+                <td colspan="6">计算牌靴后显示对子与幸运 7 系列。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="result-note side-bet-note">
+          边注暂时只展示概率和基础 EV，不参与上方自动方向与下注金额推荐，也不叠加主注返水。
+        </p>
       </section>
 
       <section class="panel replay-panel" aria-labelledby="replay-title">

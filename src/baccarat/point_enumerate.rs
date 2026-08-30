@@ -14,7 +14,7 @@
 
 use std::{collections::HashMap, sync::OnceLock};
 
-use crate::{OutcomeWeights, ProbabilityError, RoundError, RoundOutcome, Shoe};
+use crate::{OutcomeWeights, ProbabilityError, RoundError, RoundOutcome, Shoe, SideBetWeights};
 
 use super::probability::falling_factorial;
 use super::resolve_point_round;
@@ -33,6 +33,11 @@ struct CompositionCoefficient {
     banker_permutations: u16,
     tie_permutations: u16,
     banker_win_on_six_permutations: u16,
+    lucky_seven_two_cards_permutations: u16,
+    lucky_seven_three_cards_permutations: u16,
+    super_lucky_seven_four_cards_permutations: u16,
+    super_lucky_seven_five_cards_permutations: u16,
+    super_lucky_seven_six_cards_permutations: u16,
 }
 
 /// 全进程共享系数表。同一 WASM 实例内的所有牌靴状态只初始化一次。
@@ -40,6 +45,69 @@ static COMPOSITION_TABLE: OnceLock<Vec<CompositionCoefficient>> = OnceLock::new(
 
 /// 根据当前牌靴精确计算下一局庄、闲、和的概率权重。
 pub fn calculate_main_outcomes(shoe: &Shoe) -> Result<OutcomeWeights, ProbabilityError> {
+    point_outcomes(shoe)?.main_weights()
+}
+
+/// 根据当前牌靴计算任意对子、庄对、闲对、幸运 7 和超级幸运 7 权重。
+pub fn calculate_side_bet_outcomes(shoe: &Shoe) -> Result<SideBetWeights, ProbabilityError> {
+    let point = point_outcomes(shoe)?;
+    let pairs = pair_weights(shoe)?;
+    Ok(point.side_bet_weights(pairs))
+}
+
+/// 一次点数枚举同时返回主注和边注权重，供浏览器避免重复遍历系数表。
+pub fn calculate_main_and_side_outcomes(
+    shoe: &Shoe,
+) -> Result<(OutcomeWeights, SideBetWeights), ProbabilityError> {
+    let point = point_outcomes(shoe)?;
+    let main = point.main_weights()?;
+    let sides = point.side_bet_weights(pair_weights(shoe)?);
+    Ok((main, sides))
+}
+
+/// 一次点数聚合枚举的内部累计结果。
+#[derive(Debug, Clone, Copy)]
+struct PointOutcomeAccumulator {
+    total_cards: u16,
+    player: u64,
+    banker: u64,
+    tie: u64,
+    banker_win_on_six: u64,
+    lucky_seven_two_cards: u64,
+    lucky_seven_three_cards: u64,
+    super_lucky_seven_four_cards: u64,
+    super_lucky_seven_five_cards: u64,
+    super_lucky_seven_six_cards: u64,
+}
+
+impl PointOutcomeAccumulator {
+    fn main_weights(self) -> Result<OutcomeWeights, ProbabilityError> {
+        OutcomeWeights::from_detailed_weights(
+            self.total_cards,
+            self.player,
+            self.banker,
+            self.tie,
+            self.banker_win_on_six,
+        )
+    }
+
+    fn side_bet_weights(self, pairs: PairWeights) -> SideBetWeights {
+        let total = falling_factorial(self.total_cards, 6);
+        SideBetWeights::new(
+            total,
+            pairs.any,
+            pairs.banker,
+            pairs.player,
+            self.lucky_seven_two_cards,
+            self.lucky_seven_three_cards,
+            self.super_lucky_seven_four_cards,
+            self.super_lucky_seven_five_cards,
+            self.super_lucky_seven_six_cards,
+        )
+    }
+}
+
+fn point_outcomes(shoe: &Shoe) -> Result<PointOutcomeAccumulator, ProbabilityError> {
     let total_cards = shoe.total_remaining();
     if total_cards < 6 {
         return Err(ProbabilityError::NotEnoughCards {
@@ -67,6 +135,11 @@ pub fn calculate_main_outcomes(shoe: &Shoe) -> Result<OutcomeWeights, Probabilit
     let mut banker = 0_u64;
     let mut tie = 0_u64;
     let mut banker_win_on_six = 0_u64;
+    let mut lucky_seven_two_cards = 0_u64;
+    let mut lucky_seven_three_cards = 0_u64;
+    let mut super_lucky_seven_four_cards = 0_u64;
+    let mut super_lucky_seven_five_cards = 0_u64;
+    let mut super_lucky_seven_six_cards = 0_u64;
 
     for coefficient in composition_table() {
         // 同一点数组成的所有抽象排列，对应相同数量的物理发牌序列。
@@ -104,10 +177,136 @@ pub fn calculate_main_outcomes(shoe: &Shoe) -> Result<OutcomeWeights, Probabilit
             physical_sequences_per_permutation,
             coefficient.banker_win_on_six_permutations,
         )?;
+        lucky_seven_two_cards = add_weight(
+            lucky_seven_two_cards,
+            physical_sequences_per_permutation,
+            coefficient.lucky_seven_two_cards_permutations,
+        )?;
+        lucky_seven_three_cards = add_weight(
+            lucky_seven_three_cards,
+            physical_sequences_per_permutation,
+            coefficient.lucky_seven_three_cards_permutations,
+        )?;
+        super_lucky_seven_four_cards = add_weight(
+            super_lucky_seven_four_cards,
+            physical_sequences_per_permutation,
+            coefficient.super_lucky_seven_four_cards_permutations,
+        )?;
+        super_lucky_seven_five_cards = add_weight(
+            super_lucky_seven_five_cards,
+            physical_sequences_per_permutation,
+            coefficient.super_lucky_seven_five_cards_permutations,
+        )?;
+        super_lucky_seven_six_cards = add_weight(
+            super_lucky_seven_six_cards,
+            physical_sequences_per_permutation,
+            coefficient.super_lucky_seven_six_cards_permutations,
+        )?;
     }
 
-    // 构造器会再次验证三种互斥结果是否恰好等于 (总牌数)₆。
-    OutcomeWeights::from_detailed_weights(total_cards, player, banker, tie, banker_win_on_six)
+    Ok(PointOutcomeAccumulator {
+        total_cards,
+        player,
+        banker,
+        tie,
+        banker_win_on_six,
+        lucky_seven_two_cards,
+        lucky_seven_three_cards,
+        super_lucky_seven_four_cards,
+        super_lucky_seven_five_cards,
+        super_lucky_seven_six_cards,
+    })
+}
+
+/// 对子只依赖前四张牌的 Rank；终局后再用任意两张补齐统一六张分母。
+#[derive(Debug, Default, Clone, Copy)]
+struct PairWeights {
+    any: u64,
+    banker: u64,
+    player: u64,
+}
+
+fn pair_weights(shoe: &Shoe) -> Result<PairWeights, ProbabilityError> {
+    let total_cards = shoe.total_remaining();
+    if total_cards < 6 {
+        return Err(ProbabilityError::NotEnoughCards {
+            remaining: total_cards,
+        });
+    }
+
+    let mut counts = shoe.rank_counts();
+    let completion_weight = falling_factorial(total_cards - 4, 2);
+    let mut result = PairWeights::default();
+
+    // 发牌顺序仍是 P1、B1、P2、B2。循环中的 copies 让同 Rank 下不同花色、
+    // 不同副牌的物理牌都被正确计入，同时扣减 counts 表达不放回抽牌。
+    for player_first in 0..counts.len() {
+        let player_first_copies = counts[player_first];
+        if player_first_copies == 0 {
+            continue;
+        }
+        counts[player_first] -= 1;
+
+        for banker_first in 0..counts.len() {
+            let banker_first_copies = counts[banker_first];
+            if banker_first_copies == 0 {
+                continue;
+            }
+            counts[banker_first] -= 1;
+
+            for player_second in 0..counts.len() {
+                let player_second_copies = counts[player_second];
+                if player_second_copies == 0 {
+                    continue;
+                }
+                counts[player_second] -= 1;
+
+                for (banker_second, &banker_second_copies) in counts.iter().enumerate() {
+                    if banker_second_copies == 0 {
+                        continue;
+                    }
+
+                    let first_four_weight = u64::from(player_first_copies)
+                        .checked_mul(u64::from(banker_first_copies))
+                        .and_then(|weight| weight.checked_mul(u64::from(player_second_copies)))
+                        .and_then(|weight| weight.checked_mul(u64::from(banker_second_copies)))
+                        .ok_or(ProbabilityError::WeightOverflow)?;
+                    let weight = first_four_weight
+                        .checked_mul(completion_weight)
+                        .ok_or(ProbabilityError::WeightOverflow)?;
+                    let player_pair = player_first == player_second;
+                    let banker_pair = banker_first == banker_second;
+
+                    if player_pair {
+                        result.player = result
+                            .player
+                            .checked_add(weight)
+                            .ok_or(ProbabilityError::WeightOverflow)?;
+                    }
+                    if banker_pair {
+                        result.banker = result
+                            .banker
+                            .checked_add(weight)
+                            .ok_or(ProbabilityError::WeightOverflow)?;
+                    }
+                    if player_pair || banker_pair {
+                        result.any = result
+                            .any
+                            .checked_add(weight)
+                            .ok_or(ProbabilityError::WeightOverflow)?;
+                    }
+                }
+
+                counts[player_second] += 1;
+            }
+
+            counts[banker_first] += 1;
+        }
+
+        counts[player_first] += 1;
+    }
+
+    Ok(result)
 }
 
 /// 把“一种排列的物理权重 × 该结果排列数”安全加入结果桶。
@@ -162,6 +361,11 @@ fn enumerate_abstract_sequences(
                     banker_permutations: 0,
                     tie_permutations: 0,
                     banker_win_on_six_permutations: 0,
+                    lucky_seven_two_cards_permutations: 0,
+                    lucky_seven_three_cards_permutations: 0,
+                    super_lucky_seven_four_cards_permutations: 0,
+                    super_lucky_seven_five_cards_permutations: 0,
+                    super_lucky_seven_six_cards_permutations: 0,
                 });
 
         match result.outcome() {
@@ -171,6 +375,22 @@ fn enumerate_abstract_sequences(
         }
         if result.outcome() == RoundOutcome::Banker && result.banker_total() == 6 {
             coefficient.banker_win_on_six_permutations += 1;
+        }
+        if result.outcome() == RoundOutcome::Player && result.player_total() == 7 {
+            if result.player_card_count() == 2 {
+                coefficient.lucky_seven_two_cards_permutations += 1;
+            } else {
+                coefficient.lucky_seven_three_cards_permutations += 1;
+            }
+
+            if result.banker_total() == 6 {
+                match result.card_count() {
+                    4 => coefficient.super_lucky_seven_four_cards_permutations += 1,
+                    5 => coefficient.super_lucky_seven_five_cards_permutations += 1,
+                    6 => coefficient.super_lucky_seven_six_cards_permutations += 1,
+                    _ => unreachable!("百家乐终局只能使用四至六张牌"),
+                }
+            }
         }
         return;
     }

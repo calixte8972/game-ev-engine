@@ -126,6 +126,23 @@ impl Shoe {
         point_counts
     }
 
+    /// 按 Rank 聚合当前剩余牌，返回 A、2、…、10、J、Q、K 各自的数量。
+    ///
+    /// 主注只需要 0～9 点，但对子边注必须区分 10、J、Q、K；因此对子概率
+    /// 使用这份 13 类计数，不能复用会把四种牌都压成 0 点的数组。
+    pub fn rank_counts(&self) -> [u16; Rank::DISTINCT_COUNT] {
+        let mut rank_counts = [0_u16; Rank::DISTINCT_COUNT];
+
+        for rank in Rank::ALL {
+            for suit in Suit::ALL {
+                rank_counts[rank.index()] += u16::from(self.remaining(Card::new(rank, suit)));
+            }
+        }
+
+        debug_assert_eq!(rank_counts.iter().sum::<u16>(), self.total);
+        rank_counts
+    }
+
     /// 根据“当前仍在牌靴中的牌”直接重建牌靴。
     ///
     /// 这与 [`Self::new`] 的语义不同：
