@@ -19,6 +19,14 @@ const replayStatus = document.querySelector("#replay-status");
 const replayError = document.querySelector("#replay-error");
 const replayResults = document.querySelector("#replay-results");
 const replayBody = document.querySelector("#replay-body");
+const replayDetailWrap = document.querySelector(".replay-detail-wrap");
+const replayPagination = document.querySelector("#replay-pagination");
+const replayPageSize = document.querySelector("#replay-page-size");
+const replayFirstPage = document.querySelector("#replay-first-page");
+const replayPreviousPage = document.querySelector("#replay-previous-page");
+const replayNextPage = document.querySelector("#replay-next-page");
+const replayLastPage = document.querySelector("#replay-last-page");
+const replayPageStatus = document.querySelector("#replay-page-status");
 const payoutRule = document.querySelector("#payout-rule");
 const stakeStrategy = document.querySelector("#stake-strategy");
 const strategyParameterField = document.querySelector("#strategy-parameter-field");
@@ -95,6 +103,8 @@ let wasmReady = false;
 let replayWorkerReady = false;
 let replayRunning = false;
 let currentCsvFile = null;
+let currentReplayReport = null;
+let currentReplayPage = 1;
 
 const replayWorker = new Worker(new URL("./replay-worker.js", import.meta.url), {
   type: "module",
@@ -337,34 +347,19 @@ function detailCell(value, className = "") {
   return cell;
 }
 
-function renderReplay(report, elapsedMilliseconds) {
-  replayError.hidden = true;
-  replayResults.hidden = false;
-  const { dataset, quality, summary } = report;
+function renderReplayDetails() {
+  if (!currentReplayReport) return;
+
+  const { bets, omitted_bet_details: omittedBetDetails, summary } = currentReplayReport;
+  const pageSize = Number.parseInt(replayPageSize.value, 10);
+  const totalPages = Math.max(1, Math.ceil(bets.length / pageSize));
+  currentReplayPage = Math.min(Math.max(currentReplayPage, 1), totalPages);
+  const startIndex = (currentReplayPage - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, bets.length);
+  const visibleBets = bets.slice(startIndex, endIndex);
 
   setText("#replayed-rounds", integerFormatter.format(summary.replayed_rounds));
-  setText("#placed-bets", integerFormatter.format(summary.placed_bet_count));
-  setText("#total-stake", money(summary.total_stake));
-  setText("#final-bankroll", money(summary.final_bankroll));
-  setText("#total-profit", money(summary.total_profit));
-  applySignedClass(document.querySelector("#total-profit"), summary.total_profit);
-  setText("#rebate-income", money(summary.rebate_income));
-  setText("#return-on-initial", percent(summary.return_on_initial, 2));
-  applySignedClass(document.querySelector("#return-on-initial"), summary.return_on_initial);
-  setText(
-    "#maximum-drawdown",
-    `${money(summary.maximum_drawdown)} · ${percent(summary.maximum_drawdown_rate, 2)}`,
-  );
-
-  setText("#dataset-rows", integerFormatter.format(dataset.total_rows));
-  setText("#valid-sessions", integerFormatter.format(quality.fully_observable_sessions));
-  setText("#quarantined-rounds", integerFormatter.format(quality.quarantined_rounds));
-  setText("#valid-card-rows", integerFormatter.format(quality.valid_card_rows));
-  setText("#hit-rate", percent(summary.hit_rate, 2));
-  setText("#replay-time", `${(elapsedMilliseconds / 1000).toFixed(2)} 秒`);
-
   replayBody.replaceChildren();
-  const visibleBets = report.bets.slice(0, 500);
   for (const bet of visibleBets) {
     const row = document.createElement("tr");
     const resultClass = bet.actual_profit > 0
@@ -399,14 +394,61 @@ function renderReplay(report, elapsedMilliseconds) {
     replayBody.append(row);
   }
 
-  const browserOmitted = report.bets.length - visibleBets.length;
-  const omitted = report.omitted_bet_details + browserOmitted;
+  replayPagination.hidden = bets.length === 0;
+  replayFirstPage.disabled = currentReplayPage === 1;
+  replayPreviousPage.disabled = currentReplayPage === 1;
+  replayNextPage.disabled = currentReplayPage === totalPages;
+  replayLastPage.disabled = currentReplayPage === totalPages;
+  replayPageStatus.textContent = `第 ${integerFormatter.format(currentReplayPage)} / ${integerFormatter.format(totalPages)} 页`;
+
+  if (omittedBetDetails > 0) {
+    setText(
+      "#detail-note",
+      `当前报告来自旧版回放核心，仍有 ${integerFormatter.format(omittedBetDetails)} 笔明细未包含；请重新运行回放。`,
+    );
+  } else if (bets.length === 0) {
+    setText("#detail-note", "本次策略没有产生可下注明细。");
+  } else if (totalPages === 1) {
+    setText("#detail-note", `共 ${integerFormatter.format(bets.length)} 笔下注，已显示全部明细。`);
+  } else {
+    setText(
+      "#detail-note",
+      `共 ${integerFormatter.format(bets.length)} 笔下注；当前显示第 ${integerFormatter.format(startIndex + 1)}–${integerFormatter.format(endIndex)} 笔，可翻页查看全部明细。`,
+    );
+  }
+
+  replayDetailWrap.scrollTop = 0;
+}
+
+function renderReplay(report, elapsedMilliseconds) {
+  replayError.hidden = true;
+  replayResults.hidden = false;
+  currentReplayReport = report;
+  currentReplayPage = 1;
+  const { dataset, quality, summary } = report;
+
+  setText("#replayed-rounds", integerFormatter.format(summary.replayed_rounds));
+  setText("#placed-bets", integerFormatter.format(summary.placed_bet_count));
+  setText("#total-stake", money(summary.total_stake));
+  setText("#final-bankroll", money(summary.final_bankroll));
+  setText("#total-profit", money(summary.total_profit));
+  applySignedClass(document.querySelector("#total-profit"), summary.total_profit);
+  setText("#rebate-income", money(summary.rebate_income));
+  setText("#return-on-initial", percent(summary.return_on_initial, 2));
+  applySignedClass(document.querySelector("#return-on-initial"), summary.return_on_initial);
   setText(
-    "#detail-note",
-    omitted > 0
-      ? `共 ${integerFormatter.format(summary.placed_bet_count)} 笔下注；页面展示前 ${visibleBets.length} 笔，省略 ${integerFormatter.format(omitted)} 笔明细，汇总仍包含全部数据。`
-      : `共 ${integerFormatter.format(summary.placed_bet_count)} 笔下注，已显示全部明细。`,
+    "#maximum-drawdown",
+    `${money(summary.maximum_drawdown)} · ${percent(summary.maximum_drawdown_rate, 2)}`,
   );
+
+  setText("#dataset-rows", integerFormatter.format(dataset.total_rows));
+  setText("#valid-sessions", integerFormatter.format(quality.fully_observable_sessions));
+  setText("#quarantined-rounds", integerFormatter.format(quality.quarantined_rounds));
+  setText("#valid-card-rows", integerFormatter.format(quality.valid_card_rows));
+  setText("#hit-rate", percent(summary.hit_rate, 2));
+  setText("#replay-time", `${(elapsedMilliseconds / 1000).toFixed(2)} 秒`);
+
+  renderReplayDetails();
 }
 
 form.addEventListener("submit", (event) => {
@@ -442,6 +484,8 @@ csvFileInput.addEventListener("change", () => {
   currentCsvFile = file ?? null;
   replayResults.hidden = true;
   replayError.hidden = true;
+  currentReplayReport = null;
+  replayPagination.hidden = true;
 
   if (!currentCsvFile) {
     selectedFile.textContent = "尚未选择文件";
@@ -451,6 +495,33 @@ csvFileInput.addEventListener("change", () => {
     replayStatus.textContent = replayWorkerReady ? "可以开始回放" : "正在准备回放核心…";
   }
   updateReplayButton();
+});
+
+replayPageSize.addEventListener("change", () => {
+  currentReplayPage = 1;
+  renderReplayDetails();
+});
+
+replayFirstPage.addEventListener("click", () => {
+  currentReplayPage = 1;
+  renderReplayDetails();
+});
+
+replayPreviousPage.addEventListener("click", () => {
+  currentReplayPage -= 1;
+  renderReplayDetails();
+});
+
+replayNextPage.addEventListener("click", () => {
+  currentReplayPage += 1;
+  renderReplayDetails();
+});
+
+replayLastPage.addEventListener("click", () => {
+  if (!currentReplayReport) return;
+  const pageSize = Number.parseInt(replayPageSize.value, 10);
+  currentReplayPage = Math.max(1, Math.ceil(currentReplayReport.bets.length / pageSize));
+  renderReplayDetails();
 });
 
 replayButton.addEventListener("click", async () => {

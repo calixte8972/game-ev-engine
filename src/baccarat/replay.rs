@@ -25,12 +25,6 @@ use super::{
     StakeSizingStrategy, calculate_main_and_side_outcomes, resolve_round,
 };
 
-/// JSON 中最多保留多少条真实下注明细。
-///
-/// 汇总数据始终覆盖全部回放局；限制明细只是为了避免大型 CSV 生成几十 MB JSON，
-/// 导致浏览器渲染卡顿。
-const MAX_BET_DETAILS: usize = 2_000;
-
 /// 一次 CSV 回放使用的完整策略配置。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CsvReplayConfig {
@@ -180,7 +174,7 @@ pub struct CsvReplayReport {
     pub summary: CsvReplaySummary,
     /// 只保存真正下注的局，直接回答“什么时候可以下注”。
     pub bets: Vec<CsvBetDetail>,
-    /// 因明细上限而没有写入 `bets` 数组的下注数量。
+    /// 为兼容旧版 JSON 保留的字段。当前版本保留全部下注明细，因此恒为 0。
     pub omitted_bet_details: u64,
 }
 
@@ -762,27 +756,27 @@ fn replay_rounds(
                 summary.maximum_drawdown_rate = drawdown_rate;
             }
 
-            if details.len() < MAX_BET_DETAILS {
-                details.push(CsvBetDetail {
-                    started_at: round.started_at.clone(),
-                    table_id: round.table_id,
-                    session_id: round.session_id,
-                    round_no: round.round_no,
-                    bet: bet.as_str(),
-                    outcome: outcome_name(outcome),
-                    result,
-                    effective_ev,
-                    kelly_fraction: quote.kelly_fraction(),
-                    strategy_fraction: quote.strategy_fraction(),
-                    applied_fraction: quote.applied_fraction(),
-                    amount,
-                    expected_profit: quote.expected_profit(),
-                    base_game_profit,
-                    rebate_income,
-                    actual_profit,
-                    bankroll_after: current_bankroll,
-                });
-            }
+            // 报告保留每一笔真实下注。浏览器端通过分页控制一次创建的表格行数，
+            // 因此这里不能再为了 DOM 性能截断业务数据。
+            details.push(CsvBetDetail {
+                started_at: round.started_at.clone(),
+                table_id: round.table_id,
+                session_id: round.session_id,
+                round_no: round.round_no,
+                bet: bet.as_str(),
+                outcome: outcome_name(outcome),
+                result,
+                effective_ev,
+                kelly_fraction: quote.kelly_fraction(),
+                strategy_fraction: quote.strategy_fraction(),
+                applied_fraction: quote.applied_fraction(),
+                amount,
+                expected_profit: quote.expected_profit(),
+                base_game_profit,
+                rebate_income,
+                actual_profit,
+                bankroll_after: current_bankroll,
+            });
         } else {
             summary.skipped_bets += 1;
         }
@@ -1003,6 +997,7 @@ impl Error for CsvReplayError {}
 #[cfg(test)]
 mod tests {
     use super::{CsvReplayConfig, parse_raw_cards, provider_card, replay_csv_text};
+    use crate::{MainBetRules, StakeSizingStrategy};
 
     const HEADER: &str =
         "__source_pk,table_id,session_id,round_no,started_at,settled_at,raw_cards,result_code\n";
@@ -1047,6 +1042,35 @@ mod tests {
                 .abs()
                 < 1e-9
         );
+    }
+
+    #[test]
+    fn replay_keeps_more_than_two_thousand_bet_details() {
+        let mut csv = String::from(HEADER);
+        for index in 0..2_001 {
+            csv.push_str(&format!(
+                "row-{index},1,{},1,2026-08-20 00:00:12,2026-08-20 00:00:44,\"b:24,31,45;p:31,42,47\",36\n",
+                10_000 + index
+            ));
+        }
+        let config = CsvReplayConfig::with_strategy(
+            8,
+            MainBetRules::standard(),
+            StakeSizingStrategy::Fixed { amount: 1.0 },
+            0.02,
+            0.0,
+            10_000.0,
+            1.0,
+            1.0,
+            1.0,
+        )
+        .expect("固定 1 元的测试策略应该合法");
+
+        let report = replay_csv_text(&csv, config).expect("大量独立牌靴应该可以回放");
+
+        assert_eq!(report.summary.placed_bet_count, 2_001);
+        assert_eq!(report.bets.len(), 2_001);
+        assert_eq!(report.omitted_bet_details, 0);
     }
 
     #[test]

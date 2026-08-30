@@ -837,6 +837,7 @@ td:first-child {
 
 .detail-heading {
   display: flex;
+  align-items: flex-end;
   justify-content: space-between;
   gap: 18px;
   margin-bottom: 12px;
@@ -846,6 +847,53 @@ td:first-child {
   margin: 0;
   color: var(--muted);
   font-size: 0.76rem;
+}
+
+.detail-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.detail-pagination[hidden] {
+  display: none;
+}
+
+.detail-pagination label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.detail-pagination select {
+  min-height: 34px;
+  padding: 0 28px 0 9px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--ink);
+  background: var(--surface-strong);
+}
+
+.pagination-button {
+  min-height: 34px;
+  padding: 0 10px;
+  border-radius: 9px;
+  font-size: 0.74rem;
+}
+
+.pagination-button:disabled {
+  cursor: default;
+}
+
+#replay-page-status {
+  min-width: 84px;
+  color: var(--ink);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
 }
 
 .replay-detail-wrap {
@@ -925,6 +973,15 @@ footer {
   .recommendation {
     grid-template-columns: 1fr auto;
     gap: 12px;
+  }
+
+  .detail-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .detail-pagination {
+    justify-content: flex-start;
   }
 
   .recommendation-metric {

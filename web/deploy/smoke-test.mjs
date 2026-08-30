@@ -20,6 +20,16 @@ if (!/<input id="bankroll"[^>]*step="0\.01"/.test(pageHtml)) {
   throw new Error("初始本金输入框必须允许 0.01 精度，避免整数本金被判为非法");
 }
 
+if (!/id="replay-pagination"/.test(pageHtml)
+    || !/id="replay-last-page"/.test(pageHtml)) {
+  throw new Error("CSV 全量下注明细必须提供分页和末页导航");
+}
+
+const appSource = readFileSync(resolve(webDirectory, "app.js"), "utf8");
+if (/report\.bets\.slice\(0,\s*500\)/.test(appSource)) {
+  throw new Error("页面仍然只读取前 500 笔下注明细");
+}
+
 const manual = JSON.parse(
   analyzeBaccaratStrategy(
     "consumed", 8, "", 0.009, 0, 10_000, 0.05, 500, 10_000,

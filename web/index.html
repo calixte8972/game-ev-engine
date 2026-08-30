@@ -424,6 +424,22 @@
               <h3>可下注时间与真实结算</h3>
               <p id="detail-note">只列出策略最终允许下注的局。</p>
             </div>
+            <div id="replay-pagination" class="detail-pagination" hidden>
+              <label>
+                每页
+                <select id="replay-page-size" aria-label="每页下注明细数量">
+                  <option value="100">100</option>
+                  <option value="500" selected>500</option>
+                  <option value="1000">1000</option>
+                </select>
+                条
+              </label>
+              <button id="replay-first-page" class="secondary-button pagination-button" type="button">首页</button>
+              <button id="replay-previous-page" class="secondary-button pagination-button" type="button">上一页</button>
+              <span id="replay-page-status" aria-live="polite">第 1 / 1 页</span>
+              <button id="replay-next-page" class="secondary-button pagination-button" type="button">下一页</button>
+              <button id="replay-last-page" class="secondary-button pagination-button" type="button">末页</button>
+            </div>
           </div>
 
           <div class="table-wrap replay-detail-wrap">
