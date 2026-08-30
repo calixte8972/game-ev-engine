@@ -21,7 +21,7 @@ use crate::{Card, Rank, Shoe, Suit};
 
 use super::{
     BetPlanAction, BettingPolicy, KellyPolicy, MainBet, MainBetRules, OutcomeWeights, RebateRule,
-    RoundOutcome, calculate_main_outcomes, resolve_round,
+    RoundOutcome, StakeSizingStrategy, calculate_main_outcomes, resolve_round,
 };
 
 /// JSON 中最多保留多少条真实下注明细。
@@ -34,6 +34,8 @@ const MAX_BET_DETAILS: usize = 2_000;
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CsvReplayConfig {
     decks: u8,
+    rules: MainBetRules,
+    stake_strategy: StakeSizingStrategy,
     rebate_rate: f64,
     minimum_effective_ev: f64,
     initial_bankroll: f64,
@@ -49,6 +51,32 @@ impl CsvReplayConfig {
     /// 乘数。实际比例仍由完整凯利公式计算，再与这个上限取较小值。
     pub fn new(
         decks: u8,
+        rebate_rate: f64,
+        minimum_effective_ev: f64,
+        initial_bankroll: f64,
+        max_fraction: f64,
+        max_round_stake: f64,
+        table_limit: f64,
+    ) -> Result<Self, CsvReplayError> {
+        Self::with_strategy(
+            decks,
+            MainBetRules::standard(),
+            StakeSizingStrategy::FullKelly,
+            rebate_rate,
+            minimum_effective_ev,
+            initial_bankroll,
+            max_fraction,
+            max_round_stake,
+            table_limit,
+        )
+    }
+
+    /// 创建带赔付规则和金额策略的完整回放配置。
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_strategy(
+        decks: u8,
+        rules: MainBetRules,
+        stake_strategy: StakeSizingStrategy,
         rebate_rate: f64,
         minimum_effective_ev: f64,
         initial_bankroll: f64,
@@ -75,11 +103,13 @@ impl CsvReplayConfig {
         }
 
         // 资金上限的边界统一交给生产 KellyPolicy 验证，避免回放复制另一套规则。
-        KellyPolicy::new(max_fraction, max_round_stake, table_limit)
+        KellyPolicy::with_strategy(stake_strategy, max_fraction, max_round_stake, table_limit)
             .map_err(|error| CsvReplayError::Configuration(error.to_string()))?;
 
         Ok(Self {
             decks,
+            rules,
+            stake_strategy,
             rebate_rate,
             minimum_effective_ev,
             initial_bankroll,
@@ -118,6 +148,8 @@ pub struct CsvReplayReport {
 pub struct CsvReplayConfigSnapshot {
     pub decks: u8,
     pub payout_rule: &'static str,
+    pub stake_strategy: &'static str,
+    pub fixed_stake: Option<f64>,
     pub rebate_rule: &'static str,
     pub rebate_rate: f64,
     pub minimum_effective_ev: f64,
@@ -221,6 +253,7 @@ pub struct CsvBetDetail {
     pub result: &'static str,
     pub effective_ev: f64,
     pub kelly_fraction: f64,
+    pub strategy_fraction: f64,
     pub applied_fraction: f64,
     pub amount: f64,
     pub expected_profit: f64,
@@ -272,7 +305,13 @@ pub fn replay_csv_text(
     Ok(CsvReplayReport {
         config: CsvReplayConfigSnapshot {
             decks: config.decks,
-            payout_rule: "standard_banker_commission_5_percent",
+            payout_rule: if config.rules == MainBetRules::no_commission() {
+                "no_commission_banker_six_half_payout"
+            } else {
+                "standard_banker_commission_5_percent"
+            },
+            stake_strategy: config.stake_strategy.as_str(),
+            fixed_stake: config.stake_strategy.fixed_amount(),
             rebate_rule: if config.rebate_rate == 0.0 {
                 "none"
             } else {
@@ -516,10 +555,11 @@ fn replay_rounds(
             ))
     });
 
-    let rules = MainBetRules::standard();
+    let rules = config.rules;
     let rebate = config.rebate();
     let betting_policy = BettingPolicy::new(rebate, config.minimum_effective_ev);
-    let kelly_policy = KellyPolicy::new(
+    let kelly_policy = KellyPolicy::with_strategy(
+        config.stake_strategy,
         config.max_fraction,
         config.max_round_stake,
         config.table_limit,
@@ -645,6 +685,7 @@ fn replay_rounds(
                     result,
                     effective_ev,
                     kelly_fraction: quote.kelly_fraction(),
+                    strategy_fraction: quote.strategy_fraction(),
                     applied_fraction: quote.applied_fraction(),
                     amount,
                     expected_profit: quote.expected_profit(),

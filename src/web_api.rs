@@ -14,7 +14,7 @@ use serde::Serialize;
 use crate::{
     BetPlanAction, BetPlanSkipReason, BettingPolicy, Card, CsvReplayConfig, EffectiveBetMetrics,
     KellyPolicy, MainBet, MainBetAnalysis, MainBetRules, RebateRule, Shoe, SkipReason,
-    calculate_main_outcomes, replay_csv_text,
+    StakeSizingStrategy, calculate_main_outcomes, replay_csv_text,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -56,6 +56,9 @@ pub fn analyze_baccarat_strategy(
     max_fraction: f64,
     max_round_stake: f64,
     table_limit: f64,
+    payout_rule: &str,
+    stake_strategy: &str,
+    fixed_stake: f64,
 ) -> Result<String, JsValue> {
     analyze_baccarat_strategy_json(
         source_mode,
@@ -67,6 +70,9 @@ pub fn analyze_baccarat_strategy(
         max_fraction,
         max_round_stake,
         table_limit,
+        payout_rule,
+        stake_strategy,
+        fixed_stake,
     )
     .map_err(|message| JsValue::from_str(&message))
 }
@@ -86,6 +92,9 @@ pub fn replay_baccarat_csv(
     max_fraction: f64,
     max_round_stake: f64,
     table_limit: f64,
+    payout_rule: &str,
+    stake_strategy: &str,
+    fixed_stake: f64,
 ) -> Result<String, JsValue> {
     replay_baccarat_csv_json(
         csv_text,
@@ -96,6 +105,9 @@ pub fn replay_baccarat_csv(
         max_fraction,
         max_round_stake,
         table_limit,
+        payout_rule,
+        stake_strategy,
+        fixed_stake,
     )
     .map_err(|message| JsValue::from_str(&message))
 }
@@ -120,6 +132,9 @@ pub fn analyze_baccarat_json(
         1.0,
         10_000.0,
         10_000.0,
+        "standard",
+        "full_kelly",
+        0.0,
     )
 }
 
@@ -135,6 +150,9 @@ pub fn analyze_baccarat_strategy_json(
     max_fraction: f64,
     max_round_stake: f64,
     table_limit: f64,
+    payout_rule: &str,
+    stake_strategy: &str,
+    fixed_stake: f64,
 ) -> Result<String, String> {
     if !rebate_rate.is_finite() || !(0.0..=1.0).contains(&rebate_rate) {
         return Err("返水比例必须是 0% 到 100% 之间的有限数字".to_owned());
@@ -167,15 +185,17 @@ pub fn analyze_baccarat_strategy_json(
         ));
     }
 
-    let rules = MainBetRules::standard();
+    let (rules, payout_rule_code) = parse_payout_rule(payout_rule)?;
+    let stake_strategy = parse_stake_strategy(stake_strategy, fixed_stake)?;
     let rebate = if rebate_rate == 0.0 {
         RebateRule::None
     } else {
         RebateRule::AllExceptMainBetTie { rate: rebate_rate }
     };
     let policy = BettingPolicy::new(rebate, minimum_effective_ev);
-    let kelly_policy = KellyPolicy::new(max_fraction, max_round_stake, table_limit)
-        .map_err(|error| format!("资金策略不合法：{error}"))?;
+    let kelly_policy =
+        KellyPolicy::with_strategy(stake_strategy, max_fraction, max_round_stake, table_limit)
+            .map_err(|error| format!("资金策略不合法：{error}"))?;
     let weights =
         calculate_main_outcomes(&shoe).map_err(|error| format!("概率与 EV 计算失败：{error}"))?;
     let analysis = MainBetAnalysis::from_weights(weights, rules);
@@ -195,6 +215,9 @@ pub fn analyze_baccarat_strategy_json(
         input_card_count: cards.len(),
         remaining_card_count: shoe.total_remaining(),
         rebate_rate,
+        payout_rule: payout_rule_code,
+        stake_strategy: stake_strategy.as_str(),
+        fixed_stake: stake_strategy.fixed_amount(),
         bets: BrowserBets {
             player: BrowserBetMetrics::from_analysis(analysis, MainBet::Player, rebate),
             banker: BrowserBetMetrics::from_analysis(analysis, MainBet::Banker, rebate),
@@ -209,6 +232,7 @@ pub fn analyze_baccarat_strategy_json(
             reason,
             bankroll,
             kelly_fraction: quote.map(|value| value.kelly_fraction()),
+            strategy_fraction: quote.map(|value| value.strategy_fraction()),
             applied_fraction: quote.map(|value| value.applied_fraction()),
             suggested_amount: quote.map_or(0.0, |value| value.amount()),
             expected_profit: quote.map_or(0.0, |value| value.expected_profit()),
@@ -229,9 +253,16 @@ pub fn replay_baccarat_csv_json(
     max_fraction: f64,
     max_round_stake: f64,
     table_limit: f64,
+    payout_rule: &str,
+    stake_strategy: &str,
+    fixed_stake: f64,
 ) -> Result<String, String> {
-    let config = CsvReplayConfig::new(
+    let (rules, _) = parse_payout_rule(payout_rule)?;
+    let stake_strategy = parse_stake_strategy(stake_strategy, fixed_stake)?;
+    let config = CsvReplayConfig::with_strategy(
         decks,
+        rules,
+        stake_strategy,
         rebate_rate,
         minimum_effective_ev,
         initial_bankroll,
@@ -243,6 +274,28 @@ pub fn replay_baccarat_csv_json(
     let report = replay_csv_text(csv_text, config).map_err(|error| error.to_string())?;
 
     serde_json::to_string(&report).map_err(|error| format!("回放结果序列化失败：{error}"))
+}
+
+/// 把浏览器稳定字符串转换成核心赔付规则。
+fn parse_payout_rule(input: &str) -> Result<(MainBetRules, &'static str), String> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "standard" => Ok((MainBetRules::standard(), "standard")),
+        "no_commission" => Ok((MainBetRules::no_commission(), "no_commission")),
+        _ => Err("庄赔付规则必须是 standard 或 no_commission".to_owned()),
+    }
+}
+
+/// 把金额策略字符串转换成互斥的领域枚举。
+fn parse_stake_strategy(input: &str, fixed_stake: f64) -> Result<StakeSizingStrategy, String> {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "full_kelly" => Ok(StakeSizingStrategy::FullKelly),
+        "half_kelly" => Ok(StakeSizingStrategy::HalfKelly),
+        "quarter_kelly" => Ok(StakeSizingStrategy::QuarterKelly),
+        "fixed" => Ok(StakeSizingStrategy::Fixed {
+            amount: fixed_stake,
+        }),
+        _ => Err("金额策略必须是 full_kelly、half_kelly、quarter_kelly 或 fixed".to_owned()),
+    }
 }
 
 /// 把内部跳过原因转换成稳定的浏览器字符串。
@@ -277,6 +330,9 @@ struct BrowserAnalysis {
     input_card_count: usize,
     remaining_card_count: u16,
     rebate_rate: f64,
+    payout_rule: &'static str,
+    stake_strategy: &'static str,
+    fixed_stake: Option<f64>,
     bets: BrowserBets,
     recommendation: BrowserRecommendation,
 }
@@ -326,6 +382,7 @@ struct BrowserRecommendation {
     reason: Option<&'static str>,
     bankroll: f64,
     kelly_fraction: Option<f64>,
+    strategy_fraction: Option<f64>,
     applied_fraction: Option<f64>,
     suggested_amount: f64,
     expected_profit: f64,
@@ -335,7 +392,7 @@ struct BrowserRecommendation {
 mod tests {
     use serde_json::Value;
 
-    use super::{analyze_baccarat_json, analyze_baccarat_strategy_json};
+    use super::{analyze_baccarat_json, analyze_baccarat_strategy_json, replay_baccarat_csv_json};
 
     #[test]
     fn empty_consumed_input_analyzes_a_full_eight_deck_shoe() {
@@ -392,7 +449,18 @@ mod tests {
     fn strategy_response_includes_kelly_amount_and_threshold_reason() {
         let placed: Value = serde_json::from_str(
             &analyze_baccarat_strategy_json(
-                "consumed", 8, "", 0.02, 0.0, 10_000.0, 0.05, 1_000.0, 1_000.0,
+                "consumed",
+                8,
+                "",
+                0.02,
+                0.0,
+                10_000.0,
+                0.05,
+                1_000.0,
+                1_000.0,
+                "standard",
+                "full_kelly",
+                0.0,
             )
             .expect("2% 返水应让完整牌靴产生正有效 EV"),
         )
@@ -407,12 +475,122 @@ mod tests {
 
         let skipped: Value = serde_json::from_str(
             &analyze_baccarat_strategy_json(
-                "consumed", 8, "", 0.02, 0.50, 10_000.0, 0.05, 1_000.0, 1_000.0,
+                "consumed",
+                8,
+                "",
+                0.02,
+                0.50,
+                10_000.0,
+                0.05,
+                1_000.0,
+                1_000.0,
+                "standard",
+                "full_kelly",
+                0.0,
             )
             .expect("高 EV 门槛应返回 Skip 而不是接口错误"),
         )
         .expect("接口应返回合法 JSON");
         assert_eq!(skipped["recommendation"]["action"], "skip");
         assert_eq!(skipped["recommendation"]["reason"], "below_minimum_ev");
+    }
+
+    #[test]
+    fn no_commission_and_fractional_kelly_are_exposed_in_the_json_contract() {
+        let full: Value = serde_json::from_str(
+            &analyze_baccarat_strategy_json(
+                "consumed",
+                8,
+                "",
+                0.02,
+                0.0,
+                10_000.0,
+                1.0,
+                10_000.0,
+                10_000.0,
+                "no_commission",
+                "full_kelly",
+                0.0,
+            )
+            .expect("免佣完整凯利应该可以计算"),
+        )
+        .expect("接口应返回合法 JSON");
+        let half: Value = serde_json::from_str(
+            &analyze_baccarat_strategy_json(
+                "consumed",
+                8,
+                "",
+                0.02,
+                0.0,
+                10_000.0,
+                1.0,
+                10_000.0,
+                10_000.0,
+                "no_commission",
+                "half_kelly",
+                0.0,
+            )
+            .expect("免佣半凯利应该可以计算"),
+        )
+        .expect("接口应返回合法 JSON");
+
+        assert_eq!(half["payout_rule"], "no_commission");
+        assert_eq!(half["stake_strategy"], "half_kelly");
+        let full_target = full["recommendation"]["strategy_fraction"]
+            .as_f64()
+            .expect("完整凯利目标比例应存在");
+        let half_target = half["recommendation"]["strategy_fraction"]
+            .as_f64()
+            .expect("半凯利目标比例应存在");
+        assert!((half_target - full_target * 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn fixed_stake_still_obeys_the_common_risk_limits() {
+        let value: Value = serde_json::from_str(
+            &analyze_baccarat_strategy_json(
+                "consumed", 8, "", 0.02, 0.0, 10_000.0, 1.0, 80.0, 1_000.0, "standard", "fixed",
+                100.0,
+            )
+            .expect("固定金额应该可以计算"),
+        )
+        .expect("接口应返回合法 JSON");
+
+        assert_eq!(value["stake_strategy"], "fixed");
+        assert_eq!(value["fixed_stake"], 100.0);
+        assert_eq!(value["recommendation"]["action"], "place");
+        assert_eq!(value["recommendation"]["suggested_amount"], 80.0);
+    }
+
+    #[test]
+    fn csv_replay_uses_the_selected_payout_and_stake_strategy() {
+        let csv = "__source_pk,table_id,session_id,round_no,started_at,settled_at,raw_cards,result_code\n\
+                   a,1,9001,1,2026-08-20 00:00:12,2026-08-20 00:00:44,\"b:24,31,45;p:31,42,47\",36\n";
+        let value: Value = serde_json::from_str(
+            &replay_baccarat_csv_json(
+                csv,
+                8,
+                0.02,
+                0.0,
+                10_000.0,
+                1.0,
+                1_000.0,
+                1_000.0,
+                "no_commission",
+                "fixed",
+                100.0,
+            )
+            .expect("免佣固定金额回放应该成功"),
+        )
+        .expect("回放接口应返回合法 JSON");
+
+        assert_eq!(
+            value["config"]["payout_rule"],
+            "no_commission_banker_six_half_payout"
+        );
+        assert_eq!(value["config"]["stake_strategy"], "fixed");
+        assert_eq!(value["config"]["fixed_stake"], 100.0);
+        assert_eq!(value["summary"]["placed_bet_count"], 1);
+        assert_eq!(value["bets"][0]["amount"], 100.0);
     }
 }

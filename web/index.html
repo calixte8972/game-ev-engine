@@ -40,6 +40,32 @@
 
           <div class="strategy-grid">
             <label class="field">
+              <span>庄家赔付规则</span>
+              <select id="payout-rule">
+                <option value="standard" selected>标准庄 · 赢赔 0.95</option>
+                <option value="no_commission">庄免佣 · 庄 6 赢赔 0.5</option>
+              </select>
+            </label>
+
+            <label class="field">
+              <span>下注金额策略</span>
+              <select id="stake-strategy">
+                <option value="full_kelly" selected>完整凯利</option>
+                <option value="half_kelly">半凯利</option>
+                <option value="quarter_kelly">四分之一凯利</option>
+                <option value="fixed">固定金额</option>
+              </select>
+            </label>
+
+            <label id="fixed-stake-field" class="field" hidden>
+              <span>固定下注金额</span>
+              <span class="input-prefix">
+                <span>¥</span>
+                <input id="fixed-stake" type="number" value="100" min="0" step="10" />
+              </span>
+            </label>
+
+            <label class="field">
               <span>初始／当前本金</span>
               <span class="input-prefix">
                 <span>¥</span>
@@ -89,7 +115,7 @@
           </div>
 
           <p class="field-help policy-help">
-            最终金额 = 本金 × 完整凯利比例，再依次受本金比例、单局金额和桌台金额上限约束。
+            凯利策略先按完整、二分之一或四分之一比例缩放；固定金额只在通过 EV 门槛后使用。最终金额都受本金比例、单局金额和桌台金额上限约束。
           </p>
 
           <div class="subsection-heading shoe-heading">
@@ -200,6 +226,10 @@
             <strong id="kelly-fraction">—</strong>
           </div>
           <div>
+            <span>所选策略目标比例</span>
+            <strong id="strategy-fraction">—</strong>
+          </div>
+          <div>
             <span>实际本金比例</span>
             <strong id="applied-fraction">—</strong>
           </div>
@@ -235,7 +265,7 @@
         </div>
 
         <p class="result-note">
-          “最优”不等于“下注”：还要同时通过最低 EV 门槛、正凯利比例和金额上限。
+          “最优”不等于“下注”：还要通过最低 EV 门槛和金额上限；凯利类策略还要求完整凯利比例为正。
         </p>
       </section>
 
@@ -375,7 +405,7 @@
     </main>
 
     <footer>
-      <span>标准佣金庄：闲胜 1，庄胜 0.95，和局 8；返水按你配置的规则加入。</span>
+      <span>标准庄赢赔 0.95；庄免佣时普通庄赢赔 1，庄以 6 点获胜赔 0.5；返水按配置加入。</span>
       <span>历史收益不代表未来结果，EV 是概率期望，不是单局保证。</span>
     </footer>
 

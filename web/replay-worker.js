@@ -28,6 +28,9 @@ self.addEventListener("message", async (event) => {
       config.maxFraction,
       config.maxRoundStake,
       config.tableLimit,
+      config.payoutRule,
+      config.stakeStrategy,
+      config.fixedStake,
     );
     self.postMessage({
       type: "complete",

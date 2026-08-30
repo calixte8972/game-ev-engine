@@ -33,9 +33,9 @@ pub use baccarat::{
     ENGINE_VERSION, EffectiveBetMetrics, KellyError, KellyOutcome, KellyPolicy, KellyQuote,
     MainBet, MainBetAnalysis, MainBetEv, MainBetRules, OutcomeWeights, ProbabilityError,
     RebateRule, RoundError, RoundOutcome, RoundResult, SkipReason, SnapshotError,
-    analyze_main_bets, analyze_snapshot, calculate_kelly_fraction, calculate_main_outcomes,
-    decision_snapshot_from_weights, effective_ev, main_bet_kelly_outcomes, replay_csv_text,
-    resolve_round,
+    StakeSizingStrategy, analyze_main_bets, analyze_snapshot, calculate_kelly_fraction,
+    calculate_main_outcomes, decision_snapshot_from_weights, effective_ev, main_bet_kelly_outcomes,
+    replay_csv_text, resolve_round,
 };
 pub use card::{Card, CardParseError, Rank, Suit};
 pub use shoe::{DEFAULT_DECKS, MAX_DECKS, MIN_DECKS, Shoe, ShoeError};

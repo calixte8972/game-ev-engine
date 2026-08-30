@@ -18,6 +18,9 @@ const replayStatus = document.querySelector("#replay-status");
 const replayError = document.querySelector("#replay-error");
 const replayResults = document.querySelector("#replay-results");
 const replayBody = document.querySelector("#replay-body");
+const payoutRule = document.querySelector("#payout-rule");
+const stakeStrategy = document.querySelector("#stake-strategy");
+const fixedStakeField = document.querySelector("#fixed-stake-field");
 
 const betLabels = {
   player: "闲",
@@ -29,6 +32,18 @@ const resultLabels = {
   win: "赢",
   loss: "输",
   push: "和局退回",
+};
+
+const payoutRuleLabels = {
+  standard: "标准庄佣金",
+  no_commission: "庄免佣（庄 6 半赔）",
+};
+
+const stakeStrategyLabels = {
+  full_kelly: "完整凯利",
+  half_kelly: "半凯利",
+  quarter_kelly: "四分之一凯利",
+  fixed: "固定金额",
 };
 
 const skipReasonLabels = {
@@ -100,6 +115,7 @@ function readNumber(selector, label, options = {}) {
 }
 
 function strategyConfig() {
+  const selectedStakeStrategy = stakeStrategy.value;
   return {
     decks: Number.parseInt(deckCount.value, 10),
     rebateRate: readNumber("#rebate-rate", "返水比例", { min: 0, max: 100 }) / 100,
@@ -111,7 +127,16 @@ function strategyConfig() {
     }) / 100,
     maxRoundStake: readNumber("#max-round-stake", "单局金额上限", { min: 0 }),
     tableLimit: readNumber("#table-limit", "桌台金额上限", { min: 0 }),
+    payoutRule: payoutRule.value,
+    stakeStrategy: selectedStakeStrategy,
+    fixedStake: selectedStakeStrategy === "fixed"
+      ? readNumber("#fixed-stake", "固定下注金额", { min: 0 })
+      : 0,
   };
+}
+
+function updateStakeStrategyFields() {
+  fixedStakeField.hidden = stakeStrategy.value !== "fixed";
 }
 
 function updateModeHelp() {
@@ -168,6 +193,7 @@ function renderResults(data, elapsedMilliseconds) {
   applySignedClass(document.querySelector("#recommended-ev"), decision.effective_ev);
   setText("#recommended-action", decision.action === "place" ? "可下注" : "跳过");
   setText("#kelly-fraction", percent(decision.kelly_fraction, 3));
+  setText("#strategy-fraction", percent(decision.strategy_fraction, 3));
   setText("#applied-fraction", percent(decision.applied_fraction, 3));
   setText("#suggested-amount", money(decision.suggested_amount));
   setText("#summary-amount", money(decision.suggested_amount));
@@ -175,7 +201,7 @@ function renderResults(data, elapsedMilliseconds) {
   applySignedClass(document.querySelector("#expected-profit"), decision.expected_profit);
 
   const reason = decision.action === "place"
-    ? `通过最低 EV 门槛，建议下${betLabels[decision.candidate_bet]}，金额已经过三项风险上限。`
+    ? `采用${payoutRuleLabels[data.payout_rule]}与${stakeStrategyLabels[data.stake_strategy]}，已通过最低 EV 门槛；建议下${betLabels[decision.candidate_bet]}，金额已经过三项风险上限。`
     : skipReasonLabels[decision.reason] ?? "当前策略决定跳过本局。";
   setText("#decision-reason", reason);
 }
@@ -206,6 +232,9 @@ function calculate() {
       config.maxFraction,
       config.maxRoundStake,
       config.tableLimit,
+      config.payoutRule,
+      config.stakeStrategy,
+      config.fixedStake,
     );
     renderResults(JSON.parse(json), performance.now() - started);
   } catch (error) {
@@ -292,7 +321,7 @@ function renderReplay(report, elapsedMilliseconds) {
     cell.colSpan = 10;
     cell.textContent = summary.replayed_rounds === 0
       ? "没有可从第 1 局完整重建的牌靴，请查看隔离局数。"
-      : "没有任何一局同时通过 EV 门槛和凯利资金检查。";
+      : "没有任何一局同时通过 EV 门槛和所选资金策略检查。";
     row.append(cell);
     replayBody.append(row);
   }
@@ -315,6 +344,13 @@ form.addEventListener("submit", (event) => {
 form.elements["source-mode"].forEach((radio) => {
   radio.addEventListener("change", updateModeHelp);
 });
+
+stakeStrategy.addEventListener("change", () => {
+  updateStakeStrategyFields();
+  calculate();
+});
+
+payoutRule.addEventListener("change", calculate);
 
 sampleButton.addEventListener("click", () => {
   form.elements["source-mode"].value = "consumed";
@@ -405,4 +441,5 @@ async function start() {
 }
 
 updateModeHelp();
+updateStakeStrategyFields();
 start();

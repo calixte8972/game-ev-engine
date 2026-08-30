@@ -14,7 +14,10 @@ const wasmBytes = readFileSync(resolve(webDirectory, "pkg/game_ev_engine_bg.wasm
 initSync({ module: wasmBytes });
 
 const manual = JSON.parse(
-  analyzeBaccaratStrategy("consumed", 8, "", 0.009, 0, 10_000, 0.05, 500, 10_000),
+  analyzeBaccaratStrategy(
+    "consumed", 8, "", 0.009, 0, 10_000, 0.05, 500, 10_000,
+    "standard", "full_kelly", 0,
+  ),
 );
 
 if (manual.remaining_card_count !== 416) {
@@ -26,7 +29,10 @@ a,1,9001,1,2026-08-20 00:00:12,2026-08-20 00:00:44,"b:24,31,45;p:31,42,47",36
 b,1,9001,2,2026-08-20 00:00:54,2026-08-20 00:01:17,"b:73,62,;p:53,8,",322
 `;
 const tinyReplay = JSON.parse(
-  replayBaccaratCsv(tinyCsv, 8, 0.02, 0, 10_000, 0.05, 1_000, 1_000),
+  replayBaccaratCsv(
+    tinyCsv, 8, 0.02, 0, 10_000, 0.05, 1_000, 1_000,
+    "no_commission", "half_kelly", 0,
+  ),
 );
 
 if (tinyReplay.summary.replayed_rounds !== 2) {
@@ -52,7 +58,10 @@ if (csvPath) {
   const csvText = readFileSync(resolve(csvPath), "utf8");
   const started = performance.now();
   const replay = JSON.parse(
-    replayBaccaratCsv(csvText, 8, 0.009, 0, 10_000, 0.05, 500, 10_000),
+    replayBaccaratCsv(
+      csvText, 8, 0.009, 0, 10_000, 0.05, 500, 10_000,
+      "no_commission", "half_kelly", 0,
+    ),
   );
   output.full_replay = {
     elapsed_seconds: (performance.now() - started) / 1_000,

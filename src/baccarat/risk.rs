@@ -39,6 +39,60 @@ const BISECTION_ITERATIONS: usize = 100;
 /// 不在会令资金变成零的数学边界上取值，避免计算 `ln(0)` 或除以零。
 const DOMAIN_MARGIN: f64 = 1e-12;
 
+/// 通过 EV 门槛后，如何把当前本金转换成目标下注金额。
+///
+/// 方向选择仍由 [`BettingPolicy`] 负责；本枚举只负责金额。把它建模成枚举，
+/// 可以保证一笔计划在同一时刻只使用一种互斥的金额算法。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StakeSizingStrategy {
+    /// 使用公式算出的完整凯利比例。
+    FullKelly,
+    /// 使用完整凯利比例的一半，降低波动与模型误差风险。
+    HalfKelly,
+    /// 使用完整凯利比例的四分之一，进一步降低回撤。
+    QuarterKelly,
+    /// 每次通过 EV 门槛后尝试下注固定金额。
+    Fixed {
+        /// 风控上限生效前的目标金额。
+        amount: f64,
+    },
+}
+
+impl StakeSizingStrategy {
+    /// 返回供 JSON、日志和前端使用的稳定名称。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FullKelly => "full_kelly",
+            Self::HalfKelly => "half_kelly",
+            Self::QuarterKelly => "quarter_kelly",
+            Self::Fixed { .. } => "fixed",
+        }
+    }
+
+    /// 把完整凯利比例或固定金额转换为本策略的目标本金比例。
+    fn target_fraction(self, full_kelly_fraction: f64, bankroll: f64) -> f64 {
+        match self {
+            Self::FullKelly => full_kelly_fraction,
+            Self::HalfKelly => full_kelly_fraction * 0.5,
+            Self::QuarterKelly => full_kelly_fraction * 0.25,
+            Self::Fixed { amount } => amount / bankroll,
+        }
+    }
+
+    /// 只有凯利类策略需要用“完整凯利必须为正”作为额外放行条件。
+    const fn requires_positive_kelly(self) -> bool {
+        !matches!(self, Self::Fixed { .. })
+    }
+
+    /// 固定金额策略返回配置金额；凯利策略没有固定金额。
+    pub const fn fixed_amount(self) -> Option<f64> {
+        match self {
+            Self::Fixed { amount } => Some(amount),
+            _ => None,
+        }
+    }
+}
+
 /// 凯利计算中的一个互斥结果。
 ///
 /// `net_profit` 表示下注 1 单位后，该结果发生时相对于本金的净盈利：
@@ -87,6 +141,8 @@ impl KellyOutcome {
 /// 它是风险上限，并不是“四分之一凯利”的乘数。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct KellyPolicy {
+    /// 通过方向与 EV 门槛后使用的金额算法。
+    strategy: StakeSizingStrategy,
     /// 最终允许使用的最大资金比例，`1.0` 表示最多可以使用全部 bankroll。
     ///
     /// 它只是安全上限，不是实际下注比例。实际比例通常由凯利公式算得更小。
@@ -116,7 +172,27 @@ impl KellyPolicy {
         max_round_stake: f64,
         table_limit: f64,
     ) -> Result<Self, KellyError> {
+        Self::with_strategy(
+            StakeSizingStrategy::FullKelly,
+            max_fraction,
+            max_round_stake,
+            table_limit,
+        )
+    }
+
+    /// 创建指定金额算法并应用统一风险上限。
+    pub fn with_strategy(
+        strategy: StakeSizingStrategy,
+        max_fraction: f64,
+        max_round_stake: f64,
+        table_limit: f64,
+    ) -> Result<Self, KellyError> {
         validate_max_fraction(max_fraction)?;
+        if let StakeSizingStrategy::Fixed { amount } = strategy
+            && (!amount.is_finite() || amount < 0.0)
+        {
+            return Err(KellyError::InvalidFixedStake { value: amount });
+        }
         validate_limit(
             max_round_stake,
             KellyError::InvalidMaxRoundStake {
@@ -129,10 +205,16 @@ impl KellyPolicy {
         )?;
 
         Ok(Self {
+            strategy,
             max_fraction,
             max_round_stake,
             table_limit,
         })
+    }
+
+    /// 返回当前使用的金额算法。
+    pub const fn strategy(self) -> StakeSizingStrategy {
+        self.strategy
     }
 
     /// 返回资金比例安全上限。
@@ -188,9 +270,13 @@ impl KellyPolicy {
         // 这样日志中可以同时看到数学结果和实际执行结果。
         let kelly_fraction = calculate_kelly_fraction(&outcomes, 1.0)?;
 
-        // 第三步：应用 max_fraction。比如公式算出 8%，配置上限是 5%，
-        // 那么后续只按 5% 计算金额。
-        let fraction_after_policy = kelly_fraction.min(self.max_fraction);
+        // 第三步：金额策略先把完整凯利转换成目标比例。半凯利、四分之一凯利
+        // 会缩小公式比例；固定金额则用 amount / bankroll 得到等价比例。
+        let strategy_fraction = self.strategy.target_fraction(kelly_fraction, bankroll);
+
+        // 第四步再应用共同的本金比例上限。金额策略和安全上限是两个概念：
+        // 前者回答“想下多少”，后者回答“最多允许下多少”。
+        let fraction_after_policy = strategy_fraction.min(self.max_fraction);
 
         // 上限按从“理论金额”到“最终金额”的顺序逐项收紧。
         // 最后的 bankroll 保护保证任何配置都不会下注超过当前资金。
@@ -207,6 +293,7 @@ impl KellyPolicy {
             bet,
             effective_ev,
             kelly_fraction,
+            strategy_fraction,
             applied_fraction,
             amount,
             // EV 是“每下注 1 单位的期望净盈利”，所以乘以实际下注额
@@ -255,22 +342,23 @@ impl KellyPolicy {
                 // 第三步：只有方向策略同意下注时，才需要计算资金比例与金额。
                 let quote = self.quote(weights, rules, betting_policy.rebate(), bet, bankroll)?;
 
-                let action = if quote.kelly_fraction() <= 0.0 {
-                    // 即使 EV 门槛被配置为负数，凯利公式也不会为非正 EV 投入资金。
-                    BetPlanAction::Skip {
-                        reason: BetPlanSkipReason::NonPositiveKelly,
-                    }
-                } else if quote.amount() <= 0.0 {
-                    // 数学上应该下注，但某个资金上限为零；这可以作为运营停机开关。
-                    BetPlanAction::Skip {
-                        reason: BetPlanSkipReason::RiskLimitIsZero,
-                    }
-                } else {
-                    BetPlanAction::Place {
-                        bet,
-                        amount: quote.amount(),
-                    }
-                };
+                let action =
+                    if self.strategy.requires_positive_kelly() && quote.kelly_fraction() <= 0.0 {
+                        // 即使 EV 门槛被配置为负数，凯利公式也不会为非正 EV 投入资金。
+                        BetPlanAction::Skip {
+                            reason: BetPlanSkipReason::NonPositiveKelly,
+                        }
+                    } else if quote.amount() <= 0.0 {
+                        // 数学上应该下注，但某个资金上限为零；这可以作为运营停机开关。
+                        BetPlanAction::Skip {
+                            reason: BetPlanSkipReason::RiskLimitIsZero,
+                        }
+                    } else {
+                        BetPlanAction::Place {
+                            bet,
+                            amount: quote.amount(),
+                        }
+                    };
 
                 Ok(BetPlan {
                     decision,
@@ -291,6 +379,8 @@ pub struct KellyQuote {
     effective_ev: f64,
     /// 不打折的完整凯利比例。
     kelly_fraction: f64,
+    /// 选定金额策略产生的目标比例，尚未经过共同风险上限。
+    strategy_fraction: f64,
     /// 经过资金比例、单局金额和桌台金额上限后的实际资金比例。
     applied_fraction: f64,
     /// 最终建议下注额。
@@ -313,6 +403,11 @@ impl KellyQuote {
     /// 返回公式算出的原始完整凯利比例。
     pub const fn kelly_fraction(self) -> f64 {
         self.kelly_fraction
+    }
+
+    /// 返回金额策略产生、但尚未经过上限裁剪的目标本金比例。
+    pub const fn strategy_fraction(self) -> f64 {
+        self.strategy_fraction
     }
 
     /// 返回经过所有资金上限后的实际下注比例。
@@ -649,6 +744,11 @@ pub enum KellyError {
         /// 调用者实际提供的最大资金比例。
         value: f64,
     },
+    /// 固定下注金额不是有限非负数。
+    InvalidFixedStake {
+        /// 调用者提供的固定金额。
+        value: f64,
+    },
     /// 系统单局金额上限不是有限非负数。
     InvalidMaxRoundStake {
         /// 调用者实际提供的单局金额上限。
@@ -689,6 +789,12 @@ impl fmt::Display for KellyError {
                     "max Kelly fraction must be in 0..=1; got {value}"
                 )
             }
+            Self::InvalidFixedStake { value } => {
+                write!(
+                    formatter,
+                    "fixed stake must be finite and non-negative; got {value}"
+                )
+            }
             Self::InvalidMaxRoundStake { value } => {
                 write!(
                     formatter,
@@ -716,8 +822,8 @@ impl Error for KellyError {}
 #[cfg(test)]
 mod tests {
     use super::{
-        BetPlanAction, BetPlanSkipReason, KellyOutcome, KellyPolicy, calculate_kelly_fraction,
-        main_bet_kelly_outcomes,
+        BetPlanAction, BetPlanSkipReason, KellyOutcome, KellyPolicy, StakeSizingStrategy,
+        calculate_kelly_fraction, main_bet_kelly_outcomes,
     };
     use crate::{
         BettingPolicy, MainBet, MainBetAnalysis, MainBetRules, OutcomeWeights, RebateRule, Shoe,
@@ -880,5 +986,72 @@ mod tests {
                 amount
             } if *amount > 0.0
         ));
+    }
+
+    #[test]
+    fn fractional_kelly_scales_the_target_before_limits_are_applied() {
+        let weights = sample_weights();
+        let full =
+            KellyPolicy::with_strategy(StakeSizingStrategy::FullKelly, 1.0, 10_000.0, 10_000.0)
+                .expect("完整凯利配置合法")
+                .quote(
+                    weights,
+                    MainBetRules::standard(),
+                    RebateRule::None,
+                    MainBet::Tie,
+                    1_000.0,
+                )
+                .expect("完整凯利报价合法");
+        let half =
+            KellyPolicy::with_strategy(StakeSizingStrategy::HalfKelly, 1.0, 10_000.0, 10_000.0)
+                .expect("半凯利配置合法")
+                .quote(
+                    weights,
+                    MainBetRules::standard(),
+                    RebateRule::None,
+                    MainBet::Tie,
+                    1_000.0,
+                )
+                .expect("半凯利报价合法");
+
+        assert_close(half.kelly_fraction(), full.kelly_fraction());
+        assert_close(half.strategy_fraction(), full.kelly_fraction() * 0.5);
+        assert_close(half.amount(), full.amount() * 0.5);
+    }
+
+    #[test]
+    fn fixed_stake_is_clipped_by_the_same_risk_limits() {
+        let quote = KellyPolicy::with_strategy(
+            StakeSizingStrategy::Fixed { amount: 100.0 },
+            1.0,
+            80.0,
+            90.0,
+        )
+        .expect("固定金额配置合法")
+        .quote(
+            sample_weights(),
+            MainBetRules::standard(),
+            RebateRule::None,
+            MainBet::Tie,
+            1_000.0,
+        )
+        .expect("固定金额报价合法");
+
+        assert_close(quote.strategy_fraction(), 0.1);
+        assert_close(quote.applied_fraction(), 0.08);
+        assert_close(quote.amount(), 80.0);
+    }
+
+    #[test]
+    fn invalid_fixed_stake_is_rejected_at_configuration_time() {
+        assert!(
+            KellyPolicy::with_strategy(
+                StakeSizingStrategy::Fixed { amount: -1.0 },
+                1.0,
+                100.0,
+                100.0,
+            )
+            .is_err()
+        );
     }
 }
