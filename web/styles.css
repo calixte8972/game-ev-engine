@@ -1255,6 +1255,177 @@ td:first-child {
   font-variant-numeric: tabular-nums;
 }
 
+.bankroll-chart-panel {
+  --chart-path-color: var(--positive);
+  margin-bottom: 28px;
+  padding: 20px 20px 16px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface-strong);
+  box-shadow: 0 12px 34px rgba(35, 47, 41, 0.055);
+}
+
+.bankroll-chart-panel[data-trend="negative"] {
+  --chart-path-color: var(--negative);
+}
+
+.bankroll-chart-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 28px;
+  margin-bottom: 12px;
+}
+
+.bankroll-chart-heading .eyebrow {
+  margin-bottom: 5px;
+}
+
+.bankroll-chart-heading h3 {
+  margin-bottom: 5px;
+  font-family: Georgia, "Noto Serif SC", serif;
+  font-size: 1.18rem;
+}
+
+.bankroll-chart-heading p:last-child {
+  margin-bottom: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.55;
+}
+
+.bankroll-chart-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px 15px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.bankroll-chart-meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+#bankroll-chart-count {
+  color: var(--ink);
+}
+
+.chart-line-swatch,
+.chart-baseline-swatch {
+  display: inline-block;
+  width: 22px;
+  height: 0;
+  border-top: 2px solid var(--chart-path-color);
+}
+
+.chart-baseline-swatch {
+  border-top: 2px dashed var(--gold);
+}
+
+.bankroll-chart-plot {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+#bankroll-chart {
+  display: block;
+  width: 100%;
+  height: clamp(280px, 31vw, 390px);
+  border-radius: 10px;
+  outline: none;
+  touch-action: pan-y;
+}
+
+#bankroll-chart:focus-visible {
+  box-shadow: 0 0 0 3px rgba(13, 89, 68, 0.16);
+}
+
+.bankroll-chart-guide {
+  position: absolute;
+  width: 1px;
+  border-left: 1px dashed rgba(13, 89, 68, 0.48);
+  pointer-events: none;
+}
+
+.bankroll-chart-focus {
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border: 2px solid white;
+  border-radius: 50%;
+  background: var(--felt);
+  box-shadow: 0 0 0 2px rgba(13, 89, 68, 0.22);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.bankroll-chart-tooltip {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  gap: 4px;
+  width: min(320px, calc(100% - 16px));
+  padding: 12px 13px;
+  border: 1px solid rgba(13, 89, 68, 0.2);
+  border-radius: 11px;
+  color: var(--ink);
+  background: rgba(255, 253, 247, 0.97);
+  box-shadow: 0 12px 30px rgba(35, 47, 41, 0.15);
+  font-size: 0.72rem;
+  line-height: 1.45;
+  pointer-events: none;
+}
+
+.bankroll-chart-tooltip strong {
+  font-size: 0.82rem;
+}
+
+.bankroll-chart-tooltip span {
+  color: var(--muted);
+}
+
+.bankroll-chart-tooltip #bankroll-tooltip-bankroll {
+  color: var(--ink);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.bankroll-chart-tooltip .value-positive {
+  color: var(--positive);
+  font-weight: 800;
+}
+
+.bankroll-chart-tooltip .value-negative {
+  color: var(--negative);
+  font-weight: 800;
+}
+
+.bankroll-chart-empty {
+  margin: 0;
+  padding: 34px 18px;
+  border: 1px dashed var(--line);
+  border-radius: 12px;
+  color: var(--muted);
+  background: #f8f8f3;
+  text-align: center;
+  font-size: 0.78rem;
+}
+
+.bankroll-chart-plot[hidden],
+.bankroll-chart-empty[hidden],
+.bankroll-chart-guide[hidden],
+.bankroll-chart-focus[hidden],
+.bankroll-chart-tooltip[hidden] {
+  display: none;
+}
+
 .detail-heading {
   display: flex;
   align-items: flex-end;
@@ -1451,6 +1622,24 @@ footer {
   .point-strip,
   .deal-flow {
     grid-template-columns: 1fr;
+  }
+
+  .bankroll-chart-panel {
+    padding: 16px 12px 12px;
+  }
+
+  .bankroll-chart-heading {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .bankroll-chart-meta {
+    justify-content: flex-start;
+  }
+
+  #bankroll-chart {
+    height: 300px;
   }
 
   .rules-hero {

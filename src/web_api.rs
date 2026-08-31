@@ -1340,6 +1340,20 @@ mod tests {
                 .expect("下注笔数应为整数")
                 > 1
         );
+        assert!(
+            value["summary"]["maximum_round_stake"]
+                .as_f64()
+                .expect("最大单局下注应为数字")
+                > value["summary"]["maximum_single_stake"]
+                    .as_f64()
+                    .expect("最大单笔下注应为数字")
+        );
+        assert!(
+            value["summary"]["maximum_profit"]
+                .as_f64()
+                .expect("模拟最大盈利应为数字")
+                >= 0.0
+        );
         assert!(value["bets"].as_array().expect("明细应为数组").len() > 1);
     }
 }

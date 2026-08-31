@@ -1,4 +1,5 @@
 import init, { analyzeBaccaratStrategy, analyzeBlackjack } from "./pkg/game_ev_engine.js";
+import { createBankrollChart } from "./bankroll-chart.js";
 
 const form = document.querySelector("#analysis-form");
 const analyzeButton = document.querySelector("#analyze-button");
@@ -29,6 +30,20 @@ const replayPreviousPage = document.querySelector("#replay-previous-page");
 const replayNextPage = document.querySelector("#replay-next-page");
 const replayLastPage = document.querySelector("#replay-last-page");
 const replayPageStatus = document.querySelector("#replay-page-status");
+const bankrollChartController = createBankrollChart({
+  canvas: document.querySelector("#bankroll-chart"),
+  plot: document.querySelector("#bankroll-chart-plot"),
+  emptyState: document.querySelector("#bankroll-chart-empty"),
+  pointCount: document.querySelector("#bankroll-chart-count"),
+  tooltip: document.querySelector("#bankroll-chart-tooltip"),
+  tooltipTitle: document.querySelector("#bankroll-tooltip-title"),
+  tooltipMeta: document.querySelector("#bankroll-tooltip-meta"),
+  tooltipBankroll: document.querySelector("#bankroll-tooltip-bankroll"),
+  tooltipProfit: document.querySelector("#bankroll-tooltip-profit"),
+  tooltipRound: document.querySelector("#bankroll-tooltip-round"),
+  guide: document.querySelector("#bankroll-chart-guide"),
+  focus: document.querySelector("#bankroll-chart-focus"),
+});
 const payoutRule = document.querySelector("#payout-rule");
 const stakeStrategy = document.querySelector("#stake-strategy");
 const strategyParameterField = document.querySelector("#strategy-parameter-field");
@@ -141,7 +156,7 @@ let currentReplayPage = 1;
 
 // URL 上的版本标记强制浏览器为当前页面创建同版本 Worker，避免发布后仍复用
 // 旧 Worker，进而把新增配置字段当成 undefined 传给 WASM。
-const replayWorker = new Worker(new URL("./replay-worker.js?v=17", import.meta.url), {
+const replayWorker = new Worker(new URL("./replay-worker.js?v=18", import.meta.url), {
   type: "module",
 });
 
@@ -679,6 +694,12 @@ function renderReplay(report, elapsedMilliseconds) {
     "#maximum-drawdown",
     `${money(summary.maximum_drawdown)} · ${percent(summary.maximum_drawdown_rate, 2)}`,
   );
+  setText("#maximum-profit", money(summary.maximum_profit));
+  applySignedClass(document.querySelector("#maximum-profit"), summary.maximum_profit);
+  setText("#maximum-bankroll", money(summary.maximum_bankroll));
+  setText("#minimum-bankroll", money(summary.minimum_bankroll));
+  setText("#maximum-single-stake", money(summary.maximum_single_stake));
+  setText("#maximum-round-stake", money(summary.maximum_round_stake));
 
   setText("#dataset-rows", integerFormatter.format(dataset.total_rows));
   setText("#valid-sessions", integerFormatter.format(quality.fully_observable_sessions));
@@ -687,6 +708,7 @@ function renderReplay(report, elapsedMilliseconds) {
   setText("#hit-rate", percent(summary.hit_rate, 2));
   setText("#replay-time", `${(elapsedMilliseconds / 1000).toFixed(2)} 秒`);
 
+  bankrollChartController.render(report);
   renderReplayDetails();
 }
 

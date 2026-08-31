@@ -7,6 +7,7 @@ import {
   initSync,
   replayBaccaratCsv,
 } from "../pkg/game_ev_engine.js";
+import { buildBankrollSeries, sampleBankrollSeries } from "../bankroll-chart.js";
 
 const deployDirectory = dirname(fileURLToPath(import.meta.url));
 const webDirectory = resolve(deployDirectory, "..");
@@ -24,6 +25,23 @@ if (!/id="allow-multiple-bets"/.test(pageHtml)) {
   throw new Error("页面没有同局多下注开关");
 }
 
+if (!/id="bankroll-chart"/.test(pageHtml)
+    || !/id="bankroll-chart-tooltip"/.test(pageHtml)) {
+  throw new Error("回放结果缺少本金变化折线图或逐点提示");
+}
+
+for (const id of [
+  "maximum-profit",
+  "maximum-bankroll",
+  "minimum-bankroll",
+  "maximum-single-stake",
+  "maximum-round-stake",
+]) {
+  if (!new RegExp(`id="${id}"`).test(pageHtml)) {
+    throw new Error(`回放结果缺少风险指标：${id}`);
+  }
+}
+
 if (!/id="replay-pagination"/.test(pageHtml)
     || !/id="replay-last-page"/.test(pageHtml)) {
   throw new Error("CSV 全量下注明细必须提供分页和末页导航");
@@ -35,6 +53,9 @@ if (/report\.bets\.slice\(0,\s*500\)/.test(appSource)) {
 }
 if (!/suitSymbols/.test(appSource) || !/appendCardLine/.test(appSource)) {
   throw new Error("回放明细没有把 ASCII 牌面转换为带花色符号的真实牌面");
+}
+if (!/createBankrollChart/.test(appSource)) {
+  throw new Error("页面没有把回放报告交给本金变化折线图");
 }
 
 const manual = JSON.parse(
@@ -143,6 +164,27 @@ if (tinyReplay.summary.replayed_rounds !== 2) {
   throw new Error("WASM CSV 回放没有完成两局测试数据");
 }
 
+for (const field of [
+  "maximum_bankroll",
+  "maximum_profit",
+  "minimum_bankroll",
+  "maximum_single_stake",
+  "maximum_round_stake",
+]) {
+  if (!Number.isFinite(tinyReplay.summary[field])) {
+    throw new Error(`WASM 回放没有返回有限的风险指标：${field}`);
+  }
+}
+
+if (tinyReplay.summary.maximum_bankroll < tinyReplay.summary.minimum_bankroll
+    || tinyReplay.summary.maximum_round_stake < tinyReplay.summary.maximum_single_stake
+    || Math.abs(
+      tinyReplay.summary.maximum_profit
+        - (tinyReplay.summary.maximum_bankroll - tinyReplay.summary.initial_bankroll),
+    ) > 1e-9) {
+  throw new Error("WASM 回放的最高/最低本金、最大盈利或下注暴露指标关系不一致");
+}
+
 if (legacyReplay.config.minimum_side_bet_ev !== 0
     || legacyReplay.config.side_bet_limit !== 1_000
     || legacyReplay.config.lucky_bet_max_round !== null) {
@@ -158,6 +200,50 @@ if (!tinyReplay.bets[0]?.player_cards
     || !Number.isInteger(tinyReplay.bets[0]?.player_total)
     || !Number.isInteger(tinyReplay.bets[0]?.banker_total)) {
   throw new Error("CSV 回放明细没有返回庄闲具体牌面与最终点数");
+}
+
+const bankrollSeries = buildBankrollSeries(tinyReplay);
+if (bankrollSeries.length !== 3
+    || bankrollSeries[0].bankroll !== tinyReplay.summary.initial_bankroll
+    || bankrollSeries.at(-1).bankroll !== tinyReplay.summary.final_bankroll) {
+  throw new Error("本金曲线没有从初始本金连接到最终本金");
+}
+
+const syntheticMultipleReplay = {
+  summary: { initial_bankroll: 1_000 },
+  bets: [
+    {
+      table_id: 1, session_id: 10, round_no: 1, started_at: "2026-08-20 00:00:00",
+      amount: 100, actual_profit: 100, bankroll_after: 1_050,
+    },
+    {
+      table_id: 1, session_id: 10, round_no: 1, started_at: "2026-08-20 00:00:00",
+      amount: 50, actual_profit: -50, bankroll_after: 1_050,
+    },
+    {
+      table_id: 1, session_id: 10, round_no: 2, started_at: "2026-08-20 00:01:00",
+      amount: 40, actual_profit: -40, bankroll_after: 1_010,
+    },
+  ],
+};
+const syntheticSeries = buildBankrollSeries(syntheticMultipleReplay);
+if (syntheticSeries.length !== 3
+    || syntheticSeries[1].betCount !== 2
+    || syntheticSeries[1].roundStake !== 150
+    || syntheticSeries[1].roundProfit !== 50
+    || syntheticSeries[2].drawdown !== 40) {
+  throw new Error("本金曲线没有正确合并同局多注或计算逐点回撤");
+}
+
+const denseSeries = Array.from({ length: 500 }, (_, index) => ({
+  index,
+  bankroll: index === 247 ? 2_000 : 1_000 + index,
+}));
+const sampledSeries = sampleBankrollSeries(denseSeries, 40);
+if (sampledSeries[0].index !== 0
+    || sampledSeries.at(-1).index !== 499
+    || !sampledSeries.some((point) => point.index === 247)) {
+  throw new Error("本金曲线绘制抽样丢失了起点、终点或关键峰值");
 }
 
 const output = {
@@ -186,6 +272,11 @@ const output = {
     rounds: tinyReplay.summary.replayed_rounds,
     bets: tinyReplay.summary.placed_bet_count,
     final_bankroll: tinyReplay.summary.final_bankroll,
+    maximum_profit: tinyReplay.summary.maximum_profit,
+    maximum_bankroll: tinyReplay.summary.maximum_bankroll,
+    minimum_bankroll: tinyReplay.summary.minimum_bankroll,
+    maximum_single_stake: tinyReplay.summary.maximum_single_stake,
+    maximum_round_stake: tinyReplay.summary.maximum_round_stake,
   },
 };
 

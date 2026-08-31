@@ -324,9 +324,19 @@ pub struct CsvReplaySummary {
     pub total_profit: f64,
     pub initial_bankroll: f64,
     pub final_bankroll: f64,
+    /// 回放期间每局结算后出现过的最高本金，初始本金也作为第一个基准点参与比较。
+    pub maximum_bankroll: f64,
+    /// 回放期间的最大累计盈利：最高本金减去初始本金，而不是某一笔下注的盈利。
+    pub maximum_profit: f64,
+    /// 回放期间每局结算后出现过的最低本金；它不把下注尚未开奖时的临时占用算作余额。
+    pub minimum_bankroll: f64,
     pub return_on_initial: f64,
     pub maximum_drawdown: f64,
     pub maximum_drawdown_rate: f64,
+    /// 所有真实下注中，单笔下注金额的最大值。
+    pub maximum_single_stake: f64,
+    /// 同一局所有下注金额之和的最大值，用来观察同局多注的最大风险敞口。
+    pub maximum_round_stake: f64,
 }
 
 /// 一笔真实下注明细。
@@ -689,6 +699,8 @@ fn replay_rounds(
         replayed_sessions: eligible_sessions.len() as u64,
         initial_bankroll: config.initial_bankroll,
         final_bankroll: config.initial_bankroll,
+        maximum_bankroll: config.initial_bankroll,
+        minimum_bankroll: config.initial_bankroll,
         minimum_candidate_effective_ev: None,
         maximum_candidate_effective_ev: None,
         ..CsvReplaySummary::default()
@@ -788,12 +800,17 @@ fn replay_rounds(
             resolve_round(cards).expect("可回放牌局已通过规则验证")
         });
         let mut round_profit = 0.0;
+        let mut round_stake = 0.0;
         let mut placed_details = Vec::new();
 
         for plan in &plans {
             match *plan.action() {
                 CombinedBetPlanAction::Place { bet, amount } => {
                     let quote = plan.quote().expect("Place 动作应该保留凯利报价");
+                    // 单笔下注在这里登记；同一局的多笔下注则继续累加到 round_stake，
+                    // 这样两个指标分别回答“最大一注是多少”和“单局最多暴露多少资金”。
+                    round_stake += amount;
+                    summary.maximum_single_stake = summary.maximum_single_stake.max(amount);
                     // 基础输赢和返水分别结算，既方便审计，也能在报告中看出利润来源。
                     let (base_profit_per_unit, rebate_per_unit) = match bet {
                         BetTarget::Main(main_bet) => (
@@ -852,7 +869,11 @@ fn replay_rounds(
 
         // 同一局的多笔下注必须同时结算，然后再更新一次本金和回撤；否则后面的
         // 边注会错误地把同局前一笔输赢当成下一局资金变化。
+        summary.maximum_round_stake = summary.maximum_round_stake.max(round_stake);
         current_bankroll += round_profit;
+        // 最高/最低本金按每局真实结算后的余额统计，初始本金已经在循环前作为基准写入。
+        summary.maximum_bankroll = summary.maximum_bankroll.max(current_bankroll);
+        summary.minimum_bankroll = summary.minimum_bankroll.min(current_bankroll);
         peak_bankroll = peak_bankroll.max(current_bankroll);
         let drawdown = (peak_bankroll - current_bankroll).max(0.0);
         let drawdown_rate = if peak_bankroll > 0.0 {
@@ -928,6 +949,7 @@ fn replay_rounds(
 
     summary.final_bankroll = current_bankroll;
     summary.total_profit = current_bankroll - config.initial_bankroll;
+    summary.maximum_profit = summary.maximum_bankroll - config.initial_bankroll;
     summary.return_on_initial = summary.total_profit / config.initial_bankroll;
 
     Ok((summary, details))
@@ -1218,6 +1240,16 @@ mod tests {
         assert_eq!(report.summary.replayed_rounds, 2);
         assert!(report.summary.placed_bet_count > 0);
         assert_eq!(report.bets.len() as u64, report.summary.placed_bet_count);
+        assert!(report.summary.maximum_bankroll >= report.summary.initial_bankroll);
+        assert!(report.summary.minimum_bankroll <= report.summary.initial_bankroll);
+        assert!(report.summary.maximum_single_stake > 0.0);
+        assert!(report.summary.maximum_round_stake >= report.summary.maximum_single_stake);
+        assert!(
+            (report.summary.maximum_profit
+                - (report.summary.maximum_bankroll - report.summary.initial_bankroll))
+                .abs()
+                < 1e-9
+        );
         assert_eq!(report.bets[0].player_cards, "JD 2H 7H");
         assert_eq!(report.bets[0].banker_cards, "4D JD 5H");
         assert_eq!(report.bets[0].player_total, 9);
@@ -1274,5 +1306,10 @@ mod tests {
         assert_eq!(report.quality.quarantined_rounds, 1);
         assert_eq!(report.summary.replayed_rounds, 0);
         assert_eq!(report.summary.final_bankroll, 10_000.0);
+        assert_eq!(report.summary.maximum_bankroll, 10_000.0);
+        assert_eq!(report.summary.minimum_bankroll, 10_000.0);
+        assert_eq!(report.summary.maximum_profit, 0.0);
+        assert_eq!(report.summary.maximum_single_stake, 0.0);
+        assert_eq!(report.summary.maximum_round_stake, 0.0);
     }
 }

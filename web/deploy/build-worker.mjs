@@ -12,6 +12,7 @@ const assetDefinitions = [
   ["/index.html", "index.html", "text/html; charset=utf-8"],
   ["/styles.css", "styles.css", "text/css; charset=utf-8"],
   ["/app.js", "app.js", "text/javascript; charset=utf-8"],
+  ["/bankroll-chart.js", "bankroll-chart.js", "text/javascript; charset=utf-8"],
   ["/replay-worker.js", "replay-worker.js", "text/javascript; charset=utf-8"],
   ["/pkg/game_ev_engine.js", "pkg/game_ev_engine.js", "text/javascript; charset=utf-8"],
   ["/pkg/game_ev_engine_bg.wasm", "pkg/game_ev_engine_bg.wasm", "application/wasm"],

@@ -442,7 +442,31 @@
               <span>最大回撤</span>
               <strong id="maximum-drawdown">—</strong>
             </div>
+            <div class="profit-card">
+              <span>模拟最大盈利</span>
+              <strong id="maximum-profit">—</strong>
+            </div>
+            <div>
+              <span>最高本金</span>
+              <strong id="maximum-bankroll">—</strong>
+            </div>
+            <div>
+              <span>最低本金</span>
+              <strong id="minimum-bankroll">—</strong>
+            </div>
+            <div>
+              <span>最大单笔下注</span>
+              <strong id="maximum-single-stake">—</strong>
+            </div>
+            <div>
+              <span>最大单局下注</span>
+              <strong id="maximum-round-stake">—</strong>
+            </div>
           </div>
+
+          <p class="result-note replay-metrics-note">
+            模拟最大盈利 = 回放期间最高本金 − 初始本金；最高/最低本金按每局结算后统计。最大单局下注是同一局多笔下注金额的合计，用来观察同局多下注时的最大资金暴露。
+          </p>
 
           <div class="quality-panel">
             <div>
@@ -470,6 +494,38 @@
               <strong id="replay-time">—</strong>
             </div>
           </div>
+
+          <section class="bankroll-chart-panel" aria-labelledby="bankroll-chart-title">
+            <div class="bankroll-chart-heading">
+              <div>
+                <p class="eyebrow">资金路径</p>
+                <h3 id="bankroll-chart-title">本金变化曲线</h3>
+                <p>横轴按实际下注结算局排列；同局多注合并成一个资金点，跳过局不会重复绘制。</p>
+              </div>
+              <div class="bankroll-chart-meta" aria-label="图例">
+                <span id="bankroll-chart-count">暂无资金变化点</span>
+                <span><i class="chart-line-swatch" aria-hidden="true"></i>结算后本金</span>
+                <span><i class="chart-baseline-swatch" aria-hidden="true"></i>初始本金</span>
+              </div>
+            </div>
+
+            <p id="bankroll-chart-empty" class="bankroll-chart-empty">
+              本次策略没有产生真实下注，因此本金没有形成变化曲线。
+            </p>
+
+            <div id="bankroll-chart-plot" class="bankroll-chart-plot" hidden>
+              <canvas id="bankroll-chart" tabindex="0"></canvas>
+              <span id="bankroll-chart-guide" class="bankroll-chart-guide" hidden></span>
+              <span id="bankroll-chart-focus" class="bankroll-chart-focus" hidden></span>
+              <div id="bankroll-chart-tooltip" class="bankroll-chart-tooltip" role="status" hidden>
+                <strong id="bankroll-tooltip-title">—</strong>
+                <span id="bankroll-tooltip-meta">—</span>
+                <span id="bankroll-tooltip-bankroll">—</span>
+                <span id="bankroll-tooltip-profit">—</span>
+                <span id="bankroll-tooltip-round">—</span>
+              </div>
+            </div>
+          </section>
 
           <div class="detail-heading">
             <div>
