@@ -30,6 +30,15 @@ if (!/id="bankroll-chart"/.test(pageHtml)
   throw new Error("回放结果缺少本金变化折线图或逐点提示");
 }
 
+// 资金曲线不能放在默认 hidden 的回放结果容器中，否则用户第一次打开
+// 页面时完全看不到这个功能，也不知道上传 CSV 后会生成图表。
+if (pageHtml.indexOf('id="bankroll-chart-title"') > pageHtml.indexOf('id="replay-results"')) {
+  throw new Error("本金变化曲线仍被隐藏在回放结果容器中");
+}
+if (!/bankrollChartController\.reset/.test(readFileSync(resolve(webDirectory, "app.js"), "utf8"))) {
+  throw new Error("切换文件或开始新回放时没有重置旧的本金曲线");
+}
+
 for (const id of [
   "maximum-profit",
   "maximum-bankroll",

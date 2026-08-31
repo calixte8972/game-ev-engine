@@ -772,6 +772,7 @@ csvFileInput.addEventListener("change", () => {
   replayError.hidden = true;
   currentReplayReport = null;
   replayPagination.hidden = true;
+  bankrollChartController.reset();
 
   if (!currentCsvFile) {
     selectedFile.textContent = "尚未选择文件";
@@ -814,6 +815,7 @@ replayButton.addEventListener("click", async () => {
   if (!currentCsvFile || replayRunning) return;
   replayError.hidden = true;
   replayResults.hidden = true;
+  bankrollChartController.reset("正在回放，完成后显示新的本金变化曲线…");
 
   try {
     if (currentCsvFile.size > 50 * 1024 * 1024) {
@@ -826,6 +828,7 @@ replayButton.addEventListener("click", async () => {
     replayWorker.postMessage({ type: "replay", csvText, config });
   } catch (error) {
     setReplayRunning(false, "回放失败");
+    bankrollChartController.reset("回放失败；修正文件或配置后重新运行即可生成本金变化曲线。");
     showError(replayError, error);
   }
 });

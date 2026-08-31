@@ -165,7 +165,7 @@ export function createBankrollChart({
   guide,
   focus,
 }) {
-  if (!canvas || !plot) return { render() {} };
+  if (!canvas || !plot) return { render() {}, reset() {} };
 
   const context = canvas.getContext("2d");
   const panel = plot.closest(".bankroll-chart-panel");
@@ -415,6 +415,17 @@ export function createBankrollChart({
   }
 
   return {
+    reset(message = "上传 CSV 并完成策略回放后，这里会显示结算后本金的变化曲线。") {
+      points = [];
+      geometry = null;
+      keyboardIndex = 0;
+      pointCount.textContent = "暂无资金变化点";
+      plot.hidden = true;
+      emptyState.textContent = message;
+      emptyState.hidden = false;
+      if (panel) delete panel.dataset.trend;
+      hideTooltip();
+    },
     render(report) {
       points = buildBankrollSeries(report);
       const settlementCount = Math.max(0, points.length - 1);
@@ -427,6 +438,11 @@ export function createBankrollChart({
       }
       plot.hidden = !hasSettlements;
       emptyState.hidden = hasSettlements;
+      if (!hasSettlements) {
+        emptyState.textContent = Number(report?.summary?.replayed_rounds ?? 0) > 0
+          ? "本次策略没有产生真实下注，因此本金没有形成变化曲线。"
+          : "本次数据没有可回放牌靴，因此本金没有形成变化曲线。";
+      }
       hideTooltip();
       if (!hasSettlements) return;
 

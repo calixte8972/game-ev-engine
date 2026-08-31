@@ -408,6 +408,38 @@
 
         <div id="replay-error" class="error-message" role="alert" hidden></div>
 
+        <section class="bankroll-chart-panel" aria-labelledby="bankroll-chart-title">
+          <div class="bankroll-chart-heading">
+            <div>
+              <p class="eyebrow">资金路径</p>
+              <h3 id="bankroll-chart-title">本金变化曲线</h3>
+              <p>横轴按实际下注结算局排列；同局多注合并成一个资金点，跳过局不会重复绘制。</p>
+            </div>
+            <div class="bankroll-chart-meta" aria-label="图例">
+              <span id="bankroll-chart-count">暂无资金变化点</span>
+              <span><i class="chart-line-swatch" aria-hidden="true"></i>结算后本金</span>
+              <span><i class="chart-baseline-swatch" aria-hidden="true"></i>初始本金</span>
+            </div>
+          </div>
+
+          <p id="bankroll-chart-empty" class="bankroll-chart-empty">
+            上传 CSV 并完成策略回放后，这里会显示结算后本金的变化曲线。
+          </p>
+
+          <div id="bankroll-chart-plot" class="bankroll-chart-plot" hidden>
+            <canvas id="bankroll-chart" tabindex="0"></canvas>
+            <span id="bankroll-chart-guide" class="bankroll-chart-guide" hidden></span>
+            <span id="bankroll-chart-focus" class="bankroll-chart-focus" hidden></span>
+            <div id="bankroll-chart-tooltip" class="bankroll-chart-tooltip" role="status" hidden>
+              <strong id="bankroll-tooltip-title">—</strong>
+              <span id="bankroll-tooltip-meta">—</span>
+              <span id="bankroll-tooltip-bankroll">—</span>
+              <span id="bankroll-tooltip-profit">—</span>
+              <span id="bankroll-tooltip-round">—</span>
+            </div>
+          </div>
+        </section>
+
         <div id="replay-results" class="replay-results" hidden>
           <div class="replay-summary" aria-label="回放结果概要">
             <div>
@@ -494,38 +526,6 @@
               <strong id="replay-time">—</strong>
             </div>
           </div>
-
-          <section class="bankroll-chart-panel" aria-labelledby="bankroll-chart-title">
-            <div class="bankroll-chart-heading">
-              <div>
-                <p class="eyebrow">资金路径</p>
-                <h3 id="bankroll-chart-title">本金变化曲线</h3>
-                <p>横轴按实际下注结算局排列；同局多注合并成一个资金点，跳过局不会重复绘制。</p>
-              </div>
-              <div class="bankroll-chart-meta" aria-label="图例">
-                <span id="bankroll-chart-count">暂无资金变化点</span>
-                <span><i class="chart-line-swatch" aria-hidden="true"></i>结算后本金</span>
-                <span><i class="chart-baseline-swatch" aria-hidden="true"></i>初始本金</span>
-              </div>
-            </div>
-
-            <p id="bankroll-chart-empty" class="bankroll-chart-empty">
-              本次策略没有产生真实下注，因此本金没有形成变化曲线。
-            </p>
-
-            <div id="bankroll-chart-plot" class="bankroll-chart-plot" hidden>
-              <canvas id="bankroll-chart" tabindex="0"></canvas>
-              <span id="bankroll-chart-guide" class="bankroll-chart-guide" hidden></span>
-              <span id="bankroll-chart-focus" class="bankroll-chart-focus" hidden></span>
-              <div id="bankroll-chart-tooltip" class="bankroll-chart-tooltip" role="status" hidden>
-                <strong id="bankroll-tooltip-title">—</strong>
-                <span id="bankroll-tooltip-meta">—</span>
-                <span id="bankroll-tooltip-bankroll">—</span>
-                <span id="bankroll-tooltip-profit">—</span>
-                <span id="bankroll-tooltip-round">—</span>
-              </div>
-            </div>
-          </section>
 
           <div class="detail-heading">
             <div>
