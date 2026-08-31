@@ -1234,6 +1234,72 @@ td:first-child {
   font-variant-numeric: tabular-nums;
 }
 
+.bet-count-panel {
+  margin: 18px 0 28px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: var(--surface-strong);
+}
+
+.bet-count-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  margin-bottom: 14px;
+}
+
+.bet-count-heading h3,
+.bet-count-heading p {
+  margin: 0;
+}
+
+.bet-count-heading span {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.bet-count-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 8px;
+}
+
+.bet-count-grid > div {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 2px 5px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #f8f8f3;
+}
+
+.bet-count-grid span {
+  grid-column: 1 / -1;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bet-count-grid strong {
+  color: var(--felt-dark);
+  font-size: 1.08rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.bet-count-grid small {
+  padding-bottom: 2px;
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+
 .quality-panel {
   display: grid;
   grid-template-columns: repeat(6, 1fr);
@@ -1580,6 +1646,10 @@ footer {
     grid-template-columns: repeat(3, 1fr);
   }
 
+  .bet-count-grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+
   .rule-fact-grid {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -1614,6 +1684,16 @@ footer {
   .replay-summary,
   .quality-panel {
     grid-template-columns: 1fr;
+  }
+
+  .bet-count-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .bet-count-heading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 6px;
   }
 
   .rules-layout,

@@ -475,40 +475,56 @@ pub fn analyze_baccarat_strategy_json_with_side_bets_and_multiple(
         },
         side_bet_rules: "pairs_5_11_perfect_25_big_0_5_small_1_5_lucky_6_12_18_lucky_7_6_15_super_30_40_100_dragon_1_2_3_5_10_30_natural_push",
         side_bets: BrowserSideBets {
-            any_pair: BrowserSideBetMetrics::new(side_analysis.metrics(SideBet::AnyPair), "5:1"),
+            any_pair: BrowserSideBetMetrics::new(
+                side_analysis.metrics(SideBet::AnyPair),
+                "5:1",
+                rebate,
+            ),
             banker_pair: BrowserSideBetMetrics::new(
                 side_analysis.metrics(SideBet::BankerPair),
                 "11:1",
+                rebate,
             ),
             player_pair: BrowserSideBetMetrics::new(
                 side_analysis.metrics(SideBet::PlayerPair),
                 "11:1",
+                rebate,
             ),
             perfect_pair: BrowserSideBetMetrics::new(
                 side_analysis.metrics(SideBet::PerfectPair),
                 "25:1",
+                rebate,
             ),
-            big: BrowserSideBetMetrics::new(side_analysis.metrics(SideBet::Big), "0.5:1"),
-            small: BrowserSideBetMetrics::new(side_analysis.metrics(SideBet::Small), "1.5:1"),
+            big: BrowserSideBetMetrics::new(side_analysis.metrics(SideBet::Big), "0.5:1", rebate),
+            small: BrowserSideBetMetrics::new(
+                side_analysis.metrics(SideBet::Small),
+                "1.5:1",
+                rebate,
+            ),
             lucky_seven: BrowserSideBetMetrics::new(
                 side_analysis.metrics(SideBet::LuckySeven),
                 "闲2张 6:1 / 闲3张 15:1",
+                rebate,
             ),
             super_lucky_seven: BrowserSideBetMetrics::new(
                 side_analysis.metrics(SideBet::SuperLuckySeven),
                 "总4张 30:1 / 5张 40:1 / 6张 100:1",
+                rebate,
             ),
             lucky_six: BrowserSideBetMetrics::new(
                 side_analysis.metrics(SideBet::LuckySix),
                 "庄2张 12:1 / 庄3张 18:1",
+                rebate,
             ),
             banker_dragon_bonus: BrowserSideBetMetrics::new(
                 side_analysis.metrics(SideBet::BankerDragonBonus),
                 "点差4/5/6/7/8/9：1/2/3/5/10/30:1；Natural赢/双方Natural和为Push",
+                rebate,
             ),
             player_dragon_bonus: BrowserSideBetMetrics::new(
                 side_analysis.metrics(SideBet::PlayerDragonBonus),
                 "点差4/5/6/7/8/9：1/2/3/5/10/30:1；Natural赢/双方Natural和为Push",
+                rebate,
             ),
         },
         recommendation,
@@ -843,19 +859,34 @@ struct BrowserSideBets {
 #[derive(Debug, Serialize)]
 struct BrowserSideBetMetrics {
     probability: f64,
+    /// 不含返水的边注基础 EV；保留 `ev` 是为了兼容旧前端和已有调用者。
     ev: f64,
+    base_ev: f64,
+    rebate_ev: f64,
+    effective_ev: f64,
     house_edge: f64,
     rtp: f64,
+    effective_house_edge: f64,
+    effective_rtp: f64,
     payout: &'static str,
 }
 
 impl BrowserSideBetMetrics {
-    fn new(metrics: SideBetMetrics, payout: &'static str) -> Self {
+    fn new(metrics: SideBetMetrics, payout: &'static str, rebate: RebateRule) -> Self {
+        let base_ev = metrics.ev();
+        // 所有边注结果都按实际下注额返水，因此期望返水就是返水率本身。
+        let rebate_ev = rebate.rate_for_side_bet();
+        let effective_ev = base_ev + rebate_ev;
         Self {
             probability: metrics.probability(),
-            ev: metrics.ev(),
+            ev: base_ev,
+            base_ev,
+            rebate_ev,
+            effective_ev,
             house_edge: metrics.house_edge(),
             rtp: metrics.rtp(),
+            effective_house_edge: -effective_ev,
+            effective_rtp: 1.0 + effective_ev,
             payout,
         }
     }

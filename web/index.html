@@ -354,19 +354,21 @@
                 <th scope="col">命中率</th>
                 <th scope="col">净赔付</th>
                 <th scope="col">基础 EV</th>
-                <th scope="col">庄家优势</th>
-                <th scope="col">RTP</th>
+                <th scope="col">返水 EV</th>
+                <th scope="col">有效 EV</th>
+                <th scope="col">有效庄家优势</th>
+                <th scope="col">有效 RTP</th>
               </tr>
             </thead>
             <tbody id="side-result-body">
               <tr class="placeholder-row">
-                <td colspan="6">计算牌靴后显示对子、幸运 6/7、龙宝与大/小。</td>
+                <td colspan="8">计算牌靴后显示对子、幸运 6/7、龙宝与大/小。</td>
               </tr>
             </tbody>
           </table>
         </div>
         <p class="result-note side-bet-note">
-          十一种边注会与庄、闲、和共同参与自动选择；“小”表示全局只发 4 张，净赔 1.5:1；“大”表示发 5 或 6 张，净赔 0.5:1。龙宝的 Natural 胜出按退回本金处理。边注不叠加主注返水，并受单独金额上限保护。
+          十一种边注会与庄、闲、和共同参与自动选择；“小”表示全局只发 4 张，净赔 1.5:1；“大”表示发 5 或 6 张，净赔 0.5:1。龙宝的 Natural 胜出按退回本金处理。大小及所有边注均按实际下注额计算返水，并受单独金额上限保护。
         </p>
       </section>
 
@@ -499,6 +501,17 @@
           <p class="result-note replay-metrics-note">
             模拟最大盈利 = 回放期间最高本金 − 初始本金；最高/最低本金按每局结算后统计。最大单局下注是同一局多笔下注金额的合计，用来观察同局多下注时的最大资金暴露。
           </p>
+
+          <section class="bet-count-panel" aria-labelledby="bet-count-title">
+            <div class="bet-count-heading">
+              <div>
+                <p class="eyebrow">下注构成</p>
+                <h3 id="bet-count-title">各下注类型下注笔数</h3>
+              </div>
+              <span>统计真正执行的下注；未达到 EV 门槛的候选不会计入。</span>
+            </div>
+            <div id="bet-count-grid" class="bet-count-grid"></div>
+          </section>
 
           <div class="quality-panel">
             <div>
@@ -810,7 +823,7 @@
             <ul class="rule-list">
               <li>庄注、闲注：出现和局时没有返水，其他结果有返水</li>
               <li>和注：包括开出和局时也有返水</li>
-              <li>对子、大/小、幸运 7 等边注不叠加主注返水</li>
+              <li>对子、大/小、幸运 6/7、龙宝等边注：赢、输或 Push 都按实际下注额返水</li>
             </ul>
           </article>
         </div>

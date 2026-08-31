@@ -30,6 +30,10 @@ if (!/id="bankroll-chart"/.test(pageHtml)
   throw new Error("回放结果缺少本金变化折线图或逐点提示");
 }
 
+if (!/id="bet-count-grid"/.test(pageHtml)) {
+  throw new Error("回放结果缺少各下注类型的下注笔数统计");
+}
+
 // 资金曲线不能放在默认 hidden 的回放结果容器中，否则用户第一次打开
 // 页面时完全看不到这个功能，也不知道上传 CSV 后会生成图表。
 if (pageHtml.indexOf('id="bankroll-chart-title"') > pageHtml.indexOf('id="replay-results"')) {
@@ -65,6 +69,9 @@ if (!/suitSymbols/.test(appSource) || !/appendCardLine/.test(appSource)) {
 }
 if (!/createBankrollChart/.test(appSource)) {
   throw new Error("页面没有把回放报告交给本金变化折线图");
+}
+if (!/renderBetCounts\(summary\.placed_bets\)/.test(appSource)) {
+  throw new Error("页面没有展示 Rust 回放报告中的分类下注笔数");
 }
 
 const manual = JSON.parse(
@@ -135,6 +142,14 @@ if (manual.side_bets.big.payout !== "0.5:1"
   throw new Error("大/小概率没有覆盖全部牌局，或赔付表没有进入 WASM 输出");
 }
 
+for (const [name, metrics] of Object.entries(manual.side_bets)) {
+  if (Math.abs(metrics.rebate_ev - 0.009) > 1e-12
+      || Math.abs(metrics.effective_ev - (metrics.ev + 0.009)) > 1e-12
+      || Math.abs(metrics.effective_rtp - (metrics.rtp + 0.009)) > 1e-12) {
+    throw new Error(`${name} 没有把返水加入边注有效 EV 与有效 RTP`);
+  }
+}
+
 if (Math.abs(manual.side_bets.lucky_seven.rtp - 0.8170) > 0.00005) {
   throw new Error("幸运 7 的完整牌靴 RTP 偏离规则基线");
 }
@@ -171,6 +186,12 @@ const legacyReplay = JSON.parse(
 
 if (tinyReplay.summary.replayed_rounds !== 2) {
   throw new Error("WASM CSV 回放没有完成两局测试数据");
+}
+
+const placedBetCountFromCategories = Object.values(tinyReplay.summary.placed_bets)
+  .reduce((total, count) => total + count, 0);
+if (placedBetCountFromCategories !== tinyReplay.summary.placed_bet_count) {
+  throw new Error("各下注类型笔数之和与实际下注总数不一致");
 }
 
 for (const field of [

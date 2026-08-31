@@ -379,7 +379,23 @@ impl KellyPolicy {
         bet: SideBet,
         bankroll: f64,
     ) -> Result<KellyQuote, KellyError> {
-        let outcomes = side_bet_kelly_outcomes(weights, rules, bet);
+        self.quote_side_with_rebate(weights, rules, RebateRule::None, bet, bankroll)
+    }
+
+    /// 为边注计算包含返水的多结果凯利报价。
+    ///
+    /// 保留 [`KellyPolicy::quote_side`] 作为“不返水”的兼容入口；策略和 CSV
+    /// 回放调用本函数，把边注返水同时加入赢、输、Push 的单位净收益。这样
+    /// 报价中的有效 EV、凯利比例和期望盈利会与最终结算保持一致。
+    pub fn quote_side_with_rebate(
+        self,
+        weights: SideBetWeights,
+        rules: SideBetRules,
+        rebate: RebateRule,
+        bet: SideBet,
+        bankroll: f64,
+    ) -> Result<KellyQuote, KellyError> {
+        let outcomes = side_bet_kelly_outcomes_with_rebate(weights, rules, rebate, bet);
         self.quote_outcomes(BetTarget::Side(bet), &outcomes, bankroll)
     }
 
@@ -573,9 +589,13 @@ impl KellyPolicy {
                         main_bet,
                         bankroll,
                     )?,
-                    BetTarget::Side(side_bet) => {
-                        self.quote_side(side_weights, side_rules, side_bet, bankroll)?
-                    }
+                    BetTarget::Side(side_bet) => self.quote_side_with_rebate(
+                        side_weights,
+                        side_rules,
+                        betting_policy.rebate(),
+                        side_bet,
+                        bankroll,
+                    )?,
                 };
 
                 let action =
@@ -644,9 +664,13 @@ impl KellyPolicy {
                     main_bet,
                     bankroll,
                 )?,
-                BetTarget::Side(side_bet) => {
-                    self.quote_side(side_weights, side_rules, side_bet, bankroll)?
-                }
+                BetTarget::Side(side_bet) => self.quote_side_with_rebate(
+                    side_weights,
+                    side_rules,
+                    betting_policy.rebate(),
+                    side_bet,
+                    bankroll,
+                )?,
             };
 
             let action = if self.strategy.requires_positive_kelly() && quote.kelly_fraction() <= 0.0
@@ -967,7 +991,22 @@ pub fn side_bet_kelly_outcomes(
     rules: SideBetRules,
     bet: SideBet,
 ) -> Vec<KellyOutcome> {
+    side_bet_kelly_outcomes_with_rebate(weights, rules, RebateRule::None, bet)
+}
+
+/// 把边注档位转换为包含返水的完整互斥收益分布。
+///
+/// 边注返水按实际下注额发放，不依赖最后是赢、输还是 Push，所以每个结果的
+/// 单位净收益都加上相同的 `rebate_per_unit`。不能只把返水加到最终 EV 上：
+/// 凯利公式需要完整收益分布，遗漏后会得到错误的下注比例。
+pub fn side_bet_kelly_outcomes_with_rebate(
+    weights: SideBetWeights,
+    rules: SideBetRules,
+    rebate: RebateRule,
+    bet: SideBet,
+) -> Vec<KellyOutcome> {
     let total = weights.total_weight() as f64;
+    let rebate_per_unit = rebate.rate_for_side_bet();
     let (tier_weights, payouts, push_weight): (Vec<u64>, Vec<f64>, u64) = match bet {
         SideBet::AnyPair
         | SideBet::BankerPair
@@ -1009,14 +1048,17 @@ pub fn side_bet_kelly_outcomes(
     let mut outcomes = tier_weights
         .into_iter()
         .zip(payouts)
-        .map(|(weight, payout)| KellyOutcome::new(weight as f64 / total, payout))
+        .map(|(weight, payout)| KellyOutcome::new(weight as f64 / total, payout + rebate_per_unit))
         .collect::<Vec<_>>();
     if push_weight > 0 {
-        outcomes.push(KellyOutcome::new(push_weight as f64 / total, 0.0));
+        outcomes.push(KellyOutcome::new(
+            push_weight as f64 / total,
+            rebate_per_unit,
+        ));
     }
     outcomes.push(KellyOutcome::new(
         (weights.total_weight() - win_weight - push_weight) as f64 / total,
-        -1.0,
+        -1.0 + rebate_per_unit,
     ));
     outcomes
 }
@@ -1309,7 +1351,7 @@ mod tests {
     use super::{
         BetPlanAction, BetPlanSkipReason, CombinedBetPlanAction, KellyOutcome, KellyPolicy,
         StakeSizingStrategy, calculate_kelly_fraction, main_bet_kelly_outcomes,
-        side_bet_kelly_outcomes,
+        side_bet_kelly_outcomes, side_bet_kelly_outcomes_with_rebate,
     };
     use crate::{
         BetTarget, BettingPolicy, MainBet, MainBetAnalysis, MainBetRules, OutcomeWeights,
@@ -1680,6 +1722,34 @@ mod tests {
 
         assert_eq!(quote.bet(), BetTarget::Side(SideBet::AnyPair));
         assert_close(quote.amount(), 25.0);
+    }
+
+    #[test]
+    fn side_bet_kelly_distribution_adds_rebate_to_every_outcome() {
+        let weights = SideBetWeights::new(
+            100, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, [0; 6], 0, [0; 6], 0,
+        );
+        let rules = SideBetRules::default();
+        let rebate = RebateRule::AllExceptMainBetTie { rate: 0.02 };
+        let base = side_bet_kelly_outcomes(weights, rules, SideBet::AnyPair);
+        let with_rebate =
+            side_bet_kelly_outcomes_with_rebate(weights, rules, rebate, SideBet::AnyPair);
+
+        assert_eq!(base.len(), with_rebate.len());
+        for (base_outcome, rebate_outcome) in base.iter().zip(&with_rebate) {
+            assert_close(base_outcome.probability(), rebate_outcome.probability());
+            assert_close(
+                rebate_outcome.net_profit(),
+                base_outcome.net_profit() + 0.02,
+            );
+        }
+
+        let analysis = SideBetAnalysis::calculate(weights, rules);
+        let effective_ev = with_rebate
+            .iter()
+            .map(|outcome| outcome.probability() * outcome.net_profit())
+            .sum::<f64>();
+        assert_close(effective_ev, analysis.metrics(SideBet::AnyPair).ev() + 0.02);
     }
 
     #[test]

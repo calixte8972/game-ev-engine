@@ -56,7 +56,7 @@ pub use replay::{
 pub use risk::{
     BetPlan, BetPlanAction, BetPlanSkipReason, CombinedBetPlan, CombinedBetPlanAction, KellyError,
     KellyOutcome, KellyPolicy, KellyQuote, StakeSizingStrategy, calculate_kelly_fraction,
-    main_bet_kelly_outcomes, side_bet_kelly_outcomes,
+    main_bet_kelly_outcomes, side_bet_kelly_outcomes, side_bet_kelly_outcomes_with_rebate,
 };
 pub(crate) use round::resolve_point_round;
 pub use round::{RoundError, RoundOutcome, RoundResult, compare_hands, resolve_round};

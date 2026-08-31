@@ -35,15 +35,16 @@ impl BetTarget {
 
 /// 方向选择配置。
 ///
-/// `rebate` 会先加入三个方向的基础 EV；`minimum_effective_ev` 是允许下注的
-/// 最低门槛。即使某个方向是三者中最优，如果仍低于门槛，也会选择 Skip。
+/// `rebate` 会加入主注和边注的基础 EV；`minimum_effective_ev` 是主注门槛，
+/// `minimum_side_bet_ev` 是边注门槛。即使某个方向在全部目标中最优，如果仍
+/// 低于对应门槛，也会选择 Skip。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BettingPolicy {
     /// 当前玩家或渠道适用的返水规则。
     rebate: RebateRule,
     /// 允许下注所需达到的最低有效 EV。
     minimum_effective_ev: f64,
-    /// 十一种边注各自必须达到的最低基础 EV。边注目前不叠加主注返水。
+    /// 十一种边注各自必须达到的最低有效 EV，已经包含边注返水。
     minimum_side_bet_ev: f64,
 }
 
@@ -52,7 +53,7 @@ pub struct BettingPolicy {
 pub enum CombinedBetAction {
     /// 至少一个目标达到自己的 EV 门槛，选择其中 EV 最大者。
     Place { bet: BetTarget },
-    /// 八个目标都没有达到各自门槛。
+    /// 十四个目标都没有达到各自门槛。
     Skip { reason: SkipReason },
 }
 
@@ -236,11 +237,15 @@ impl BettingPolicy {
             .filter(|bet| allows_side_bet(*bet))
             .map(|bet| {
                 let metrics = side_analysis.metrics(bet);
+                let base_ev = metrics.ev();
+                // 当前业务规则下所有边注结果都按下注额返水，所以它对边注 EV
+                // 的贡献就是返水率本身，不需要再按输赢结果拆分加权。
+                let rebate_ev = self.rebate.rate_for_side_bet();
                 CandidateMetrics {
                     target: BetTarget::Side(bet),
-                    base_ev: metrics.ev(),
-                    rebate_ev: 0.0,
-                    effective_ev: metrics.ev(),
+                    base_ev,
+                    rebate_ev,
+                    effective_ev: base_ev + rebate_ev,
                     minimum_ev: self.minimum_side_bet_ev,
                 }
             });
@@ -325,11 +330,13 @@ impl BettingPolicy {
                 continue;
             }
             let metrics = side_analysis.metrics(bet);
+            let base_ev = metrics.ev();
+            let rebate_ev = self.rebate.rate_for_side_bet();
             candidates.push(CandidateMetrics {
                 target: BetTarget::Side(bet),
-                base_ev: metrics.ev(),
-                rebate_ev: 0.0,
-                effective_ev: metrics.ev(),
+                base_ev,
+                rebate_ev,
+                effective_ev: base_ev + rebate_ev,
                 minimum_ev: self.minimum_side_bet_ev,
             });
         }
@@ -520,6 +527,18 @@ mod tests {
                 bet: BetTarget::Side(SideBet::AnyPair)
             }
         ));
+    }
+
+    #[test]
+    fn side_bet_effective_ev_includes_rebate() {
+        let rebate = RebateRule::AllExceptMainBetTie { rate: 0.015 };
+        let policy = BettingPolicy::with_side_bet_minimum(rebate, 10.0, 0.0);
+        let decision = policy.decide_all(sample_analysis(), side_analysis_with_positive_any_pair());
+
+        assert_eq!(decision.candidate(), BetTarget::Side(SideBet::AnyPair));
+        assert_close(decision.base_ev(), 0.8);
+        assert_close(decision.rebate_ev(), 0.015);
+        assert_close(decision.effective_ev(), 0.815);
     }
 
     #[test]

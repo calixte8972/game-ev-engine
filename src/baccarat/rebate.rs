@@ -41,6 +41,19 @@ impl RebateRule {
             },
         }
     }
+
+    /// 返回任意边注每下注 1 单位可以获得的返水比例。
+    ///
+    /// 当前业务约定只有“庄/闲主注遇到和局”不返水。大小、对子、幸运 6/7、
+    /// 龙宝等边注不属于这个例外，因此无论边注最后赢、输还是 Push，都按
+    /// 实际下注额获得同一个返水比例。把这条规则集中在这里，可以保证策略
+    /// EV、凯利金额和真实回放结算使用完全相同的口径。
+    pub const fn rate_for_side_bet(self) -> f64 {
+        match self {
+            Self::None => 0.0,
+            Self::AllExceptMainBetTie { rate } => rate,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -82,5 +95,13 @@ mod tests {
         ] {
             assert_eq!(rule.rate_for(MainBet::Tie, outcome), 0.015);
         }
+    }
+
+    #[test]
+    fn every_side_bet_outcome_receives_rebate() {
+        let rule = RebateRule::AllExceptMainBetTie { rate: 0.015 };
+
+        assert_eq!(rule.rate_for_side_bet(), 0.015);
+        assert_eq!(RebateRule::None.rate_for_side_bet(), 0.0);
     }
 }

@@ -376,6 +376,7 @@ Python 不应传入本局 outcome 参与 analyze_snapshot。outcome 只在决策
 - effective_ev = base_ev + rebate_ev；
 - Player/Banker 遇 Tie 的返水比例为 0；
 - 按当前约定 Tie 注三种结果都能获得返水；
+- 大小、对子、幸运 6/7、龙宝等边注的赢、输和 Push 都按实际下注额获得返水；
 - Place 或 Skip 必须和最低有效 EV 规则一致；
 - 同样的牌靴、规则和返水输入重复回放，输出必须一致。
 

@@ -40,7 +40,7 @@ pub use baccarat::{
     analyze_main_bets, analyze_snapshot, calculate_kelly_fraction,
     calculate_main_and_side_outcomes, calculate_main_outcomes, calculate_side_bet_outcomes,
     decision_snapshot_from_weights, effective_ev, main_bet_kelly_outcomes, replay_csv_text,
-    resolve_round, side_bet_kelly_outcomes,
+    resolve_round, side_bet_kelly_outcomes, side_bet_kelly_outcomes_with_rebate,
 };
 pub use blackjack::{
     BlackjackAction, BlackjackActionEvs, BlackjackAnalysis, BlackjackError, BlackjackRules,

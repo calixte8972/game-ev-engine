@@ -30,6 +30,7 @@ const replayPreviousPage = document.querySelector("#replay-previous-page");
 const replayNextPage = document.querySelector("#replay-next-page");
 const replayLastPage = document.querySelector("#replay-last-page");
 const replayPageStatus = document.querySelector("#replay-page-status");
+const betCountGrid = document.querySelector("#bet-count-grid");
 const bankrollChartController = createBankrollChart({
   canvas: document.querySelector("#bankroll-chart"),
   plot: document.querySelector("#bankroll-chart-plot"),
@@ -85,6 +86,7 @@ const sideBetLabels = {
 };
 
 const allBetLabels = { ...betLabels, ...sideBetLabels };
+const betCountOrder = [...Object.keys(betLabels), ...Object.keys(sideBetLabels)];
 
 const suitSymbols = {
   C: "♣",
@@ -347,9 +349,11 @@ function renderResults(data, elapsedMilliseconds) {
       name,
       metricCell(metrics.probability),
       detailCell(metrics.payout),
-      metricCell(metrics.ev, true),
-      metricCell(metrics.house_edge),
-      metricCell(metrics.rtp),
+      metricCell(metrics.base_ev ?? metrics.ev),
+      metricCell(metrics.rebate_ev ?? 0),
+      metricCell(metrics.effective_ev ?? metrics.ev, true),
+      metricCell(metrics.effective_house_edge ?? metrics.house_edge),
+      metricCell(metrics.effective_rtp ?? metrics.rtp),
     );
     sideResultBody.append(row);
   }
@@ -409,6 +413,22 @@ function renderResults(data, elapsedMilliseconds) {
     ? `${data.allow_multiple_bets ? `已开启同局多下注，共 ${placedPlans.length} 笔计划，合计 ${money(totalSuggestedAmount)}；` : ""}采用${payoutRuleLabels[data.payout_rule]}与${stakeStrategyLabels[data.stake_strategy]}，已通过对应 EV 门槛；建议下${allBetLabels[decision.candidate_bet]}，金额已经过共同风险上限${targetLimitText}。`
     : skipReasonLabels[decision.reason] ?? "当前策略决定跳过本局。";
   setText("#decision-reason", reason);
+}
+
+function renderBetCounts(counts = {}) {
+  betCountGrid.replaceChildren();
+  for (const key of betCountOrder) {
+    const item = document.createElement("div");
+    const label = document.createElement("span");
+    const value = document.createElement("strong");
+    const unit = document.createElement("small");
+    const count = Number(counts[key] ?? 0);
+    label.textContent = allBetLabels[key];
+    value.textContent = integerFormatter.format(Number.isFinite(count) ? count : 0);
+    unit.textContent = "笔";
+    item.append(label, value, unit);
+    betCountGrid.append(item);
+  }
 }
 
 function showError(target, error) {
@@ -700,6 +720,7 @@ function renderReplay(report, elapsedMilliseconds) {
   setText("#minimum-bankroll", money(summary.minimum_bankroll));
   setText("#maximum-single-stake", money(summary.maximum_single_stake));
   setText("#maximum-round-stake", money(summary.maximum_round_stake));
+  renderBetCounts(summary.placed_bets);
 
   setText("#dataset-rows", integerFormatter.format(dataset.total_rows));
   setText("#valid-sessions", integerFormatter.format(quality.fully_observable_sessions));

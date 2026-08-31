@@ -822,7 +822,9 @@ fn replay_rounds(
                                 side_bet,
                                 round_result.expect("边注结算应该有已解析的牌局结果"),
                             ),
-                            0.0,
+                            // 大小、对子、幸运 6/7、龙宝等边注都不属于
+                            // “庄/闲遇和不返水”的例外，因此按实际下注额返水。
+                            rebate.rate_for_side_bet(),
                         ),
                     };
                     let base_game_profit = amount * base_profit_per_unit;
@@ -1263,6 +1265,67 @@ mod tests {
                 .abs()
                 < 1e-9
         );
+    }
+
+    #[test]
+    fn replay_applies_rebate_to_every_side_bet_and_counts_each_category() {
+        let csv = format!(
+            "{HEADER}a,1,9100,1,2026-08-20 00:00:12,2026-08-20 00:00:44,\"b:24,31,45;p:31,42,47\",36\n"
+        );
+        // 固定金额不要求正凯利；把两个 EV 门槛降到 -10 后，单局多注模式会
+        // 为 3 种主注和 11 种边注各生成一笔，便于一次验证完整分类。
+        let config = CsvReplayConfig::with_side_bets(
+            8,
+            MainBetRules::standard(),
+            StakeSizingStrategy::Fixed { amount: 1.0 },
+            0.02,
+            -10.0,
+            -10.0,
+            10_000.0,
+            1.0,
+            100.0,
+            100.0,
+            100.0,
+        )
+        .expect("完整分类回放配置应该合法")
+        .with_multiple_bets(true);
+
+        let report = replay_csv_text(&csv, config).expect("单局完整牌靴应该可以回放");
+        let counts = &report.summary.placed_bets;
+
+        assert_eq!(report.summary.placed_bet_count, 14);
+        assert_eq!(counts.player, 1);
+        assert_eq!(counts.banker, 1);
+        assert_eq!(counts.tie, 1);
+        assert_eq!(counts.any_pair, 1);
+        assert_eq!(counts.banker_pair, 1);
+        assert_eq!(counts.player_pair, 1);
+        assert_eq!(counts.perfect_pair, 1);
+        assert_eq!(counts.big, 1);
+        assert_eq!(counts.small, 1);
+        assert_eq!(counts.lucky_seven, 1);
+        assert_eq!(counts.super_lucky_seven, 1);
+        assert_eq!(counts.lucky_six, 1);
+        assert_eq!(counts.banker_dragon_bonus, 1);
+        assert_eq!(counts.player_dragon_bonus, 1);
+
+        let side_bets = report
+            .bets
+            .iter()
+            .filter(|detail| !matches!(detail.bet, "player" | "banker" | "tie"))
+            .collect::<Vec<_>>();
+        assert_eq!(side_bets.len(), 11);
+        for detail in side_bets {
+            assert!(
+                (detail.rebate_income - detail.amount * 0.02).abs() < 1e-12,
+                "{} 没有按下注额计算返水",
+                detail.bet
+            );
+            assert!(
+                (detail.actual_profit - (detail.base_game_profit + detail.rebate_income)).abs()
+                    < 1e-12
+            );
+        }
     }
 
     #[test]
