@@ -12,29 +12,36 @@
   </head>
   <body>
     <header class="app-header">
-      <button
-        class="game-tab rules-shortcut"
-        type="button"
-        data-game="rules"
-        aria-selected="false"
-      >
-        <span aria-hidden="true">?</span>
-        &#30334;&#23478;&#20048;&#35268;&#21017;
-      </button>
-      <div>
-        <p class="eyebrow">Rust · WebAssembly · Kelly</p>
-        <h1>牌靴 EV 策略实验室</h1>
-        <p class="subtitle">同一套 Rust 核心在浏览器完成百家乐与二十一点有限牌靴计算。</p>
+      <div class="header-main">
+        <div class="brand-mark" aria-hidden="true">EV</div>
+        <div class="header-copy">
+          <p class="eyebrow">SHOE ANALYTICS · RUST / WASM</p>
+          <h1>牌靴 EV 策略实验室</h1>
+          <p class="subtitle">在浏览器内还原牌靴、比较期望值，并把下注策略回放到真实数据。</p>
+        </div>
       </div>
-      <div class="header-badges">
-        <span class="privacy-badge"><span class="status-dot"></span>CSV 只在当前浏览器处理</span>
-        <span id="wasm-status" class="wasm-status">正在加载 WASM…</span>
+      <div class="header-actions">
+        <button
+          class="game-tab rules-shortcut"
+          type="button"
+          data-game="rules"
+          aria-selected="false"
+        >
+          <span aria-hidden="true">?</span>
+          &#30334;&#23478;&#20048;&#35268;&#21017;
+        </button>
+        <div class="header-badges">
+          <span class="privacy-badge"><span class="status-dot"></span>本地计算 · 数据不上传</span>
+          <span id="wasm-status" class="wasm-status">正在加载 WASM…</span>
+        </div>
       </div>
     </header>
 
     <nav class="game-tabs" aria-label="选择游戏">
+      <span class="tabs-label">选择游戏：</span>
       <button class="game-tab active" type="button" data-game="baccarat" aria-selected="true">百家乐</button>
       <button class="game-tab" type="button" data-game="blackjack" aria-selected="false">21 点</button>
+      <span class="tabs-hint">选择游戏后，所有计算都在当前浏览器完成</span>
     </nav>
 
     <main class="workspace">
@@ -47,6 +54,16 @@
         </div>
 
         <form id="analysis-form">
+          <div class="quick-action-bar">
+            <div>
+              <strong>准备好后计算下一局</strong>
+              <span>按钮会随表单保持可见</span>
+            </div>
+            <button id="analyze-button" class="primary-button" type="submit" disabled>
+              计算策略
+            </button>
+          </div>
+
           <div class="subsection-heading">
             <h3>资金与下注门槛</h3>
             <span>当前计算与 CSV 回放共用</span>
@@ -116,45 +133,53 @@
               </span>
             </label>
 
-            <label class="field">
-              <span>单局本金比例上限</span>
-              <span class="input-suffix">
-                <input id="max-fraction" type="number" value="5" min="0" max="100" step="0.5" />
-                <span>%</span>
-              </span>
-            </label>
+            <details class="advanced-config">
+              <summary>
+                <span>高级风险设置（可选）</span>
+                <small>单局、桌台和多下注限制</small>
+              </summary>
+              <div class="advanced-config-grid">
+                <label class="field">
+                  <span>单局本金比例上限</span>
+                  <span class="input-suffix">
+                    <input id="max-fraction" type="number" value="5" min="0" max="100" step="0.5" />
+                    <span>%</span>
+                  </span>
+                </label>
 
-            <label class="field">
-              <span>系统单局金额上限</span>
-              <span class="input-prefix">
-                <span>¥</span>
-                <input id="max-round-stake" type="number" value="500" min="0" step="50" />
-              </span>
-            </label>
+                <label class="field">
+                  <span>系统单局金额上限</span>
+                  <span class="input-prefix">
+                    <span>¥</span>
+                    <input id="max-round-stake" type="number" value="500" min="0" step="50" />
+                  </span>
+                </label>
 
-            <label class="field">
-              <span>边注单笔金额上限</span>
-              <span class="input-prefix">
-                <span>¥</span>
-                <input id="side-bet-limit" type="number" value="100" min="0" step="10" />
-              </span>
-            </label>
+                <label class="field">
+                  <span>边注单笔金额上限</span>
+                  <span class="input-prefix">
+                    <span>¥</span>
+                    <input id="side-bet-limit" type="number" value="100" min="0" step="10" />
+                  </span>
+                </label>
 
-            <label class="mode-option policy-toggle">
-              <input id="allow-multiple-bets" type="checkbox" />
-              <span>
-                <strong>允许同局多下注</strong>
-                <small>开启后所有达到各自 EV 门槛的目标都会计划下注，并共享本局总风险上限。</small>
-              </span>
-            </label>
+                <label class="mode-option policy-toggle">
+                  <input id="allow-multiple-bets" type="checkbox" />
+                  <span>
+                    <strong>允许同局多下注</strong>
+                    <small>开启后所有达到各自 EV 门槛的目标都会计划下注，并共享本局总风险上限。</small>
+                  </span>
+                </label>
 
-            <label class="field">
-              <span>桌台金额上限</span>
-              <span class="input-prefix">
-                <span>¥</span>
-                <input id="table-limit" type="number" value="10000" min="0" step="100" />
-              </span>
-            </label>
+                <label class="field">
+                  <span>桌台金额上限</span>
+                  <span class="input-prefix">
+                    <span>¥</span>
+                    <input id="table-limit" type="number" value="10000" min="0" step="100" />
+                  </span>
+                </label>
+              </div>
+            </details>
           </div>
 
           <details class="side-limit-config">
@@ -221,7 +246,7 @@
             <textarea
               id="cards-input"
               name="cards-input"
-              rows="7"
+              rows="5"
               spellcheck="false"
               autocomplete="off"
               placeholder="例如：AS, 10H, KD, 7C"
@@ -233,9 +258,6 @@
           <p class="card-format">格式：A、2～10、J、Q、K + C/D/H/S，例如 <code>AS</code>、<code>10H</code>。</p>
 
           <div class="form-actions">
-            <button id="analyze-button" class="primary-button" type="submit" disabled>
-              计算策略
-            </button>
             <button id="sample-button" class="secondary-button" type="button">载入示例</button>
             <button id="clear-button" class="text-button" type="button">清空牌面</button>
           </div>
