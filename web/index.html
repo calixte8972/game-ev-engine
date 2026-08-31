@@ -159,22 +159,22 @@
 
           <details class="side-limit-config">
             <summary>
-              <span>边注最晚下注局数（逐项配置）</span>
+              <span>每种边注的可下注截止局</span>
               <small>默认：大/小 20 局，完美对子 45 局，其余边注 50 局</small>
             </summary>
-            <p>填写最后仍可下注的局数：例如填 20 表示第 21 局起禁用；填 0 表示不限。</p>
+            <p class="side-limit-explanation"><strong>怎么填：</strong>输入“最后允许下注的局号”。例如填 20：第 1～20 局可下注，第 21 局开始禁用；填 0：不限制。</p>
             <div class="side-limit-grid">
-              <label class="field"><span>任意对子</span><span class="input-suffix"><input id="limit-any-pair" type="number" value="50" min="0" step="1" /><span>局</span></span></label>
-              <label class="field"><span>庄对</span><span class="input-suffix"><input id="limit-banker-pair" type="number" value="50" min="0" step="1" /><span>局</span></span></label>
-              <label class="field"><span>闲对</span><span class="input-suffix"><input id="limit-player-pair" type="number" value="50" min="0" step="1" /><span>局</span></span></label>
-              <label class="field"><span>完美对子</span><span class="input-suffix"><input id="limit-perfect-pair" type="number" value="45" min="0" step="1" /><span>局</span></span></label>
-              <label class="field"><span>大</span><span class="input-suffix"><input id="limit-big" type="number" value="20" min="0" step="1" /><span>局</span></span></label>
-              <label class="field"><span>小</span><span class="input-suffix"><input id="limit-small" type="number" value="20" min="0" step="1" /><span>局</span></span></label>
-              <label class="field"><span>幸运 6</span><span class="input-suffix"><input id="limit-lucky-six" type="number" value="50" min="0" step="1" /><span>局</span></span></label>
-              <label class="field"><span>幸运 7</span><span class="input-suffix"><input id="limit-lucky-seven" type="number" value="50" min="0" step="1" /><span>局</span></span></label>
-              <label class="field"><span>超级幸运 7</span><span class="input-suffix"><input id="limit-super-lucky-seven" type="number" value="50" min="0" step="1" /><span>局</span></span></label>
-              <label class="field"><span>庄龙宝</span><span class="input-suffix"><input id="limit-banker-dragon-bonus" type="number" value="50" min="0" step="1" /><span>局</span></span></label>
-              <label class="field"><span>闲龙宝</span><span class="input-suffix"><input id="limit-player-dragon-bonus" type="number" value="50" min="0" step="1" /><span>局</span></span></label>
+              <label class="field"><span class="side-limit-title">任意对子</span><span class="input-suffix"><input id="limit-any-pair" type="number" value="50" min="0" step="1" /><span>局</span></span><small class="side-limit-status" id="status-limit-any-pair">第 51 局起禁用</small></label>
+              <label class="field"><span class="side-limit-title">庄对</span><span class="input-suffix"><input id="limit-banker-pair" type="number" value="50" min="0" step="1" /><span>局</span></span><small class="side-limit-status" id="status-limit-banker-pair">第 51 局起禁用</small></label>
+              <label class="field"><span class="side-limit-title">闲对</span><span class="input-suffix"><input id="limit-player-pair" type="number" value="50" min="0" step="1" /><span>局</span></span><small class="side-limit-status" id="status-limit-player-pair">第 51 局起禁用</small></label>
+              <label class="field"><span class="side-limit-title">完美对子</span><span class="input-suffix"><input id="limit-perfect-pair" type="number" value="45" min="0" step="1" /><span>局</span></span><small class="side-limit-status" id="status-limit-perfect-pair">第 46 局起禁用</small></label>
+              <label class="field"><span class="side-limit-title">大</span><span class="input-suffix"><input id="limit-big" type="number" value="20" min="0" step="1" /><span>局</span></span><small class="side-limit-status" id="status-limit-big">第 21 局起禁用</small></label>
+              <label class="field"><span class="side-limit-title">小</span><span class="input-suffix"><input id="limit-small" type="number" value="20" min="0" step="1" /><span>局</span></span><small class="side-limit-status" id="status-limit-small">第 21 局起禁用</small></label>
+              <label class="field"><span class="side-limit-title">幸运 6</span><span class="input-suffix"><input id="limit-lucky-six" type="number" value="50" min="0" step="1" /><span>局</span></span><small class="side-limit-status" id="status-limit-lucky-six">第 51 局起禁用</small></label>
+              <label class="field"><span class="side-limit-title">幸运 7</span><span class="input-suffix"><input id="limit-lucky-seven" type="number" value="50" min="0" step="1" /><span>局</span></span><small class="side-limit-status" id="status-limit-lucky-seven">第 51 局起禁用</small></label>
+              <label class="field"><span class="side-limit-title">超级幸运 7</span><span class="input-suffix"><input id="limit-super-lucky-seven" type="number" value="50" min="0" step="1" /><span>局</span></span><small class="side-limit-status" id="status-limit-super-lucky-seven">第 51 局起禁用</small></label>
+              <label class="field"><span class="side-limit-title">庄龙宝</span><span class="input-suffix"><input id="limit-banker-dragon-bonus" type="number" value="50" min="0" step="1" /><span>局</span></span><small class="side-limit-status" id="status-limit-banker-dragon-bonus">第 51 局起禁用</small></label>
+              <label class="field"><span class="side-limit-title">闲龙宝</span><span class="input-suffix"><input id="limit-player-dragon-bonus" type="number" value="50" min="0" step="1" /><span>局</span></span><small class="side-limit-status" id="status-limit-player-dragon-bonus">第 51 局起禁用</small></label>
             </div>
           </details>
 

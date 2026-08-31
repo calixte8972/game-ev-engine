@@ -101,6 +101,10 @@ const sideBetRoundLimitInputs = {
   player_dragon_bonus: "#limit-player-dragon-bonus",
 };
 
+const sideBetRoundLimitStatus = Object.fromEntries(
+  Object.keys(sideBetRoundLimitInputs).map((key) => [key, `#status-${sideBetRoundLimitInputs[key].slice(1)}`]),
+);
+
 const suitSymbols = {
   C: "♣",
   D: "♦",
@@ -282,6 +286,26 @@ function updateStakeStrategyFields() {
   strategyParameterWrapper.className = isMoney ? "input-prefix" : "input-suffix";
   strategyParameterPrefix.hidden = !isMoney;
   strategyParameterSuffix.hidden = isMoney;
+}
+
+function updateSideBetRoundLimitHints() {
+  for (const [key, selector] of Object.entries(sideBetRoundLimitInputs)) {
+    const input = document.querySelector(selector);
+    const status = document.querySelector(sideBetRoundLimitStatus[key]);
+    if (!input || !status) continue;
+
+    const lastPlayableRound = Number.parseInt(input.value, 10);
+    if (!Number.isFinite(lastPlayableRound) || lastPlayableRound < 0) {
+      status.textContent = "请输入 0 或正整数";
+      status.classList.add("invalid");
+    } else if (lastPlayableRound === 0) {
+      status.textContent = "不限局数";
+      status.classList.remove("invalid");
+    } else {
+      status.textContent = `第 ${integerFormatter.format(lastPlayableRound + 1)} 局起禁用`;
+      status.classList.remove("invalid");
+    }
+  }
 }
 
 function updateModeHelp() {
@@ -794,6 +818,10 @@ stakeStrategy.addEventListener("change", () => {
 payoutRule.addEventListener("change", calculate);
 allowMultipleBets.addEventListener("change", calculate);
 
+for (const selector of Object.values(sideBetRoundLimitInputs)) {
+  document.querySelector(selector).addEventListener("input", updateSideBetRoundLimitHints);
+}
+
 sampleButton.addEventListener("click", () => {
   form.elements["source-mode"].value = "consumed";
   cardsInput.value = "AS, 10H, KD, 7C, 3D, QH";
@@ -918,4 +946,5 @@ async function start() {
 updateModeHelp();
 updateBlackjackModeHelp();
 updateStakeStrategyFields();
+updateSideBetRoundLimitHints();
 start();
