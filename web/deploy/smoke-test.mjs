@@ -103,8 +103,22 @@ const tinyReplay = JSON.parse(
   ),
 );
 
+// 模拟旧页面没有 minimumSideBetEv / sideBetLimit 两个字段时，wasm-bindgen
+// 会收到的 NaN。新核心必须回退到主注门槛和单局限额，而不是拒绝整个回放。
+const legacyReplay = JSON.parse(
+  replayBaccaratCsv(
+    tinyCsv, 8, 0.02, 0, 10_000, 0.05, 1_000, 1_000,
+    "standard", "fixed", 100, Number.NaN, Number.NaN,
+  ),
+);
+
 if (tinyReplay.summary.replayed_rounds !== 2) {
   throw new Error("WASM CSV 回放没有完成两局测试数据");
+}
+
+if (legacyReplay.config.minimum_side_bet_ev !== 0
+    || legacyReplay.config.side_bet_limit !== 1_000) {
+  throw new Error("旧页面缺少边注配置字段时没有正确回退");
 }
 
 if (!tinyReplay.bets[0]?.player_cards

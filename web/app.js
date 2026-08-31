@@ -128,7 +128,9 @@ let currentCsvFile = null;
 let currentReplayReport = null;
 let currentReplayPage = 1;
 
-const replayWorker = new Worker(new URL("./replay-worker.js", import.meta.url), {
+// URL 上的版本标记强制浏览器为当前页面创建同版本 Worker，避免发布后仍复用
+// 旧 Worker，进而把新增配置字段当成 undefined 传给 WASM。
+const replayWorker = new Worker(new URL("./replay-worker.js?v=15", import.meta.url), {
   type: "module",
 });
 

@@ -508,6 +508,16 @@ pub fn replay_baccarat_csv_json_with_side_bets(
     minimum_side_bet_ev: f64,
     side_bet_limit: f64,
 ) -> Result<String, String> {
+    // 兼容仍在浏览器中打开的旧页面：旧页面没有这两个后来新增的字段，
+    // `undefined` 经过 wasm-bindgen 会变成 NaN。只有两项同时缺失时才按旧版
+    // 语义回退；若调用者只传了一个非法值，仍交给领域层返回明确错误。
+    let legacy_side_fields_missing =
+        !minimum_side_bet_ev.is_finite() && !side_bet_limit.is_finite();
+    let (minimum_side_bet_ev, side_bet_limit) = if legacy_side_fields_missing {
+        (minimum_effective_ev, max_round_stake)
+    } else {
+        (minimum_side_bet_ev, side_bet_limit)
+    };
     let (rules, _) = parse_payout_rule(payout_rule)?;
     let stake_strategy = parse_stake_strategy(stake_strategy, strategy_parameter)?;
     let config = CsvReplayConfig::with_side_bets(
@@ -728,7 +738,7 @@ mod tests {
     use super::{
         analyze_baccarat_json, analyze_baccarat_strategy_json,
         analyze_baccarat_strategy_json_with_side_bets, analyze_blackjack_json,
-        replay_baccarat_csv_json,
+        replay_baccarat_csv_json, replay_baccarat_csv_json_with_side_bets,
     };
 
     #[test]
@@ -1076,5 +1086,33 @@ mod tests {
         assert_eq!(value["config"]["fixed_stake"], 100.0);
         assert_eq!(value["summary"]["placed_bet_count"], 1);
         assert_eq!(value["bets"][0]["amount"], 100.0);
+    }
+
+    #[test]
+    fn csv_replay_accepts_legacy_pages_without_side_bet_fields() {
+        let csv = "__source_pk,table_id,session_id,round_no,started_at,settled_at,raw_cards,result_code\n\
+                   a,1,9001,1,2026-08-20 00:00:12,2026-08-20 00:00:44,\"b:24,31,45;p:31,42,47\",36\n";
+        let value: Value = serde_json::from_str(
+            &replay_baccarat_csv_json_with_side_bets(
+                csv,
+                8,
+                0.02,
+                0.0,
+                10_000.0,
+                1.0,
+                1_000.0,
+                1_000.0,
+                "standard",
+                "fixed",
+                100.0,
+                f64::NAN,
+                f64::NAN,
+            )
+            .expect("旧页面缺少边注字段时应沿用主注门槛与单局限额"),
+        )
+        .expect("兼容回放应返回合法 JSON");
+
+        assert_eq!(value["config"]["minimum_side_bet_ev"], 0.0);
+        assert_eq!(value["config"]["side_bet_limit"], 1_000.0);
     }
 }
