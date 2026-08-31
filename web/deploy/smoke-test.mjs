@@ -76,7 +76,7 @@ if (manual.side_bets.perfect_pair.payout !== "25:1"
   throw new Error("完美对子概率或赔付表没有进入 WASM 输出");
 }
 
-if (manual.side_bets.big.payout !== "0.54:1"
+if (manual.side_bets.big.payout !== "0.5:1"
     || manual.side_bets.small.payout !== "1.5:1"
     || Math.abs(manual.side_bets.big.probability + manual.side_bets.small.probability - 1) > 1e-12) {
   throw new Error("大/小概率没有覆盖全部牌局，或赔付表没有进入 WASM 输出");
@@ -84,6 +84,12 @@ if (manual.side_bets.big.payout !== "0.54:1"
 
 if (Math.abs(manual.side_bets.lucky_seven.rtp - 0.8170) > 0.00005) {
   throw new Error("幸运 7 的完整牌靴 RTP 偏离规则基线");
+}
+
+if (manual.side_bets.lucky_six.probability <= 0
+    || manual.side_bets.banker_dragon_bonus.probability <= 0
+    || manual.side_bets.player_dragon_bonus.probability <= 0) {
+  throw new Error("幸运 6 或龙宝没有进入 WASM 概率与 EV 输出");
 }
 
 const tinyCsv = `__source_pk,table_id,session_id,round_no,started_at,settled_at,raw_cards,result_code
@@ -114,6 +120,9 @@ const output = {
       small_probability: manual.side_bets.small.probability,
       lucky_seven_rtp: manual.side_bets.lucky_seven.rtp,
       super_lucky_seven_rtp: manual.side_bets.super_lucky_seven.rtp,
+      lucky_six_rtp: manual.side_bets.lucky_six.rtp,
+      banker_dragon_bonus_rtp: manual.side_bets.banker_dragon_bonus.rtp,
+      player_dragon_bonus_rtp: manual.side_bets.player_dragon_bonus.rtp,
     },
   },
   bankroll_fraction: {

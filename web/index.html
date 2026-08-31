@@ -314,13 +314,13 @@
             </thead>
             <tbody id="side-result-body">
               <tr class="placeholder-row">
-                <td colspan="6">计算牌靴后显示对子与幸运 7 系列。</td>
+                <td colspan="6">计算牌靴后显示对子、幸运 6/7、龙宝与大/小。</td>
               </tr>
             </tbody>
           </table>
         </div>
         <p class="result-note side-bet-note">
-          八种边注会与庄、闲、和共同参与自动选择；“小”表示全局只发 4 张，净赔 1.5:1；“大”表示发 5 或 6 张，净赔 0.54:1。边注不叠加主注返水，并受单独金额上限保护。
+          十一种边注会与庄、闲、和共同参与自动选择；“小”表示全局只发 4 张，净赔 1.5:1；“大”表示发 5 或 6 张，净赔 0.5:1。龙宝的 Natural 胜出按退回本金处理。边注不叠加主注返水，并受单独金额上限保护。
         </p>
       </section>
 
@@ -722,10 +722,12 @@
                 <tr><td>任意对子</td><td>庄或闲至少一方起手两张牌同 Rank</td><td>5:1</td></tr>
                 <tr><td>庄对 / 闲对</td><td>对应一方起手两张牌同 Rank</td><td>11:1</td></tr>
                 <tr><td>完美对子</td><td>庄或闲起手牌存在 Rank 与花色都相同的一对</td><td>25:1</td></tr>
-                <tr><td>大</td><td>本局最终共发 5 或 6 张牌</td><td>0.54:1</td></tr>
+                <tr><td>大</td><td>本局最终共发 5 或 6 张牌</td><td>0.5:1</td></tr>
                 <tr><td>小</td><td>本局最终只发 4 张牌</td><td>1.5:1</td></tr>
+                <tr><td>幸运 6</td><td>庄家以 6 点获胜；按庄两张/三张分档</td><td>12:1 / 18:1</td></tr>
                 <tr><td>幸运 7</td><td>闲以 7 点获胜；按闲两张/三张分档</td><td>6:1 / 15:1</td></tr>
                 <tr><td>超级幸运 7</td><td>闲 7 点、庄 6 点且闲赢；按总牌数分档</td><td>30:1 / 40:1 / 100:1</td></tr>
+                <tr><td>庄龙宝 / 闲龙宝</td><td>对应方向非 Natural 获胜且点差为 4～9；对应方向 Natural 获胜退回本金</td><td>1:1 / 2:1 / 3:1 / 5:1 / 10:1 / 30:1</td></tr>
               </tbody>
             </table>
           </div>
@@ -735,7 +737,7 @@
           <div class="rule-card-heading"><span>08</span><h3>EV、RTP 与庄家优势</h3></div>
           <div class="formula-box"><code>EV = Σ（结果概率 × 该结果的净收益）</code></div>
           <p>EV 以每下注 1 单位的平均净收益表示；<code>RTP = 1 + EV</code>，<code>庄家优势 = -EV</code>。例如 EV 为 -1%，表示长期平均每下注 1 单位预期损失 0.01 单位，不代表下一局必输。</p>
-          <p class="rules-scope-note">实验室只对上面列出的玩法参与概率、EV 和策略计算；未列出的幸运 6、龙宝、例牌注等玩法暂未进入当前算法。</p>
+          <p class="rules-scope-note">实验室只让上面列出的玩法参与概率、EV 和策略计算；其他未列出的供应商专属边注暂未进入当前算法。</p>
         </article>
       </section>
     </main>

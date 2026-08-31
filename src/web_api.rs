@@ -397,7 +397,7 @@ pub fn analyze_baccarat_strategy_json_with_side_bets(
             banker: BrowserBetMetrics::from_analysis(analysis, MainBet::Banker, rebate),
             tie: BrowserBetMetrics::from_analysis(analysis, MainBet::Tie, rebate),
         },
-        side_bet_rules: "pairs_5_11_perfect_25_big_0_54_small_1_5_lucky_7_6_15_super_30_40_100",
+        side_bet_rules: "pairs_5_11_perfect_25_big_0_5_small_1_5_lucky_6_12_18_lucky_7_6_15_super_30_40_100_dragon_1_2_3_5_10_30_natural_push",
         side_bets: BrowserSideBets {
             any_pair: BrowserSideBetMetrics::new(side_analysis.metrics(SideBet::AnyPair), "5:1"),
             banker_pair: BrowserSideBetMetrics::new(
@@ -412,7 +412,7 @@ pub fn analyze_baccarat_strategy_json_with_side_bets(
                 side_analysis.metrics(SideBet::PerfectPair),
                 "25:1",
             ),
-            big: BrowserSideBetMetrics::new(side_analysis.metrics(SideBet::Big), "0.54:1"),
+            big: BrowserSideBetMetrics::new(side_analysis.metrics(SideBet::Big), "0.5:1"),
             small: BrowserSideBetMetrics::new(side_analysis.metrics(SideBet::Small), "1.5:1"),
             lucky_seven: BrowserSideBetMetrics::new(
                 side_analysis.metrics(SideBet::LuckySeven),
@@ -421,6 +421,18 @@ pub fn analyze_baccarat_strategy_json_with_side_bets(
             super_lucky_seven: BrowserSideBetMetrics::new(
                 side_analysis.metrics(SideBet::SuperLuckySeven),
                 "总4张 30:1 / 5张 40:1 / 6张 100:1",
+            ),
+            lucky_six: BrowserSideBetMetrics::new(
+                side_analysis.metrics(SideBet::LuckySix),
+                "庄2张 12:1 / 庄3张 18:1",
+            ),
+            banker_dragon_bonus: BrowserSideBetMetrics::new(
+                side_analysis.metrics(SideBet::BankerDragonBonus),
+                "点差4/5/6/7/8/9：1/2/3/5/10/30:1；Natural赢/双方Natural和为Push",
+            ),
+            player_dragon_bonus: BrowserSideBetMetrics::new(
+                side_analysis.metrics(SideBet::PlayerDragonBonus),
+                "点差4/5/6/7/8/9：1/2/3/5/10/30:1；Natural赢/双方Natural和为Push",
             ),
         },
         recommendation: BrowserRecommendation {
@@ -638,6 +650,9 @@ struct BrowserSideBets {
     small: BrowserSideBetMetrics,
     lucky_seven: BrowserSideBetMetrics,
     super_lucky_seven: BrowserSideBetMetrics,
+    lucky_six: BrowserSideBetMetrics,
+    banker_dragon_bonus: BrowserSideBetMetrics,
+    player_dragon_bonus: BrowserSideBetMetrics,
 }
 
 /// 边注的一行概率、基础 EV 与赔付说明。
@@ -766,12 +781,28 @@ mod tests {
         assert_eq!(value["recommendation"]["candidate_bet"], "banker");
         assert_eq!(
             value["side_bet_rules"],
-            "pairs_5_11_perfect_25_big_0_54_small_1_5_lucky_7_6_15_super_30_40_100"
+            "pairs_5_11_perfect_25_big_0_5_small_1_5_lucky_6_12_18_lucky_7_6_15_super_30_40_100_dragon_1_2_3_5_10_30_natural_push"
         );
         assert_eq!(value["side_bets"]["banker_pair"]["payout"], "11:1");
         assert_eq!(value["side_bets"]["perfect_pair"]["payout"], "25:1");
-        assert_eq!(value["side_bets"]["big"]["payout"], "0.54:1");
+        assert_eq!(value["side_bets"]["big"]["payout"], "0.5:1");
         assert_eq!(value["side_bets"]["small"]["payout"], "1.5:1");
+        assert_eq!(
+            value["side_bets"]["lucky_six"]["payout"],
+            "庄2张 12:1 / 庄3张 18:1"
+        );
+        assert!(
+            value["side_bets"]["banker_dragon_bonus"]["probability"]
+                .as_f64()
+                .expect("庄龙宝概率应为数字")
+                > 0.0
+        );
+        assert!(
+            value["side_bets"]["player_dragon_bonus"]["probability"]
+                .as_f64()
+                .expect("闲龙宝概率应为数字")
+                > 0.0
+        );
         assert!(
             value["side_bets"]["lucky_seven"]["probability"]
                 .as_f64()

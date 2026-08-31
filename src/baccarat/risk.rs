@@ -307,7 +307,7 @@ impl KellyPolicy {
         })
     }
 
-    /// 为八种边注增加独立金额上限。
+    /// 为十一种边注增加独立金额上限。
     pub fn with_side_bet_limit(mut self, side_bet_limit: f64) -> Result<Self, KellyError> {
         validate_limit(
             side_bet_limit,
@@ -507,7 +507,7 @@ impl KellyPolicy {
         }
     }
 
-    /// 从十一种下注目标中选择方向，并生成受边注独立上限保护的最终计划。
+    /// 从十四种下注目标中选择方向，并生成受边注独立上限保护的最终计划。
     pub fn plan_all(
         self,
         betting_policy: &BettingPolicy,
@@ -690,7 +690,7 @@ pub enum CombinedBetPlanAction {
     Skip { reason: BetPlanSkipReason },
 }
 
-/// 十一种目标统一经过 EV 门槛、凯利公式和金额上限后的完整计划。
+/// 十四种目标统一经过 EV 门槛、凯利公式和金额上限后的完整计划。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CombinedBetPlan {
     decision: CombinedBetDecision,
@@ -796,15 +796,16 @@ pub fn main_bet_kelly_outcomes(
 
 /// 把边注的命中档位转换为凯利公式使用的完整互斥收益分布。
 ///
-/// 对子类只有“命中赔率”和“未命中 -1”两个结果；幸运 7 系列必须保留每个
-/// 赔率档位，不能用平均赔率代替，否则对数增长最优点会产生偏差。
+/// 单赔率边注只有“命中赔率”和“未命中 -1”两个结果；幸运 6/7 与龙宝必须
+/// 保留每个赔率档位。龙宝还必须保留 Natural 的 `0` 收益 Push；不能用平均
+/// 赔率代替这些互斥结果，否则对数增长最优点会产生偏差。
 pub fn side_bet_kelly_outcomes(
     weights: SideBetWeights,
     rules: SideBetRules,
     bet: SideBet,
 ) -> Vec<KellyOutcome> {
     let total = weights.total_weight() as f64;
-    let (tier_weights, payouts): (Vec<u64>, Vec<f64>) = match bet {
+    let (tier_weights, payouts, push_weight): (Vec<u64>, Vec<f64>, u64) = match bet {
         SideBet::AnyPair
         | SideBet::BankerPair
         | SideBet::PlayerPair
@@ -813,14 +814,32 @@ pub fn side_bet_kelly_outcomes(
         | SideBet::Small => (
             vec![weights.win_weight(bet)],
             vec![rules.payout(bet).expect("对子边注必须有单一赔付")],
+            0,
         ),
         SideBet::LuckySeven => (
             weights.lucky_seven_tier_weights().to_vec(),
             rules.lucky_seven_payouts().to_vec(),
+            0,
         ),
         SideBet::SuperLuckySeven => (
             weights.super_lucky_seven_tier_weights().to_vec(),
             rules.super_lucky_seven_payouts().to_vec(),
+            0,
+        ),
+        SideBet::LuckySix => (
+            weights.lucky_six_tier_weights().to_vec(),
+            rules.lucky_six_payouts().to_vec(),
+            0,
+        ),
+        SideBet::BankerDragonBonus => (
+            weights.banker_dragon_bonus_tier_weights().to_vec(),
+            rules.dragon_bonus_payouts().to_vec(),
+            weights.banker_dragon_bonus_push_weight(),
+        ),
+        SideBet::PlayerDragonBonus => (
+            weights.player_dragon_bonus_tier_weights().to_vec(),
+            rules.dragon_bonus_payouts().to_vec(),
+            weights.player_dragon_bonus_push_weight(),
         ),
     };
     let win_weight = tier_weights.iter().sum::<u64>();
@@ -829,8 +848,11 @@ pub fn side_bet_kelly_outcomes(
         .zip(payouts)
         .map(|(weight, payout)| KellyOutcome::new(weight as f64 / total, payout))
         .collect::<Vec<_>>();
+    if push_weight > 0 {
+        outcomes.push(KellyOutcome::new(push_weight as f64 / total, 0.0));
+    }
     outcomes.push(KellyOutcome::new(
-        (weights.total_weight() - win_weight) as f64 / total,
+        (weights.total_weight() - win_weight - push_weight) as f64 / total,
         -1.0,
     ));
     outcomes
@@ -1474,7 +1496,9 @@ mod tests {
 
     #[test]
     fn side_bet_kelly_uses_tier_distribution_and_the_side_limit() {
-        let weights = SideBetWeights::new(100, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        let weights = SideBetWeights::new(
+            100, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, [0; 6], 0, [0; 6], 0,
+        );
         let rules = SideBetRules::default();
         let outcomes = side_bet_kelly_outcomes(weights, rules, SideBet::AnyPair);
         let analysis = SideBetAnalysis::calculate(weights, rules);
@@ -1492,5 +1516,44 @@ mod tests {
 
         assert_eq!(quote.bet(), BetTarget::Side(SideBet::AnyPair));
         assert_close(quote.amount(), 25.0);
+    }
+
+    #[test]
+    fn dragon_bonus_kelly_distribution_keeps_natural_push_and_matches_ev() {
+        let weights = SideBetWeights::new(
+            100,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            [10, 5, 3, 2, 1, 1],
+            8,
+            [0; 6],
+            0,
+        );
+        let rules = SideBetRules::default();
+        let outcomes = side_bet_kelly_outcomes(weights, rules, SideBet::BankerDragonBonus);
+        let analysis = SideBetAnalysis::calculate(weights, rules);
+        let outcome_ev = outcomes
+            .iter()
+            .map(|outcome| outcome.probability() * outcome.net_profit())
+            .sum::<f64>();
+
+        assert_close(
+            outcome_ev,
+            analysis.metrics(SideBet::BankerDragonBonus).ev(),
+        );
+        assert!(outcomes.iter().any(|outcome| {
+            outcome.net_profit() == 0.0 && (outcome.probability() - 0.08).abs() < 1e-12
+        }));
     }
 }

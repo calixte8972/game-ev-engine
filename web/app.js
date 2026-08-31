@@ -61,6 +61,9 @@ const sideBetLabels = {
   small: "小",
   lucky_seven: "幸运 7",
   super_lucky_seven: "超级幸运 7",
+  lucky_six: "幸运 6",
+  banker_dragon_bonus: "庄龙宝",
+  player_dragon_bonus: "闲龙宝",
 };
 
 const allBetLabels = { ...betLabels, ...sideBetLabels };

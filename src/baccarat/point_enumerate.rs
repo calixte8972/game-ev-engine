@@ -38,6 +38,12 @@ struct CompositionCoefficient {
     super_lucky_seven_four_cards_permutations: u16,
     super_lucky_seven_five_cards_permutations: u16,
     super_lucky_seven_six_cards_permutations: u16,
+    lucky_six_two_cards_permutations: u16,
+    lucky_six_three_cards_permutations: u16,
+    banker_dragon_bonus_tier_permutations: [u16; 6],
+    banker_dragon_bonus_push_permutations: u16,
+    player_dragon_bonus_tier_permutations: [u16; 6],
+    player_dragon_bonus_push_permutations: u16,
     small_permutations: u16,
     big_permutations: u16,
 }
@@ -80,6 +86,12 @@ struct PointOutcomeAccumulator {
     super_lucky_seven_four_cards: u64,
     super_lucky_seven_five_cards: u64,
     super_lucky_seven_six_cards: u64,
+    lucky_six_two_cards: u64,
+    lucky_six_three_cards: u64,
+    banker_dragon_bonus_tiers: [u64; 6],
+    banker_dragon_bonus_push: u64,
+    player_dragon_bonus_tiers: [u64; 6],
+    player_dragon_bonus_push: u64,
     small: u64,
     big: u64,
 }
@@ -110,6 +122,12 @@ impl PointOutcomeAccumulator {
             self.super_lucky_seven_four_cards,
             self.super_lucky_seven_five_cards,
             self.super_lucky_seven_six_cards,
+            self.lucky_six_two_cards,
+            self.lucky_six_three_cards,
+            self.banker_dragon_bonus_tiers,
+            self.banker_dragon_bonus_push,
+            self.player_dragon_bonus_tiers,
+            self.player_dragon_bonus_push,
         )
     }
 }
@@ -147,6 +165,12 @@ fn point_outcomes(shoe: &Shoe) -> Result<PointOutcomeAccumulator, ProbabilityErr
     let mut super_lucky_seven_four_cards = 0_u64;
     let mut super_lucky_seven_five_cards = 0_u64;
     let mut super_lucky_seven_six_cards = 0_u64;
+    let mut lucky_six_two_cards = 0_u64;
+    let mut lucky_six_three_cards = 0_u64;
+    let mut banker_dragon_bonus_tiers = [0_u64; 6];
+    let mut banker_dragon_bonus_push = 0_u64;
+    let mut player_dragon_bonus_tiers = [0_u64; 6];
+    let mut player_dragon_bonus_push = 0_u64;
     let mut small = 0_u64;
     let mut big = 0_u64;
 
@@ -211,6 +235,38 @@ fn point_outcomes(shoe: &Shoe) -> Result<PointOutcomeAccumulator, ProbabilityErr
             physical_sequences_per_permutation,
             coefficient.super_lucky_seven_six_cards_permutations,
         )?;
+        lucky_six_two_cards = add_weight(
+            lucky_six_two_cards,
+            physical_sequences_per_permutation,
+            coefficient.lucky_six_two_cards_permutations,
+        )?;
+        lucky_six_three_cards = add_weight(
+            lucky_six_three_cards,
+            physical_sequences_per_permutation,
+            coefficient.lucky_six_three_cards_permutations,
+        )?;
+        for tier in 0..6 {
+            banker_dragon_bonus_tiers[tier] = add_weight(
+                banker_dragon_bonus_tiers[tier],
+                physical_sequences_per_permutation,
+                coefficient.banker_dragon_bonus_tier_permutations[tier],
+            )?;
+            player_dragon_bonus_tiers[tier] = add_weight(
+                player_dragon_bonus_tiers[tier],
+                physical_sequences_per_permutation,
+                coefficient.player_dragon_bonus_tier_permutations[tier],
+            )?;
+        }
+        banker_dragon_bonus_push = add_weight(
+            banker_dragon_bonus_push,
+            physical_sequences_per_permutation,
+            coefficient.banker_dragon_bonus_push_permutations,
+        )?;
+        player_dragon_bonus_push = add_weight(
+            player_dragon_bonus_push,
+            physical_sequences_per_permutation,
+            coefficient.player_dragon_bonus_push_permutations,
+        )?;
         small = add_weight(
             small,
             physical_sequences_per_permutation,
@@ -234,6 +290,12 @@ fn point_outcomes(shoe: &Shoe) -> Result<PointOutcomeAccumulator, ProbabilityErr
         super_lucky_seven_four_cards,
         super_lucky_seven_five_cards,
         super_lucky_seven_six_cards,
+        lucky_six_two_cards,
+        lucky_six_three_cards,
+        banker_dragon_bonus_tiers,
+        banker_dragon_bonus_push,
+        player_dragon_bonus_tiers,
+        player_dragon_bonus_push,
         small,
         big,
     })
@@ -464,6 +526,12 @@ fn enumerate_abstract_sequences(
                     super_lucky_seven_four_cards_permutations: 0,
                     super_lucky_seven_five_cards_permutations: 0,
                     super_lucky_seven_six_cards_permutations: 0,
+                    lucky_six_two_cards_permutations: 0,
+                    lucky_six_three_cards_permutations: 0,
+                    banker_dragon_bonus_tier_permutations: [0; 6],
+                    banker_dragon_bonus_push_permutations: 0,
+                    player_dragon_bonus_tier_permutations: [0; 6],
+                    player_dragon_bonus_push_permutations: 0,
                     small_permutations: 0,
                     big_permutations: 0,
                 });
@@ -475,6 +543,11 @@ fn enumerate_abstract_sequences(
         }
         if result.outcome() == RoundOutcome::Banker && result.banker_total() == 6 {
             coefficient.banker_win_on_six_permutations += 1;
+            if result.banker_card_count() == 2 {
+                coefficient.lucky_six_two_cards_permutations += 1;
+            } else {
+                coefficient.lucky_six_three_cards_permutations += 1;
+            }
         }
         if result.card_count() == 4 {
             coefficient.small_permutations += 1;
@@ -496,6 +569,36 @@ fn enumerate_abstract_sequences(
                     _ => unreachable!("百家乐终局只能使用四至六张牌"),
                 }
             }
+        }
+
+        let player_natural =
+            result.player_card_count() == 2 && matches!(result.player_total(), 8 | 9);
+        let banker_natural =
+            result.banker_card_count() == 2 && matches!(result.banker_total(), 8 | 9);
+        match result.outcome() {
+            RoundOutcome::Player if player_natural => {
+                coefficient.player_dragon_bonus_push_permutations += 1;
+            }
+            RoundOutcome::Banker if banker_natural => {
+                coefficient.banker_dragon_bonus_push_permutations += 1;
+            }
+            RoundOutcome::Tie if player_natural && banker_natural => {
+                coefficient.player_dragon_bonus_push_permutations += 1;
+                coefficient.banker_dragon_bonus_push_permutations += 1;
+            }
+            RoundOutcome::Player => {
+                let margin = result.player_total() - result.banker_total();
+                if margin >= 4 {
+                    coefficient.player_dragon_bonus_tier_permutations[usize::from(margin - 4)] += 1;
+                }
+            }
+            RoundOutcome::Banker => {
+                let margin = result.banker_total() - result.player_total();
+                if margin >= 4 {
+                    coefficient.banker_dragon_bonus_tier_permutations[usize::from(margin - 4)] += 1;
+                }
+            }
+            RoundOutcome::Tie => {}
         }
         return;
     }

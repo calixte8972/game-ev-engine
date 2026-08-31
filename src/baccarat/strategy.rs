@@ -43,7 +43,7 @@ pub struct BettingPolicy {
     rebate: RebateRule,
     /// 允许下注所需达到的最低有效 EV。
     minimum_effective_ev: f64,
-    /// 八种边注各自必须达到的最低基础 EV。边注目前不叠加主注返水。
+    /// 十一种边注各自必须达到的最低基础 EV。边注目前不叠加主注返水。
     minimum_side_bet_ev: f64,
 }
 
@@ -56,7 +56,7 @@ pub enum CombinedBetAction {
     Skip { reason: SkipReason },
 }
 
-/// 十一种下注目标共同比较后的可审计结果。
+/// 十四种下注目标共同比较后的可审计结果。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CombinedBetDecision {
     candidate: BetTarget,
@@ -153,7 +153,7 @@ impl BettingPolicy {
         self.minimum_effective_ev
     }
 
-    /// 返回八种边注共同使用的最低 EV 门槛。
+    /// 返回十一种边注共同使用的最低 EV 门槛。
     pub const fn minimum_side_bet_ev(&self) -> f64 {
         self.minimum_side_bet_ev
     }
@@ -191,7 +191,7 @@ impl BettingPolicy {
         }
     }
 
-    /// 同时比较三种主注和八种边注，并选择达到各自门槛后的最高 EV。
+    /// 同时比较三种主注和十一种边注，并选择达到各自门槛后的最高 EV。
     ///
     /// 这里先过滤门槛再比较，避免一个“EV 虽高但没有达到更严格边注门槛”的
     /// 候选挡住另一个已经满足主注门槛的可下注方向。
@@ -337,7 +337,18 @@ mod tests {
     }
 
     fn side_analysis_with_positive_any_pair() -> SideBetAnalysis {
-        let weights = SideBetWeights::new(100, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        let weights = SideBetWeights::new(
+            100, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, [0; 6], 0, [0; 6], 0,
+        );
+        SideBetAnalysis::calculate(weights, SideBetRules::default())
+    }
+
+    fn side_analysis_with_positive_lucky_six() -> SideBetAnalysis {
+        // 20% 命中幸运 6 两张档位，在 12:1 净赔付下 EV 为 1.6，
+        // 足以超过 sample_analysis() 中 EV 为 0.5 的和注。
+        let weights = SideBetWeights::new(
+            100, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 20, 0, [0; 6], 0, [0; 6], 0,
+        );
         SideBetAnalysis::calculate(weights, SideBetRules::default())
     }
 
@@ -416,6 +427,22 @@ mod tests {
             decision.action(),
             CombinedBetAction::Place {
                 bet: BetTarget::Side(SideBet::AnyPair)
+            }
+        ));
+    }
+
+    #[test]
+    fn decide_all_includes_lucky_six_in_the_same_strategy_comparison() {
+        let policy = BettingPolicy::with_side_bet_minimum(RebateRule::None, 0.0, 0.0);
+        let decision =
+            policy.decide_all(sample_analysis(), side_analysis_with_positive_lucky_six());
+
+        assert_eq!(decision.candidate(), BetTarget::Side(SideBet::LuckySix));
+        assert_close(decision.effective_ev(), 1.6);
+        assert!(matches!(
+            decision.action(),
+            CombinedBetAction::Place {
+                bet: BetTarget::Side(SideBet::LuckySix)
             }
         ));
     }

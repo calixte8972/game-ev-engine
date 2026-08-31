@@ -3,15 +3,17 @@
 //! 边注与主注分开建模，原因有两个：
 //!
 //! 1. 主注只需要最终庄、闲、和；普通对子必须查看 Rank，完美对子还要看花色；
-//! 2. 幸运 7 系列不是统一赔率，而是按闲家张数或全局总张数分档赔付。
+//! 2. 幸运 6、幸运 7 和龙宝不是统一赔率，必须保留各自赔付档位。
 //!
 //! 当前默认赔付表如下，所有数字都是“净赔付”，本金另行返还：
 //!
 //! ```text
 //! 任意对子 5:1；庄对/闲对 11:1；完美对子 25:1
-//! 大（总牌数 5 或 6）0.54:1；小（总牌数 4）1.5:1
+//! 大（总牌数 5 或 6）0.5:1；小（总牌数 4）1.5:1
+//! 幸运 6：庄两张/三张以 6 点获胜分别 12/18:1
 //! 幸运 7：闲两张 7 点胜 6:1；闲三张 7 点胜 15:1
 //! 超级幸运 7：闲 7 对庄 6，总牌数 4/5/6 时分别 30/40/100:1
+//! 庄/闲龙宝：非 Natural 胜方按点差 4～9 分别 1/2/3/5/10/30:1
 //! ```
 //!
 //! 赔率属于规则输入，不属于概率本身。将它们集中放在 [`SideBetRules`] 中，
@@ -19,9 +21,9 @@
 
 use std::{error::Error, fmt};
 
-use super::RoundResult;
+use super::{RoundOutcome, RoundResult};
 
-/// 当前支持的八种边注。
+/// 当前支持的十一种边注。
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub enum SideBet {
     /// 庄家或闲家至少一方的起手两张牌 Rank 相同。
@@ -40,11 +42,17 @@ pub enum SideBet {
     LuckySeven,
     /// 闲 7 点战胜庄 6 点，并按双方合计 4、5、6 张牌分档。
     SuperLuckySeven,
+    /// 庄家以 6 点获胜，并按庄家使用两张或三张牌分档。
+    LuckySix,
+    /// 庄家非 Natural 获胜且点差至少为 4；Natural 庄赢按规则 Push。
+    BankerDragonBonus,
+    /// 闲家非 Natural 获胜且点差至少为 4；Natural 闲赢按规则 Push。
+    PlayerDragonBonus,
 }
 
 impl SideBet {
     /// 策略比较时使用的稳定顺序。EV 完全相同时，排在前面的边注优先。
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 11] = [
         Self::AnyPair,
         Self::BankerPair,
         Self::PlayerPair,
@@ -53,6 +61,9 @@ impl SideBet {
         Self::Small,
         Self::LuckySeven,
         Self::SuperLuckySeven,
+        Self::LuckySix,
+        Self::BankerDragonBonus,
+        Self::PlayerDragonBonus,
     ];
 
     /// 返回供 JSON、日志和前端使用的稳定名称。
@@ -66,11 +77,14 @@ impl SideBet {
             Self::Small => "small",
             Self::LuckySeven => "lucky_seven",
             Self::SuperLuckySeven => "super_lucky_seven",
+            Self::LuckySix => "lucky_six",
+            Self::BankerDragonBonus => "banker_dragon_bonus",
+            Self::PlayerDragonBonus => "player_dragon_bonus",
         }
     }
 }
 
-/// 八种边注使用的净赔付表。
+/// 十一种边注使用的净赔付表。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SideBetRules {
     any_pair: f64,
@@ -84,6 +98,9 @@ pub struct SideBetRules {
     super_lucky_seven_four_cards: f64,
     super_lucky_seven_five_cards: f64,
     super_lucky_seven_six_cards: f64,
+    lucky_six_two_cards: f64,
+    lucky_six_three_cards: f64,
+    dragon_bonus_by_margin: [f64; 6],
 }
 
 impl SideBetRules {
@@ -94,13 +111,16 @@ impl SideBetRules {
             banker_pair: 11.0,
             player_pair: 11.0,
             perfect_pair: 25.0,
-            big: 0.54,
+            big: 0.5,
             small: 1.5,
             lucky_seven_two_cards: 6.0,
             lucky_seven_three_cards: 15.0,
             super_lucky_seven_four_cards: 30.0,
             super_lucky_seven_five_cards: 40.0,
             super_lucky_seven_six_cards: 100.0,
+            lucky_six_two_cards: 12.0,
+            lucky_six_three_cards: 18.0,
+            dragon_bonus_by_margin: [1.0, 2.0, 3.0, 5.0, 10.0, 30.0],
         }
     }
 
@@ -151,6 +171,9 @@ impl SideBetRules {
             super_lucky_seven_four_cards,
             super_lucky_seven_five_cards,
             super_lucky_seven_six_cards,
+            lucky_six_two_cards: 12.0,
+            lucky_six_three_cards: 18.0,
+            dragon_bonus_by_margin: [1.0, 2.0, 3.0, 5.0, 10.0, 30.0],
         })
     }
 
@@ -163,7 +186,11 @@ impl SideBetRules {
             SideBet::PerfectPair => Some(self.perfect_pair),
             SideBet::Big => Some(self.big),
             SideBet::Small => Some(self.small),
-            SideBet::LuckySeven | SideBet::SuperLuckySeven => None,
+            SideBet::LuckySeven
+            | SideBet::SuperLuckySeven
+            | SideBet::LuckySix
+            | SideBet::BankerDragonBonus
+            | SideBet::PlayerDragonBonus => None,
         }
     }
 
@@ -181,10 +208,20 @@ impl SideBetRules {
         ]
     }
 
+    /// 幸运 6 的庄两张、庄三张净赔付。
+    pub const fn lucky_six_payouts(self) -> [f64; 2] {
+        [self.lucky_six_two_cards, self.lucky_six_three_cards]
+    }
+
+    /// 龙宝在非 Natural 点差 4、5、6、7、8、9 时的净赔付。
+    pub const fn dragon_bonus_payouts(self) -> [f64; 6] {
+        self.dragon_bonus_by_margin
+    }
+
     /// 使用已经开奖的完整牌局结算一笔边注。
     ///
     /// 返回值统一使用“每下注 1 单位的净盈利”口径：命中返回对应档位净赔付，
-    /// 未命中返回 `-1.0`。边注没有主注和局 Push，也不会叠加主注返水。
+    /// 未命中返回 `-1.0`。龙宝的 Natural 退回本金时返回 `0.0`；边注不会叠加主注返水。
     pub fn settle(self, bet: SideBet, round: RoundResult) -> f64 {
         let player = round.player_hand();
         let banker = round.banker_hand();
@@ -192,6 +229,7 @@ impl SideBetRules {
         let banker_pair = banker.first_card().rank() == banker.second_card().rank();
         let player_perfect_pair = player.first_card() == player.second_card();
         let banker_perfect_pair = banker.first_card() == banker.second_card();
+        let outcome = round.outcome();
 
         let payout = match bet {
             SideBet::AnyPair if player_pair || banker_pair => Some(self.any_pair),
@@ -217,11 +255,43 @@ impl SideBetRules {
                     _ => unreachable!("百家乐一局只能使用 4、5 或 6 张牌"),
                 })
             }
+            SideBet::LuckySix if outcome == RoundOutcome::Banker && banker.total() == 6 => {
+                Some(if banker.card_count() == 2 {
+                    self.lucky_six_two_cards
+                } else {
+                    self.lucky_six_three_cards
+                })
+            }
+            SideBet::BankerDragonBonus
+                if outcome == RoundOutcome::Banker && banker.is_natural() =>
+            {
+                Some(0.0)
+            }
+            SideBet::PlayerDragonBonus
+                if outcome == RoundOutcome::Player && player.is_natural() =>
+            {
+                Some(0.0)
+            }
+            SideBet::BankerDragonBonus | SideBet::PlayerDragonBonus
+                if outcome == RoundOutcome::Tie && player.is_natural() && banker.is_natural() =>
+            {
+                Some(0.0)
+            }
+            SideBet::BankerDragonBonus if outcome == RoundOutcome::Banker => {
+                dragon_bonus_payout(self.dragon_bonus_by_margin, banker.total() - player.total())
+            }
+            SideBet::PlayerDragonBonus if outcome == RoundOutcome::Player => {
+                dragon_bonus_payout(self.dragon_bonus_by_margin, player.total() - banker.total())
+            }
             _ => None,
         };
 
         payout.unwrap_or(-1.0)
     }
+}
+
+fn dragon_bonus_payout(payouts: [f64; 6], margin: u8) -> Option<f64> {
+    (margin >= 4).then(|| payouts[usize::from(margin - 4)])
 }
 
 impl Default for SideBetRules {
@@ -245,6 +315,12 @@ pub struct SideBetWeights {
     super_lucky_seven_four_cards: u64,
     super_lucky_seven_five_cards: u64,
     super_lucky_seven_six_cards: u64,
+    lucky_six_two_cards: u64,
+    lucky_six_three_cards: u64,
+    banker_dragon_bonus_tiers: [u64; 6],
+    banker_dragon_bonus_push: u64,
+    player_dragon_bonus_tiers: [u64; 6],
+    player_dragon_bonus_push: u64,
 }
 
 impl SideBetWeights {
@@ -263,6 +339,12 @@ impl SideBetWeights {
         super_lucky_seven_four_cards: u64,
         super_lucky_seven_five_cards: u64,
         super_lucky_seven_six_cards: u64,
+        lucky_six_two_cards: u64,
+        lucky_six_three_cards: u64,
+        banker_dragon_bonus_tiers: [u64; 6],
+        banker_dragon_bonus_push: u64,
+        player_dragon_bonus_tiers: [u64; 6],
+        player_dragon_bonus_push: u64,
     ) -> Self {
         debug_assert!(
             [
@@ -277,8 +359,14 @@ impl SideBetWeights {
                 super_lucky_seven_four_cards,
                 super_lucky_seven_five_cards,
                 super_lucky_seven_six_cards,
+                lucky_six_two_cards,
+                lucky_six_three_cards,
+                banker_dragon_bonus_push,
+                player_dragon_bonus_push,
             ]
             .into_iter()
+            .chain(banker_dragon_bonus_tiers)
+            .chain(player_dragon_bonus_tiers)
             .all(|weight| weight <= total)
         );
 
@@ -295,6 +383,12 @@ impl SideBetWeights {
             super_lucky_seven_four_cards,
             super_lucky_seven_five_cards,
             super_lucky_seven_six_cards,
+            lucky_six_two_cards,
+            lucky_six_three_cards,
+            banker_dragon_bonus_tiers,
+            banker_dragon_bonus_push,
+            player_dragon_bonus_tiers,
+            player_dragon_bonus_push,
         }
     }
 
@@ -318,6 +412,25 @@ impl SideBetWeights {
                     + self.super_lucky_seven_five_cards
                     + self.super_lucky_seven_six_cards
             }
+            SideBet::LuckySix => self.lucky_six_two_cards + self.lucky_six_three_cards,
+            // `win_weight` 是 const fn，当前稳定版 Rust 还不允许在这里用
+            // `iter().sum()`，所以把点差 4～9 的六档权重显式相加。
+            SideBet::BankerDragonBonus => {
+                self.banker_dragon_bonus_tiers[0]
+                    + self.banker_dragon_bonus_tiers[1]
+                    + self.banker_dragon_bonus_tiers[2]
+                    + self.banker_dragon_bonus_tiers[3]
+                    + self.banker_dragon_bonus_tiers[4]
+                    + self.banker_dragon_bonus_tiers[5]
+            }
+            SideBet::PlayerDragonBonus => {
+                self.player_dragon_bonus_tiers[0]
+                    + self.player_dragon_bonus_tiers[1]
+                    + self.player_dragon_bonus_tiers[2]
+                    + self.player_dragon_bonus_tiers[3]
+                    + self.player_dragon_bonus_tiers[4]
+                    + self.player_dragon_bonus_tiers[5]
+            }
         }
     }
 
@@ -338,6 +451,31 @@ impl SideBetWeights {
             self.super_lucky_seven_five_cards,
             self.super_lucky_seven_six_cards,
         ]
+    }
+
+    /// 返回幸运 6 的庄两张、庄三张命中权重。
+    pub const fn lucky_six_tier_weights(self) -> [u64; 2] {
+        [self.lucky_six_two_cards, self.lucky_six_three_cards]
+    }
+
+    /// 返回庄龙宝点差 4～9 的命中权重。
+    pub const fn banker_dragon_bonus_tier_weights(self) -> [u64; 6] {
+        self.banker_dragon_bonus_tiers
+    }
+
+    /// 返回闲龙宝点差 4～9 的命中权重。
+    pub const fn player_dragon_bonus_tier_weights(self) -> [u64; 6] {
+        self.player_dragon_bonus_tiers
+    }
+
+    /// 返回庄龙宝退回本金的 Natural 权重。
+    pub const fn banker_dragon_bonus_push_weight(self) -> u64 {
+        self.banker_dragon_bonus_push
+    }
+
+    /// 返回闲龙宝退回本金的 Natural 权重。
+    pub const fn player_dragon_bonus_push_weight(self) -> u64 {
+        self.player_dragon_bonus_push
     }
 }
 
@@ -370,7 +508,7 @@ impl SideBetMetrics {
     }
 }
 
-/// 八种边注在同一牌靴和赔付表下的分析结果。
+/// 十一种边注在同一牌靴和赔付表下的分析结果。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SideBetAnalysis {
     any_pair: SideBetMetrics,
@@ -381,6 +519,9 @@ pub struct SideBetAnalysis {
     small: SideBetMetrics,
     lucky_seven: SideBetMetrics,
     super_lucky_seven: SideBetMetrics,
+    lucky_six: SideBetMetrics,
+    banker_dragon_bonus: SideBetMetrics,
+    player_dragon_bonus: SideBetMetrics,
 }
 
 impl SideBetAnalysis {
@@ -412,6 +553,23 @@ impl SideBetAnalysis {
                 &weights.super_lucky_seven_tier_weights(),
                 &rules.super_lucky_seven_payouts(),
             ),
+            lucky_six: metrics_from_tiers(
+                total,
+                &weights.lucky_six_tier_weights(),
+                &rules.lucky_six_payouts(),
+            ),
+            banker_dragon_bonus: metrics_from_tiers_with_push(
+                total,
+                &weights.banker_dragon_bonus_tier_weights(),
+                &rules.dragon_bonus_payouts(),
+                weights.banker_dragon_bonus_push_weight(),
+            ),
+            player_dragon_bonus: metrics_from_tiers_with_push(
+                total,
+                &weights.player_dragon_bonus_tier_weights(),
+                &rules.dragon_bonus_payouts(),
+                weights.player_dragon_bonus_push_weight(),
+            ),
         }
     }
 
@@ -426,6 +584,9 @@ impl SideBetAnalysis {
             SideBet::Small => self.small,
             SideBet::LuckySeven => self.lucky_seven,
             SideBet::SuperLuckySeven => self.super_lucky_seven,
+            SideBet::LuckySix => self.lucky_six,
+            SideBet::BankerDragonBonus => self.banker_dragon_bonus,
+            SideBet::PlayerDragonBonus => self.player_dragon_bonus,
         }
     }
 }
@@ -436,13 +597,24 @@ impl SideBetAnalysis {
 /// `1 + payout`；未命中时返还为 0。RTP 是所有命中档位的概率加权返还，
 /// `EV = RTP - 1`。
 fn metrics_from_tiers(total: u64, tier_weights: &[u64], payouts: &[f64]) -> SideBetMetrics {
+    metrics_from_tiers_with_push(total, tier_weights, payouts, 0)
+}
+
+/// 多档赔付加 Push 权重的 EV。Push 返回原始本金，因此只贡献 RTP，不计入命中率。
+fn metrics_from_tiers_with_push(
+    total: u64,
+    tier_weights: &[u64],
+    payouts: &[f64],
+    push_weight: u64,
+) -> SideBetMetrics {
     debug_assert_eq!(tier_weights.len(), payouts.len());
     let probability = tier_weights.iter().sum::<u64>() as f64 / total as f64;
-    let rtp = tier_weights
+    let winning_return = tier_weights
         .iter()
         .zip(payouts)
         .map(|(&weight, &payout)| weight as f64 / total as f64 * (1.0 + payout))
         .sum::<f64>();
+    let rtp = winning_return + push_weight as f64 / total as f64;
 
     SideBetMetrics {
         probability,
@@ -524,7 +696,7 @@ mod tests {
         );
         assert_close(
             analysis.metrics(SideBet::Big).rtp(),
-            0.956_542_524_044_366_3,
+            0.931_697_263_679_577_6,
             1e-12,
         );
         assert_close(
@@ -547,6 +719,9 @@ mod tests {
             0.8516,
             0.000_1,
         );
+        assert!(analysis.metrics(SideBet::LuckySix).probability() > 0.0);
+        assert!(analysis.metrics(SideBet::BankerDragonBonus).probability() > 0.0);
+        assert!(analysis.metrics(SideBet::PlayerDragonBonus).probability() > 0.0);
     }
 
     #[test]
@@ -636,6 +811,56 @@ mod tests {
     }
 
     #[test]
+    fn lucky_six_uses_the_bankers_two_or_three_card_tier() {
+        let rules = SideBetRules::default();
+        // 庄家起手 3 + 3 = 6，闲家补牌后只有 4 点：庄以两张牌、6 点获胜。
+        let banker_two_cards = round("AS 3C 2H 3D AH");
+        // 庄家起手 2 + 2 = 4，补 2 后成为 6；闲家三张合计只有 2 点。
+        let banker_three_cards = round("KS 2C QH 2D 2S 2H");
+
+        assert_eq!(rules.settle(SideBet::LuckySix, banker_two_cards), 12.0);
+        assert_eq!(rules.settle(SideBet::LuckySix, banker_three_cards), 18.0);
+    }
+
+    #[test]
+    fn dragon_bonus_uses_margin_tiers_and_pushes_selected_side_naturals() {
+        let rules = SideBetRules::default();
+        // 双方都补牌后闲 8、庄 4，闲龙宝按点差 4 净赔 1:1。
+        let player_margin_four = round("2S 2C 2H 2D 4S KH");
+        // 双方都补牌后庄 9、闲 2，庄龙宝按点差 7 净赔 5:1。
+        let banker_margin_seven = round("KS 2C QH 2D 2S 5H");
+        // 闲天然 9 获胜：闲龙宝退回本金（净收益 0），庄龙宝仍然输。
+        let player_natural = round("4S 2C 5H 3D");
+        // 双方天然 9 和局：两个方向都退回本金。
+        let both_natural_tie = round("4S 5C 5H 4D");
+
+        assert_eq!(
+            rules.settle(SideBet::PlayerDragonBonus, player_margin_four),
+            1.0
+        );
+        assert_eq!(
+            rules.settle(SideBet::BankerDragonBonus, banker_margin_seven),
+            5.0
+        );
+        assert_eq!(
+            rules.settle(SideBet::PlayerDragonBonus, player_natural),
+            0.0
+        );
+        assert_eq!(
+            rules.settle(SideBet::BankerDragonBonus, player_natural),
+            -1.0
+        );
+        assert_eq!(
+            rules.settle(SideBet::PlayerDragonBonus, both_natural_tie),
+            0.0
+        );
+        assert_eq!(
+            rules.settle(SideBet::BankerDragonBonus, both_natural_tie),
+            0.0
+        );
+    }
+
+    #[test]
     fn big_and_small_settle_from_the_final_card_count() {
         let rules = SideBetRules::default();
         let four_cards = round("AS 4C 7H 3D");
@@ -644,8 +869,8 @@ mod tests {
 
         assert_eq!(rules.settle(SideBet::Small, four_cards), 1.5);
         assert_eq!(rules.settle(SideBet::Big, four_cards), -1.0);
-        assert_eq!(rules.settle(SideBet::Big, five_cards), 0.54);
-        assert_eq!(rules.settle(SideBet::Big, six_cards), 0.54);
+        assert_eq!(rules.settle(SideBet::Big, five_cards), 0.5);
+        assert_eq!(rules.settle(SideBet::Big, six_cards), 0.5);
         assert_eq!(rules.settle(SideBet::Small, six_cards), -1.0);
     }
 }

@@ -96,7 +96,7 @@ impl CsvReplayConfig {
         )
     }
 
-    /// 创建允许八种边注参与方向选择的完整回放配置。
+    /// 创建允许十一种边注参与方向选择的完整回放配置。
     #[allow(clippy::too_many_arguments)]
     pub fn with_side_bets(
         decks: u8,
@@ -245,6 +245,9 @@ pub struct CsvBetCounts {
     pub small: u64,
     pub lucky_seven: u64,
     pub super_lucky_seven: u64,
+    pub lucky_six: u64,
+    pub banker_dragon_bonus: u64,
+    pub player_dragon_bonus: u64,
 }
 
 impl CsvBetCounts {
@@ -261,6 +264,9 @@ impl CsvBetCounts {
             BetTarget::Side(SideBet::Small) => self.small += 1,
             BetTarget::Side(SideBet::LuckySeven) => self.lucky_seven += 1,
             BetTarget::Side(SideBet::SuperLuckySeven) => self.super_lucky_seven += 1,
+            BetTarget::Side(SideBet::LuckySix) => self.lucky_six += 1,
+            BetTarget::Side(SideBet::BankerDragonBonus) => self.banker_dragon_bonus += 1,
+            BetTarget::Side(SideBet::PlayerDragonBonus) => self.player_dragon_bonus += 1,
         }
     }
 }
