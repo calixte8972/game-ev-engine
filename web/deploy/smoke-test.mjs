@@ -6,6 +6,7 @@ import {
   analyzeBaccaratStrategy,
   initSync,
   replayBaccaratCsv,
+  replayBaccaratCsvWithSideBetLimits,
 } from "../pkg/game_ev_engine.js";
 import { buildBankrollSeries, sampleBankrollSeries } from "../bankroll-chart.js";
 
@@ -23,6 +24,16 @@ if (!/<input id="bankroll"[^>]*step="0\.01"/.test(pageHtml)) {
 
 if (!/id="allow-multiple-bets"/.test(pageHtml)) {
   throw new Error("页面没有同局多下注开关");
+}
+
+for (const id of [
+  "limit-any-pair", "limit-banker-pair", "limit-player-pair", "limit-perfect-pair",
+  "limit-big", "limit-small", "limit-lucky-six", "limit-lucky-seven",
+  "limit-super-lucky-seven", "limit-banker-dragon-bonus", "limit-player-dragon-bonus",
+]) {
+  if (!new RegExp(`id="${id}"`).test(pageHtml)) {
+    throw new Error(`页面缺少独立边注局数配置：${id}`);
+  }
 }
 
 if (!/id="bankroll-chart"/.test(pageHtml)
@@ -184,6 +195,28 @@ const legacyReplay = JSON.parse(
   ),
 );
 
+const customRoundLimits = {
+  any_pair: 12,
+  banker_pair: 13,
+  player_pair: 14,
+  perfect_pair: 45,
+  big: 20,
+  small: 20,
+  lucky_seven: 31,
+  super_lucky_seven: 32,
+  lucky_six: 33,
+  banker_dragon_bonus: 40,
+  player_dragon_bonus: 41,
+};
+const customLimitReplay = JSON.parse(
+  replayBaccaratCsvWithSideBetLimits(
+    tinyCsv, 8, 0.02, 0, 10_000, 0.05, 1_000, 1_000,
+    "standard", "fixed", 100, 0, 100,
+    JSON.stringify(customRoundLimits),
+    false,
+  ),
+);
+
 if (tinyReplay.summary.replayed_rounds !== 2) {
   throw new Error("WASM CSV 回放没有完成两局测试数据");
 }
@@ -223,6 +256,12 @@ if (legacyReplay.config.minimum_side_bet_ev !== 0
 
 if (tinyReplay.config.lucky_bet_max_round !== 1) {
   throw new Error("幸运 6/7 最晚下注局数没有进入 WASM 回放配置");
+}
+
+for (const [bet, maxRound] of Object.entries(customRoundLimits)) {
+  if (customLimitReplay.config.side_bet_round_limits[bet] !== maxRound) {
+    throw new Error(`${bet} 的自定义最晚下注局数没有进入 WASM 回放配置`);
+  }
 }
 
 if (!tinyReplay.bets[0]?.player_cards

@@ -140,14 +140,6 @@
               </span>
             </label>
 
-            <label class="field">
-              <span>幸运 6/7 最晚下注局数</span>
-              <span class="input-suffix">
-                <input id="lucky-bet-max-round" type="number" value="0" min="0" step="1" />
-                <span>局</span>
-              </span>
-            </label>
-
             <label class="mode-option policy-toggle">
               <input id="allow-multiple-bets" type="checkbox" />
               <span>
@@ -165,8 +157,29 @@
             </label>
           </div>
 
+          <details class="side-limit-config">
+            <summary>
+              <span>边注最晚下注局数（逐项配置）</span>
+              <small>默认：大/小 20 局，完美对子 45 局，其余边注 50 局</small>
+            </summary>
+            <p>填写最后仍可下注的局数：例如填 20 表示第 21 局起禁用；填 0 表示不限。</p>
+            <div class="side-limit-grid">
+              <label class="field"><span>任意对子</span><span class="input-suffix"><input id="limit-any-pair" type="number" value="50" min="0" step="1" /><span>局</span></span></label>
+              <label class="field"><span>庄对</span><span class="input-suffix"><input id="limit-banker-pair" type="number" value="50" min="0" step="1" /><span>局</span></span></label>
+              <label class="field"><span>闲对</span><span class="input-suffix"><input id="limit-player-pair" type="number" value="50" min="0" step="1" /><span>局</span></span></label>
+              <label class="field"><span>完美对子</span><span class="input-suffix"><input id="limit-perfect-pair" type="number" value="45" min="0" step="1" /><span>局</span></span></label>
+              <label class="field"><span>大</span><span class="input-suffix"><input id="limit-big" type="number" value="20" min="0" step="1" /><span>局</span></span></label>
+              <label class="field"><span>小</span><span class="input-suffix"><input id="limit-small" type="number" value="20" min="0" step="1" /><span>局</span></span></label>
+              <label class="field"><span>幸运 6</span><span class="input-suffix"><input id="limit-lucky-six" type="number" value="50" min="0" step="1" /><span>局</span></span></label>
+              <label class="field"><span>幸运 7</span><span class="input-suffix"><input id="limit-lucky-seven" type="number" value="50" min="0" step="1" /><span>局</span></span></label>
+              <label class="field"><span>超级幸运 7</span><span class="input-suffix"><input id="limit-super-lucky-seven" type="number" value="50" min="0" step="1" /><span>局</span></span></label>
+              <label class="field"><span>庄龙宝</span><span class="input-suffix"><input id="limit-banker-dragon-bonus" type="number" value="50" min="0" step="1" /><span>局</span></span></label>
+              <label class="field"><span>闲龙宝</span><span class="input-suffix"><input id="limit-player-dragon-bonus" type="number" value="50" min="0" step="1" /><span>局</span></span></label>
+            </div>
+          </details>
+
           <p class="field-help policy-help">
-            方向仍由 EV 门槛决定；金额可以使用分数凯利、固定金额、固定本金比例、固定期望盈利或目标波动率。所有策略都会经过本金比例、单局金额、桌台和边注上限。幸运 6/7 最晚局数填 0 表示不限制；填 N 时仅第 1 至 N 局可下注幸运 6、幸运 7 和超级幸运 7。关闭“同局多下注”时只选最优 EV，开启后多个合格目标会按比例共享本局总风险预算。
+            方向仍由 EV 门槛决定；金额可以使用分数凯利、固定金额、固定本金比例、固定期望盈利或目标波动率。所有策略都会经过本金比例、单局金额、桌台和边注上限。每种边注会在超过自己的最后可下注局数后、进入 EV 比较前被移除。关闭“同局多下注”时只选最优 EV，开启后多个合格目标会按比例共享本局总风险预算。
           </p>
 
           <div class="subsection-heading shoe-heading">

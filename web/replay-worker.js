@@ -1,8 +1,40 @@
-import init, { replayBaccaratCsv } from "./pkg/game_ev_engine.js";
+import init, { replayBaccaratCsvWithSideBetLimits } from "./pkg/game_ev_engine.js";
+
+const defaultSideBetRoundLimits = {
+  any_pair: 50,
+  banker_pair: 50,
+  player_pair: 50,
+  perfect_pair: 45,
+  big: 20,
+  small: 20,
+  lucky_seven: 50,
+  super_lucky_seven: 50,
+  lucky_six: 50,
+  banker_dragon_bonus: 50,
+  player_dragon_bonus: 50,
+};
 
 function finiteNumberOr(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+function normalizedSideBetRoundLimits(config) {
+  const source = config.sideBetRoundLimits ?? {};
+  const result = {};
+  for (const [key, defaultValue] of Object.entries(defaultSideBetRoundLimits)) {
+    const value = Number(source[key]);
+    result[key] = Number.isInteger(value) && value >= 0 ? value : defaultValue;
+  }
+
+  // 兼容只有旧“幸运 6/7 共用上限”字段的页面。
+  if (!config.sideBetRoundLimits && Number.isInteger(Number(config.luckyBetMaxRound))) {
+    const legacyLimit = Math.max(0, Number(config.luckyBetMaxRound));
+    result.lucky_six = legacyLimit;
+    result.lucky_seven = legacyLimit;
+    result.super_lucky_seven = legacyLimit;
+  }
+  return result;
 }
 
 // 大型 CSV 的牌靴重建和概率枚举放在独立线程，避免主页面在计算时失去响应。
@@ -31,12 +63,11 @@ self.addEventListener("message", async (event) => {
       config.minimumEffectiveEv,
     );
     const sideBetLimit = finiteNumberOr(config.sideBetLimit, config.maxRoundStake);
-    // 新字段缺失时按 0 处理，0 在 Rust 核心中表示“不限制局数”。
-    const luckyBetMaxRound = finiteNumberOr(config.luckyBetMaxRound, 0);
+    const sideBetRoundLimits = normalizedSideBetRoundLimits(config);
     // 新字段缺失时关闭多注，保证旧页面仍然只选择一个最优目标。
     const allowMultipleBets = Boolean(config.allowMultipleBets);
     const started = performance.now();
-    const json = replayBaccaratCsv(
+    const json = replayBaccaratCsvWithSideBetLimits(
       csvText,
       config.decks,
       config.rebateRate,
@@ -50,7 +81,7 @@ self.addEventListener("message", async (event) => {
       config.strategyParameter,
       minimumSideBetEv,
       sideBetLimit,
-      luckyBetMaxRound,
+      JSON.stringify(sideBetRoundLimits),
       allowMultipleBets,
     );
     self.postMessage({

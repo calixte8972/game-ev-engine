@@ -362,6 +362,58 @@ textarea:focus-visible {
   gap: 14px 12px;
 }
 
+.side-limit-config {
+  margin-top: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fafaf5;
+}
+
+.side-limit-config summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 15px 16px;
+  color: var(--felt-dark);
+  cursor: pointer;
+  font-weight: 800;
+  list-style-position: inside;
+}
+
+.side-limit-config summary small {
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  text-align: right;
+}
+
+.side-limit-config > p {
+  margin: 0;
+  padding: 0 16px 12px;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.side-limit-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  padding: 0 16px 16px;
+}
+
+.side-limit-grid .field {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-strong);
+}
+
+.side-limit-grid input {
+  min-width: 0;
+  padding: 9px 7px;
+}
+
 .blackjack-visible-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1650,6 +1702,10 @@ footer {
     grid-template-columns: repeat(4, 1fr);
   }
 
+  .side-limit-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
   .rule-fact-grid {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -1694,6 +1750,20 @@ footer {
     align-items: flex-start;
     flex-direction: column;
     gap: 6px;
+  }
+
+  .side-limit-config summary {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .side-limit-config summary small {
+    text-align: left;
+  }
+
+  .side-limit-grid {
+    grid-template-columns: repeat(2, 1fr);
   }
 
   .rules-layout,

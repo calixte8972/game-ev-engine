@@ -15,7 +15,7 @@ use crate::{
     BetPlanSkipReason, BettingPolicy, BlackjackAnalysis, BlackjackRules, Card, CombinedBetPlan,
     CombinedBetPlanAction, CsvReplayConfig, EffectiveBetMetrics, KellyPolicy, MainBet,
     MainBetAnalysis, MainBetRules, RebateRule, Shoe, SideBet, SideBetAnalysis, SideBetMetrics,
-    SideBetRules, SkipReason, StakeSizingStrategy, analyze_blackjack_hand,
+    SideBetRoundLimits, SideBetRules, SkipReason, StakeSizingStrategy, analyze_blackjack_hand,
     calculate_main_and_side_outcomes, replay_csv_text,
 };
 
@@ -123,6 +123,49 @@ pub fn replay_baccarat_csv(
         minimum_side_bet_ev,
         side_bet_limit,
         lucky_bet_max_round,
+        allow_multiple_bets,
+    )
+    .map_err(|message| JsValue::from_str(&message))
+}
+
+/// 使用十一种独立边注局数限制的新版 CSV 回放入口。
+///
+/// `side_bet_round_limits_json` 使用 [`SideBetRoundLimits`] 的稳定 JSON 字段；
+/// 通过单个结构化参数传递，避免 WASM 函数继续增加十一个位置参数。
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = replayBaccaratCsvWithSideBetLimits)]
+pub fn replay_baccarat_csv_with_side_bet_limits(
+    csv_text: &str,
+    decks: u8,
+    rebate_rate: f64,
+    minimum_effective_ev: f64,
+    initial_bankroll: f64,
+    max_fraction: f64,
+    max_round_stake: f64,
+    table_limit: f64,
+    payout_rule: &str,
+    stake_strategy: &str,
+    strategy_parameter: f64,
+    minimum_side_bet_ev: f64,
+    side_bet_limit: f64,
+    side_bet_round_limits_json: &str,
+    allow_multiple_bets: bool,
+) -> Result<String, JsValue> {
+    replay_baccarat_csv_json_with_side_bet_round_limits_and_multiple(
+        csv_text,
+        decks,
+        rebate_rate,
+        minimum_effective_ev,
+        initial_bankroll,
+        max_fraction,
+        max_round_stake,
+        table_limit,
+        payout_rule,
+        stake_strategy,
+        strategy_parameter,
+        minimum_side_bet_ev,
+        side_bet_limit,
+        side_bet_round_limits_json,
         allow_multiple_bets,
     )
     .map_err(|message| JsValue::from_str(&message))
@@ -658,6 +701,54 @@ pub fn replay_baccarat_csv_json_with_side_bets_and_lucky_limit_and_multiple(
     lucky_bet_max_round: u32,
     allow_multiple_bets: bool,
 ) -> Result<String, String> {
+    // 旧入口只有一个幸运玩法上限；其余玩法采用新的业务默认值。
+    let limits = SideBetRoundLimits {
+        lucky_six: lucky_bet_max_round,
+        lucky_seven: lucky_bet_max_round,
+        super_lucky_seven: lucky_bet_max_round,
+        ..SideBetRoundLimits::default()
+    };
+    let limits_json = serde_json::to_string(&limits)
+        .map_err(|error| format!("边注局数限制序列化失败：{error}"))?;
+
+    replay_baccarat_csv_json_with_side_bet_round_limits_and_multiple(
+        csv_text,
+        decks,
+        rebate_rate,
+        minimum_effective_ev,
+        initial_bankroll,
+        max_fraction,
+        max_round_stake,
+        table_limit,
+        payout_rule,
+        stake_strategy,
+        strategy_parameter,
+        minimum_side_bet_ev,
+        side_bet_limit,
+        &limits_json,
+        allow_multiple_bets,
+    )
+}
+
+/// 使用十一种独立边注局数限制和同局多下注配置执行 CSV 回放。
+#[allow(clippy::too_many_arguments)]
+pub fn replay_baccarat_csv_json_with_side_bet_round_limits_and_multiple(
+    csv_text: &str,
+    decks: u8,
+    rebate_rate: f64,
+    minimum_effective_ev: f64,
+    initial_bankroll: f64,
+    max_fraction: f64,
+    max_round_stake: f64,
+    table_limit: f64,
+    payout_rule: &str,
+    stake_strategy: &str,
+    strategy_parameter: f64,
+    minimum_side_bet_ev: f64,
+    side_bet_limit: f64,
+    side_bet_round_limits_json: &str,
+    allow_multiple_bets: bool,
+) -> Result<String, String> {
     // 兼容仍在浏览器中打开的旧页面：旧页面没有这两个后来新增的字段，
     // `undefined` 经过 wasm-bindgen 会变成 NaN。只有两项同时缺失时才按旧版
     // 语义回退；若调用者只传了一个非法值，仍交给领域层返回明确错误。
@@ -668,6 +759,9 @@ pub fn replay_baccarat_csv_json_with_side_bets_and_lucky_limit_and_multiple(
     } else {
         (minimum_side_bet_ev, side_bet_limit)
     };
+    let side_bet_round_limits: SideBetRoundLimits =
+        serde_json::from_str(side_bet_round_limits_json)
+            .map_err(|error| format!("边注最晚下注局数配置无效：{error}"))?;
     let (rules, _) = parse_payout_rule(payout_rule)?;
     let stake_strategy = parse_stake_strategy(stake_strategy, strategy_parameter)?;
     let config = CsvReplayConfig::with_side_bets(
@@ -684,7 +778,7 @@ pub fn replay_baccarat_csv_json_with_side_bets_and_lucky_limit_and_multiple(
         side_bet_limit,
     )
     .map_err(|error| format!("回放配置不合法：{error}"))?
-    .with_lucky_bet_max_round(lucky_bet_max_round)
+    .with_side_bet_round_limits(side_bet_round_limits)
     .with_multiple_bets(allow_multiple_bets);
     let report = replay_csv_text(csv_text, config).map_err(|error| error.to_string())?;
 
@@ -944,7 +1038,8 @@ mod tests {
         analyze_baccarat_json, analyze_baccarat_strategy_json,
         analyze_baccarat_strategy_json_with_side_bets,
         analyze_baccarat_strategy_json_with_side_bets_and_multiple, analyze_blackjack_json,
-        replay_baccarat_csv_json, replay_baccarat_csv_json_with_side_bets,
+        replay_baccarat_csv_json, replay_baccarat_csv_json_with_side_bet_round_limits_and_multiple,
+        replay_baccarat_csv_json_with_side_bets,
         replay_baccarat_csv_json_with_side_bets_and_lucky_limit_and_multiple,
     };
 
@@ -1348,6 +1443,36 @@ mod tests {
 
         assert_eq!(value["config"]["minimum_side_bet_ev"], 0.0);
         assert_eq!(value["config"]["side_bet_limit"], 1_000.0);
+        assert_eq!(value["config"]["lucky_bet_max_round"], Value::Null);
+        assert_eq!(value["config"]["side_bet_round_limits"]["big"], 20);
+        assert_eq!(value["config"]["side_bet_round_limits"]["perfect_pair"], 45);
+    }
+
+    #[test]
+    fn csv_replay_accepts_independent_side_bet_round_limits() {
+        let csv = "__source_pk,table_id,session_id,round_no,started_at,settled_at,raw_cards,result_code\n\
+                   a,1,9001,1,2026-08-20 00:00:12,2026-08-20 00:00:44,\"b:24,31,45;p:31,42,47\",36\n";
+        let limits = r#"{
+            "any_pair":12,"banker_pair":13,"player_pair":14,"perfect_pair":45,
+            "big":20,"small":20,"lucky_seven":31,"super_lucky_seven":32,
+            "lucky_six":33,"banker_dragon_bonus":40,"player_dragon_bonus":41
+        }"#;
+        let value: Value = serde_json::from_str(
+            &replay_baccarat_csv_json_with_side_bet_round_limits_and_multiple(
+                csv, 8, 0.02, 0.0, 10_000.0, 1.0, 1_000.0, 1_000.0, "standard", "fixed", 100.0,
+                0.0, 100.0, limits, false,
+            )
+            .expect("十一种独立边注局数限制应该可以回放"),
+        )
+        .expect("回放结果应该是合法 JSON");
+
+        assert_eq!(value["config"]["side_bet_round_limits"]["any_pair"], 12);
+        assert_eq!(value["config"]["side_bet_round_limits"]["lucky_six"], 33);
+        assert_eq!(
+            value["config"]["side_bet_round_limits"]["player_dragon_bonus"],
+            41
+        );
+        // 三种幸运玩法上限不相同时，旧兼容字段无法用一个值表达，应为 null。
         assert_eq!(value["config"]["lucky_bet_max_round"], Value::Null);
     }
 

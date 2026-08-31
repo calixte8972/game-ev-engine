@@ -51,7 +51,8 @@ pub use probability::{OutcomeWeights, ProbabilityError};
 pub use rebate::RebateRule;
 pub use replay::{
     CsvBetCounts, CsvBetDetail, CsvDatasetReport, CsvQualityReport, CsvReplayConfig,
-    CsvReplayConfigSnapshot, CsvReplayError, CsvReplayReport, CsvReplaySummary, replay_csv_text,
+    CsvReplayConfigSnapshot, CsvReplayError, CsvReplayReport, CsvReplaySummary, SideBetRoundLimits,
+    replay_csv_text,
 };
 pub use risk::{
     BetPlan, BetPlanAction, BetPlanSkipReason, CombinedBetPlan, CombinedBetPlanAction, KellyError,

@@ -87,6 +87,19 @@ const sideBetLabels = {
 
 const allBetLabels = { ...betLabels, ...sideBetLabels };
 const betCountOrder = [...Object.keys(betLabels), ...Object.keys(sideBetLabels)];
+const sideBetRoundLimitInputs = {
+  any_pair: "#limit-any-pair",
+  banker_pair: "#limit-banker-pair",
+  player_pair: "#limit-player-pair",
+  perfect_pair: "#limit-perfect-pair",
+  big: "#limit-big",
+  small: "#limit-small",
+  lucky_seven: "#limit-lucky-seven",
+  super_lucky_seven: "#limit-super-lucky-seven",
+  lucky_six: "#limit-lucky-six",
+  banker_dragon_bonus: "#limit-banker-dragon-bonus",
+  player_dragon_bonus: "#limit-player-dragon-bonus",
+};
 
 const suitSymbols = {
   C: "♣",
@@ -225,6 +238,16 @@ function strategyConfig() {
     });
     if (parameterDefinition.unit === "percent") strategyParameter /= 100;
   }
+  const sideBetRoundLimits = Object.fromEntries(
+    Object.entries(sideBetRoundLimitInputs).map(([key, selector]) => [
+      key,
+      readNumber(selector, `${sideBetLabels[key]}最后可下注局数`, {
+        min: 0,
+        integer: true,
+      }),
+    ]),
+  );
+
   return {
     decks: Number.parseInt(deckCount.value, 10),
     rebateRate: readNumber("#rebate-rate", "返水比例", { min: 0, max: 100 }) / 100,
@@ -237,10 +260,7 @@ function strategyConfig() {
     }) / 100,
     maxRoundStake: readNumber("#max-round-stake", "单局金额上限", { min: 0 }),
     sideBetLimit: readNumber("#side-bet-limit", "边注单笔金额上限", { min: 0 }),
-    luckyBetMaxRound: readNumber("#lucky-bet-max-round", "幸运 6/7 最晚下注局数", {
-      min: 0,
-      integer: true,
-    }),
+    sideBetRoundLimits,
     allowMultipleBets: allowMultipleBets.checked,
     tableLimit: readNumber("#table-limit", "桌台金额上限", { min: 0 }),
     payoutRule: payoutRule.value,

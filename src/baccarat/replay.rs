@@ -25,6 +25,79 @@ use super::{
     StakeSizingStrategy, calculate_main_and_side_outcomes, resolve_round,
 };
 
+/// 每种边注在一靴牌中的最后可下注局数。
+///
+/// 字段值 `N` 表示第 1..=N 局可以下注，从第 N+1 局开始禁用；`0` 表示
+/// 不限制。每种玩法独立配置，避免“大/小 20 局限制”意外影响对子或龙宝。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SideBetRoundLimits {
+    pub any_pair: u32,
+    pub banker_pair: u32,
+    pub player_pair: u32,
+    pub perfect_pair: u32,
+    pub big: u32,
+    pub small: u32,
+    pub lucky_seven: u32,
+    pub super_lucky_seven: u32,
+    pub lucky_six: u32,
+    pub banker_dragon_bonus: u32,
+    pub player_dragon_bonus: u32,
+}
+
+impl Default for SideBetRoundLimits {
+    fn default() -> Self {
+        Self {
+            // 第 51 局起停止所有普通边注，所以默认最后可下注局数为 50。
+            any_pair: 50,
+            banker_pair: 50,
+            player_pair: 50,
+            // 完美对子从第 46 局起停止。
+            perfect_pair: 45,
+            // 大/小从第 21 局起停止。
+            big: 20,
+            small: 20,
+            lucky_seven: 50,
+            super_lucky_seven: 50,
+            lucky_six: 50,
+            banker_dragon_bonus: 50,
+            player_dragon_bonus: 50,
+        }
+    }
+}
+
+impl SideBetRoundLimits {
+    /// 判断指定玩法在当前局号是否仍可以进入 EV 比较。
+    pub const fn allows(self, side_bet: SideBet, round_no: u32) -> bool {
+        let max_round = match side_bet {
+            SideBet::AnyPair => self.any_pair,
+            SideBet::BankerPair => self.banker_pair,
+            SideBet::PlayerPair => self.player_pair,
+            SideBet::PerfectPair => self.perfect_pair,
+            SideBet::Big => self.big,
+            SideBet::Small => self.small,
+            SideBet::LuckySeven => self.lucky_seven,
+            SideBet::SuperLuckySeven => self.super_lucky_seven,
+            SideBet::LuckySix => self.lucky_six,
+            SideBet::BankerDragonBonus => self.banker_dragon_bonus,
+            SideBet::PlayerDragonBonus => self.player_dragon_bonus,
+        };
+
+        max_round == 0 || round_no <= max_round
+    }
+
+    /// 兼容旧报告字段：三种幸运玩法上限相同时返回该值，否则返回 `None`。
+    const fn common_lucky_max_round(self) -> Option<u32> {
+        if self.lucky_six > 0
+            && self.lucky_six == self.lucky_seven
+            && self.lucky_six == self.super_lucky_seven
+        {
+            Some(self.lucky_six)
+        } else {
+            None
+        }
+    }
+}
+
 /// 一次 CSV 回放使用的完整策略配置。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CsvReplayConfig {
@@ -39,8 +112,8 @@ pub struct CsvReplayConfig {
     max_round_stake: f64,
     table_limit: f64,
     side_bet_limit: f64,
-    /// 幸运 6、幸运 7、超级幸运 7 允许下注的最后局数；None 表示不限制。
-    lucky_bet_max_round: Option<u32>,
+    /// 十一种边注各自允许下注的最后局数；0 表示该玩法不限制。
+    side_bet_round_limits: SideBetRoundLimits,
     /// 是否允许同一局同时下注多个达到门槛的目标。
     allow_multiple_bets: bool,
 }
@@ -155,7 +228,7 @@ impl CsvReplayConfig {
             max_round_stake,
             table_limit,
             side_bet_limit,
-            lucky_bet_max_round: None,
+            side_bet_round_limits: SideBetRoundLimits::default(),
             allow_multiple_bets: false,
         })
     }
@@ -165,7 +238,15 @@ impl CsvReplayConfig {
     /// `0` 表示不限制；`N > 0` 表示第 1..=N 局允许，从第 N+1 局起禁用。
     /// 该限制只移除三种幸运边注，其他主注和边注仍照常比较 EV。
     pub fn with_lucky_bet_max_round(mut self, max_round: u32) -> Self {
-        self.lucky_bet_max_round = (max_round > 0).then_some(max_round);
+        self.side_bet_round_limits.lucky_six = max_round;
+        self.side_bet_round_limits.lucky_seven = max_round;
+        self.side_bet_round_limits.super_lucky_seven = max_round;
+        self
+    }
+
+    /// 覆盖十一种边注各自的最后可下注局数。
+    pub fn with_side_bet_round_limits(mut self, limits: SideBetRoundLimits) -> Self {
+        self.side_bet_round_limits = limits;
         self
     }
 
@@ -220,7 +301,10 @@ pub struct CsvReplayConfigSnapshot {
     pub max_round_stake: f64,
     pub table_limit: f64,
     pub side_bet_limit: f64,
+    /// 十一种边注各自的最后可下注局数；0 表示不限制。
+    pub side_bet_round_limits: SideBetRoundLimits,
     /// null 表示不限制；正整数 N 表示仅前 N 局允许幸运 6/7。
+    /// 这是旧页面兼容字段；新页面应读取 `side_bet_round_limits`。
     pub lucky_bet_max_round: Option<u32>,
     /// 是否允许一局同时保存多笔下注明细。
     pub allow_multiple_bets: bool,
@@ -433,7 +517,8 @@ pub fn replay_csv_text(
             max_round_stake: config.max_round_stake,
             table_limit: config.table_limit,
             side_bet_limit: config.side_bet_limit,
-            lucky_bet_max_round: config.lucky_bet_max_round,
+            side_bet_round_limits: config.side_bet_round_limits,
+            lucky_bet_max_round: config.side_bet_round_limits.common_lucky_max_round(),
             allow_multiple_bets: config.allow_multiple_bets,
         },
         dataset,
@@ -734,8 +819,10 @@ fn replay_rounds(
             weights
         };
 
-        let lucky_bets_allowed = |side_bet| {
-            side_bet_allowed_for_round(side_bet, round.round_no, config.lucky_bet_max_round)
+        let side_bet_allowed = |side_bet| {
+            config
+                .side_bet_round_limits
+                .allows(side_bet, round.round_no)
         };
         let mut plans = if config.allow_multiple_bets {
             kelly_policy
@@ -746,7 +833,7 @@ fn replay_rounds(
                     side_weights,
                     side_rules,
                     current_bankroll,
-                    lucky_bets_allowed,
+                    side_bet_allowed,
                 )
                 .map_err(|error| CsvReplayError::Strategy(error.to_string()))?
         } else {
@@ -765,7 +852,7 @@ fn replay_rounds(
                         side_weights,
                         side_rules,
                         current_bankroll,
-                        lucky_bets_allowed,
+                        side_bet_allowed,
                     )
                     .map_err(|error| CsvReplayError::Strategy(error.to_string()))?,
             );
@@ -955,23 +1042,6 @@ fn replay_rounds(
     summary.return_on_initial = summary.total_profit / config.initial_bankroll;
 
     Ok((summary, details))
-}
-
-/// 判断某种边注在当前牌靴局号是否仍可参与策略比较。
-///
-/// 限制只适用于幸运 6、幸运 7 和超级幸运 7。其他边注无论局号多少都返回
-/// true。边界采用包含语义：配置 20 时，第 20 局可下，第 21 局不可下。
-fn side_bet_allowed_for_round(
-    side_bet: SideBet,
-    round_no: u32,
-    lucky_bet_max_round: Option<u32>,
-) -> bool {
-    let is_lucky_bet = matches!(
-        side_bet,
-        SideBet::LuckySix | SideBet::LuckySeven | SideBet::SuperLuckySeven
-    );
-
-    !is_lucky_bet || lucky_bet_max_round.is_none_or(|max_round| round_no <= max_round)
 }
 
 /// 把一方最终实际使用的两张或三张牌转换成稳定、易读的牌面字符串。
@@ -1180,8 +1250,7 @@ impl Error for CsvReplayError {}
 #[cfg(test)]
 mod tests {
     use super::{
-        CsvReplayConfig, parse_raw_cards, provider_card, replay_csv_text,
-        side_bet_allowed_for_round,
+        CsvReplayConfig, SideBetRoundLimits, parse_raw_cards, provider_card, replay_csv_text,
     };
     use crate::{MainBetRules, SideBet, StakeSizingStrategy};
 
@@ -1207,26 +1276,41 @@ mod tests {
     }
 
     #[test]
-    fn lucky_bet_round_limit_includes_the_configured_boundary() {
-        let limit = Some(20);
+    fn default_side_bet_round_limits_match_the_table_rules() {
+        let limits = SideBetRoundLimits::default();
 
-        for side_bet in [
-            SideBet::LuckySix,
-            SideBet::LuckySeven,
-            SideBet::SuperLuckySeven,
-        ] {
-            assert!(side_bet_allowed_for_round(side_bet, 20, limit));
-            assert!(!side_bet_allowed_for_round(side_bet, 21, limit));
-            assert!(side_bet_allowed_for_round(side_bet, 999, None));
+        for side_bet in [SideBet::Big, SideBet::Small] {
+            assert!(limits.allows(side_bet, 20));
+            assert!(!limits.allows(side_bet, 21));
         }
+        assert!(limits.allows(SideBet::PerfectPair, 45));
+        assert!(!limits.allows(SideBet::PerfectPair, 46));
 
-        // 局数限制不影响普通对子、大小、龙宝等其他边注。
-        assert!(side_bet_allowed_for_round(SideBet::BankerPair, 21, limit));
-        assert!(side_bet_allowed_for_round(
-            SideBet::BankerDragonBonus,
-            21,
-            limit
-        ));
+        for side_bet in SideBet::ALL {
+            if matches!(
+                side_bet,
+                SideBet::Big | SideBet::Small | SideBet::PerfectPair
+            ) {
+                continue;
+            }
+            assert!(limits.allows(side_bet, 50));
+            assert!(!limits.allows(side_bet, 51));
+        }
+    }
+
+    #[test]
+    fn each_side_bet_round_limit_can_be_customised_independently() {
+        let limits = SideBetRoundLimits {
+            any_pair: 10,
+            banker_pair: 30,
+            player_pair: 0,
+            ..SideBetRoundLimits::default()
+        };
+
+        assert!(!limits.allows(SideBet::AnyPair, 11));
+        assert!(limits.allows(SideBet::BankerPair, 30));
+        assert!(!limits.allows(SideBet::BankerPair, 31));
+        assert!(limits.allows(SideBet::PlayerPair, 999));
     }
 
     #[test]
