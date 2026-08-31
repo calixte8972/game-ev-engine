@@ -107,6 +107,13 @@ if (tinyReplay.summary.replayed_rounds !== 2) {
   throw new Error("WASM CSV 回放没有完成两局测试数据");
 }
 
+if (!tinyReplay.bets[0]?.player_cards
+    || !tinyReplay.bets[0]?.banker_cards
+    || !Number.isInteger(tinyReplay.bets[0]?.player_total)
+    || !Number.isInteger(tinyReplay.bets[0]?.banker_total)) {
+  throw new Error("CSV 回放明细没有返回庄闲具体牌面与最终点数");
+}
+
 const output = {
   manual: {
     remaining_cards: manual.remaining_card_count,

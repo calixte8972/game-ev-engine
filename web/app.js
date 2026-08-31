@@ -479,6 +479,23 @@ function detailCell(value, className = "") {
   return cell;
 }
 
+function outcomeDetailCell(bet) {
+  const cell = document.createElement("td");
+  cell.className = "outcome-detail-cell";
+
+  const result = document.createElement("strong");
+  result.textContent = `${betLabels[bet.outcome]} · ${resultLabels[bet.result]}`;
+
+  const playerCards = document.createElement("span");
+  playerCards.textContent = `闲 ${bet.player_cards} · ${bet.player_total} 点`;
+
+  const bankerCards = document.createElement("span");
+  bankerCards.textContent = `庄 ${bet.banker_cards} · ${bet.banker_total} 点`;
+
+  cell.append(result, playerCards, bankerCards);
+  return cell;
+}
+
 function renderReplayDetails() {
   if (!currentReplayReport) return;
 
@@ -503,7 +520,7 @@ function renderReplayDetails() {
       detailCell(bet.started_at),
       detailCell(`${bet.table_id} / ${bet.session_id} / ${bet.round_no}`),
       detailCell(allBetLabels[bet.bet]),
-      detailCell(`${betLabels[bet.outcome]} · ${resultLabels[bet.result]}`),
+      outcomeDetailCell(bet),
       detailCell(percent(bet.effective_ev), evClass(bet.effective_ev)),
       detailCell(money(bet.amount)),
       detailCell(money(bet.base_game_profit), evClass(bet.base_game_profit)),

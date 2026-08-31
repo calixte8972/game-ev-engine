@@ -20,8 +20,8 @@ use serde::{Deserialize, Serialize};
 use crate::{Card, Rank, Shoe, Suit};
 
 use super::{
-    BetTarget, BettingPolicy, CombinedBetPlanAction, KellyPolicy, MainBet, MainBetRules,
-    OutcomeWeights, RebateRule, RoundOutcome, SideBet, SideBetRules, SideBetWeights,
+    BaccaratHand, BetTarget, BettingPolicy, CombinedBetPlanAction, KellyPolicy, MainBet,
+    MainBetRules, OutcomeWeights, RebateRule, RoundOutcome, SideBet, SideBetRules, SideBetWeights,
     StakeSizingStrategy, calculate_main_and_side_outcomes, resolve_round,
 };
 
@@ -310,6 +310,14 @@ pub struct CsvBetDetail {
     pub round_no: u32,
     pub bet: &'static str,
     pub outcome: &'static str,
+    /// 闲家最终手牌，例如 `JD 2H 7H`。
+    pub player_cards: String,
+    /// 庄家最终手牌，例如 `4D JD 5H`。
+    pub banker_cards: String,
+    /// 闲家最终点数，供前端与具体牌面一起显示。
+    pub player_total: u8,
+    /// 庄家最终点数，供前端与具体牌面一起显示。
+    pub banker_total: u8,
     pub result: &'static str,
     pub effective_ev: f64,
     pub kelly_fraction: f64,
@@ -771,6 +779,10 @@ fn replay_rounds(
                 round_no: round.round_no,
                 bet: bet.as_str(),
                 outcome: outcome_name(outcome),
+                player_cards: format_hand_cards(round_result.player_hand()),
+                banker_cards: format_hand_cards(round_result.banker_hand()),
+                player_total: round_result.player_hand().total(),
+                banker_total: round_result.banker_hand().total(),
                 result,
                 effective_ev,
                 kelly_fraction: quote.kelly_fraction(),
@@ -812,6 +824,23 @@ fn replay_rounds(
     summary.return_on_initial = summary.total_profit / config.initial_bankroll;
 
     Ok((summary, details))
+}
+
+/// 把一方最终实际使用的两张或三张牌转换成稳定、易读的牌面字符串。
+///
+/// 回放输入使用供应商数字牌码，而输出统一使用手工分析也接受的 `AS`、`10H`
+/// 格式。这样前端展示和人工复核不需要了解供应商牌码规则。
+fn format_hand_cards(hand: BaccaratHand) -> String {
+    [
+        Some(hand.first_card()),
+        Some(hand.second_card()),
+        hand.third_card(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|card| card.to_string())
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 /// 把 `b:庄牌;p:闲牌` 转换为 P1、B1、P2、B2、可选 P3、可选 B3。
@@ -1039,6 +1068,10 @@ mod tests {
         assert_eq!(report.summary.replayed_rounds, 2);
         assert!(report.summary.placed_bet_count > 0);
         assert_eq!(report.bets.len() as u64, report.summary.placed_bet_count);
+        assert_eq!(report.bets[0].player_cards, "JD 2H 7H");
+        assert_eq!(report.bets[0].banker_cards, "4D JD 5H");
+        assert_eq!(report.bets[0].player_total, 9);
+        assert_eq!(report.bets[0].banker_total, 9);
 
         let component_profit = report.summary.base_game_profit + report.summary.rebate_income;
         assert!((report.summary.total_profit - component_profit).abs() < 1e-9);

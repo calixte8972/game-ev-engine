@@ -12,6 +12,15 @@
   </head>
   <body>
     <header class="app-header">
+      <button
+        class="game-tab rules-shortcut"
+        type="button"
+        data-game="rules"
+        aria-selected="false"
+      >
+        <span aria-hidden="true">?</span>
+        &#30334;&#23478;&#20048;&#35268;&#21017;
+      </button>
       <div>
         <p class="eyebrow">Rust · WebAssembly · Kelly</p>
         <h1>牌靴 EV 策略实验室</h1>
@@ -26,7 +35,6 @@
     <nav class="game-tabs" aria-label="选择游戏">
       <button class="game-tab active" type="button" data-game="baccarat" aria-selected="true">百家乐</button>
       <button class="game-tab" type="button" data-game="blackjack" aria-selected="false">21 点</button>
-      <button class="game-tab" type="button" data-game="rules" aria-selected="false">百家乐规则</button>
     </nav>
 
     <main class="workspace">

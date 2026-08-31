@@ -88,11 +88,39 @@ footer {
 }
 
 .app-header {
+  position: relative;
   display: flex;
   align-items: flex-end;
   justify-content: space-between;
   gap: 32px;
-  padding: 42px 0 28px;
+  padding: 76px 0 28px;
+}
+
+.rules-shortcut {
+  position: absolute;
+  top: 20px;
+  left: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 0 15px;
+  border-color: rgba(13, 89, 68, 0.24);
+  border-radius: 12px;
+  color: var(--felt-dark);
+  background: rgba(255, 253, 247, 0.9);
+  box-shadow: 0 7px 18px rgba(35, 47, 41, 0.06);
+}
+
+.rules-shortcut span {
+  display: grid;
+  width: 21px;
+  height: 21px;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 0.72rem;
+  font-weight: 800;
 }
 
 .header-badges {
@@ -1294,7 +1322,7 @@ td:first-child {
 }
 
 .replay-table {
-  min-width: 1220px;
+  min-width: 1380px;
 }
 
 .replay-table th {
@@ -1305,6 +1333,27 @@ td:first-child {
 
 .replay-table td {
   font-size: 0.78rem;
+}
+
+.outcome-detail-cell {
+  min-width: 215px;
+}
+
+.outcome-detail-cell strong,
+.outcome-detail-cell span {
+  display: block;
+  white-space: nowrap;
+}
+
+.outcome-detail-cell strong {
+  margin-bottom: 5px;
+  color: var(--ink);
+}
+
+.outcome-detail-cell span {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.55;
 }
 
 footer {
@@ -1349,7 +1398,11 @@ footer {
   .app-header {
     align-items: flex-start;
     flex-direction: column;
-    padding-top: 26px;
+    padding-top: 76px;
+  }
+
+  .rules-shortcut {
+    top: 18px;
   }
 
   .mode-switch,
