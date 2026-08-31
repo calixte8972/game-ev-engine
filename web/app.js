@@ -255,6 +255,9 @@ function setActiveGame(game) {
   for (const section of document.querySelectorAll(".blackjack-section")) {
     section.hidden = game !== "blackjack";
   }
+  for (const section of document.querySelectorAll(".rules-section")) {
+    section.hidden = game !== "rules";
+  }
   if (game === "blackjack" && wasmReady) calculateBlackjack();
 }
 

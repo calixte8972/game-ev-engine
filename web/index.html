@@ -26,6 +26,7 @@
     <nav class="game-tabs" aria-label="选择游戏">
       <button class="game-tab active" type="button" data-game="baccarat" aria-selected="true">百家乐</button>
       <button class="game-tab" type="button" data-game="blackjack" aria-selected="false">21 点</button>
+      <button class="game-tab" type="button" data-game="rules" aria-selected="false">百家乐规则</button>
     </nav>
 
     <main class="workspace">
@@ -612,6 +613,130 @@
         <p class="result-note warning-note">
           当前分牌 EV 是有限牌靴“单手边际 EV × 2”的估算，尚未联合枚举两手互相耗牌和再次分牌；停牌、补牌、加倍、投降及保险为有限牌靴计算。
         </p>
+      </section>
+
+      <section class="panel rules-panel rules-section" aria-labelledby="baccarat-rules-title" hidden>
+        <div class="rules-hero">
+          <div>
+            <p class="section-number">RULES · PUNTO BANCO</p>
+            <h2 id="baccarat-rules-title">百家乐规则与 EV 口径</h2>
+            <p>
+              本实验室使用标准 Punto Banco 发牌规则。玩家只选择下注方向，不决定是否补牌；所有补牌动作都由下表自动执行。
+            </p>
+          </div>
+          <div class="rules-version">当前计算口径</div>
+        </div>
+
+        <div class="rule-fact-grid" aria-label="百家乐基础规则概要">
+          <div><span>默认牌靴</span><strong>8 副 · 416 张</strong></div>
+          <div><span>点数目标</span><strong>最接近 9 点</strong></div>
+          <div><span>Natural</span><strong>起手 8 或 9 点</strong></div>
+          <div><span>最多发牌</span><strong>庄闲合计 6 张</strong></div>
+        </div>
+
+        <div class="rules-layout">
+          <article class="rule-card">
+            <div class="rule-card-heading"><span>01</span><h3>牌面点数与发牌顺序</h3></div>
+            <div class="point-strip" aria-label="牌面点数">
+              <div><strong>A</strong><span>1 点</span></div>
+              <div><strong>2～9</strong><span>按数字计点</span></div>
+              <div><strong>10 · J · Q · K</strong><span>0 点</span></div>
+            </div>
+            <p>手牌总点数只保留个位：<code>(所有牌点数之和) % 10</code>。例如 7 + 8 = 15，最终是 5 点。</p>
+            <ol class="deal-flow">
+              <li>闲第 1 张</li><li>庄第 1 张</li><li>闲第 2 张</li><li>庄第 2 张</li><li>闲第三张（如需）</li><li>庄第三张（如需）</li>
+            </ol>
+          </article>
+
+          <article class="rule-card">
+            <div class="rule-card-heading"><span>02</span><h3>Natural 与胜负</h3></div>
+            <p>起手两张牌中，只要庄或闲任何一方达到 8 或 9 点，本局立即结束，双方都不再补牌。</p>
+            <ul class="rule-list">
+              <li>闲点数高于庄：闲赢</li>
+              <li>庄点数高于闲：庄赢</li>
+              <li>庄闲点数相同：和局</li>
+              <li>和局时庄注、闲注退回本金，不输不赢</li>
+            </ul>
+          </article>
+        </div>
+
+        <article class="rule-card rule-card-wide">
+          <div class="rule-card-heading"><span>03</span><h3>闲家补牌规则</h3></div>
+          <div class="simple-rule-grid">
+            <div class="draw-rule"><strong>0～5 点</strong><span>补第三张</span></div>
+            <div class="stand-rule"><strong>6～7 点</strong><span>停牌</span></div>
+            <div class="natural-rule"><strong>8～9 点</strong><span>Natural，牌局结束</span></div>
+          </div>
+        </article>
+
+        <article class="rule-card rule-card-wide">
+          <div class="rule-card-heading"><span>04</span><h3>庄家补牌规则</h3></div>
+          <p>如果闲家没有补第三张，庄家 0～5 点补牌、6～7 点停牌。如果闲家补了第三张，则按以下完整规则执行：</p>
+          <div class="table-wrap rules-table-wrap">
+            <table class="rules-table">
+              <thead><tr><th scope="col">庄家当前点数</th><th scope="col">闲家第三张点数</th><th scope="col">庄家动作</th></tr></thead>
+              <tbody>
+                <tr><td>0～2</td><td>任意</td><td class="rule-draw-text">补牌</td></tr>
+                <tr><td>3</td><td>除 8 以外</td><td class="rule-draw-text">补牌</td></tr>
+                <tr><td>3</td><td>8</td><td>停牌</td></tr>
+                <tr><td>4</td><td>2～7</td><td class="rule-draw-text">补牌</td></tr>
+                <tr><td>4</td><td>0、1、8、9</td><td>停牌</td></tr>
+                <tr><td>5</td><td>4～7</td><td class="rule-draw-text">补牌</td></tr>
+                <tr><td>5</td><td>0～3、8、9</td><td>停牌</td></tr>
+                <tr><td>6</td><td>6～7</td><td class="rule-draw-text">补牌</td></tr>
+                <tr><td>6</td><td>0～5、8、9</td><td>停牌</td></tr>
+                <tr><td>7</td><td>任意</td><td>停牌</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <div class="rules-layout">
+          <article class="rule-card">
+            <div class="rule-card-heading"><span>05</span><h3>主注赔付</h3></div>
+            <div class="paytable-list">
+              <div><strong>闲</strong><span>净赔 1:1</span></div>
+              <div><strong>庄 · 标准</strong><span>净赔 0.95:1</span></div>
+              <div><strong>庄 · 免佣</strong><span>通常 1:1；庄 6 赢为 0.5:1</span></div>
+              <div><strong>和</strong><span>净赔 8:1</span></div>
+            </div>
+          </article>
+
+          <article class="rule-card">
+            <div class="rule-card-heading"><span>06</span><h3>返水口径</h3></div>
+            <p>页面配置的返水会按每种可能开奖结果加权进入有效 EV，而不是在开奖前假设某个结果。</p>
+            <ul class="rule-list">
+              <li>庄注、闲注：出现和局时没有返水，其他结果有返水</li>
+              <li>和注：包括开出和局时也有返水</li>
+              <li>对子、大/小、幸运 7 等边注不叠加主注返水</li>
+            </ul>
+          </article>
+        </div>
+
+        <article class="rule-card rule-card-wide">
+          <div class="rule-card-heading"><span>07</span><h3>当前支持的边注</h3></div>
+          <div class="table-wrap rules-table-wrap">
+            <table class="rules-table side-rule-table">
+              <thead><tr><th scope="col">边注</th><th scope="col">命中条件</th><th scope="col">净赔付</th></tr></thead>
+              <tbody>
+                <tr><td>任意对子</td><td>庄或闲至少一方起手两张牌同 Rank</td><td>5:1</td></tr>
+                <tr><td>庄对 / 闲对</td><td>对应一方起手两张牌同 Rank</td><td>11:1</td></tr>
+                <tr><td>完美对子</td><td>庄或闲起手牌存在 Rank 与花色都相同的一对</td><td>25:1</td></tr>
+                <tr><td>大</td><td>本局最终共发 5 或 6 张牌</td><td>0.54:1</td></tr>
+                <tr><td>小</td><td>本局最终只发 4 张牌</td><td>1.5:1</td></tr>
+                <tr><td>幸运 7</td><td>闲以 7 点获胜；按闲两张/三张分档</td><td>6:1 / 15:1</td></tr>
+                <tr><td>超级幸运 7</td><td>闲 7 点、庄 6 点且闲赢；按总牌数分档</td><td>30:1 / 40:1 / 100:1</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </article>
+
+        <article class="rule-card ev-rule-card">
+          <div class="rule-card-heading"><span>08</span><h3>EV、RTP 与庄家优势</h3></div>
+          <div class="formula-box"><code>EV = Σ（结果概率 × 该结果的净收益）</code></div>
+          <p>EV 以每下注 1 单位的平均净收益表示；<code>RTP = 1 + EV</code>，<code>庄家优势 = -EV</code>。例如 EV 为 -1%，表示长期平均每下注 1 单位预期损失 0.01 单位，不代表下一局必输。</p>
+          <p class="rules-scope-note">实验室只对上面列出的玩法参与概率、EV 和策略计算；未列出的幸运 6、龙宝、例牌注等玩法暂未进入当前算法。</p>
+        </article>
       </section>
     </main>
 

@@ -82,7 +82,8 @@ footer {
 }
 
 .blackjack-section[hidden],
-.baccarat-section[hidden] {
+.baccarat-section[hidden],
+.rules-section[hidden] {
   display: none;
 }
 
@@ -722,6 +723,314 @@ td:first-child {
   grid-column: 1 / -1;
 }
 
+.rules-panel {
+  grid-column: 1 / -1;
+  padding: clamp(24px, 4vw, 46px);
+}
+
+.rules-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 28px;
+  margin-bottom: 24px;
+  padding-bottom: 24px;
+  border-bottom: 1px solid var(--line);
+}
+
+.rules-hero h2 {
+  margin: 0 0 10px;
+  font-family: Georgia, "Noto Serif SC", serif;
+  font-size: clamp(1.8rem, 3vw, 2.65rem);
+  font-weight: 600;
+  letter-spacing: -0.035em;
+}
+
+.rules-hero p:not(.section-number) {
+  max-width: 760px;
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.7;
+}
+
+.rules-version {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  border: 1px solid #bed8cd;
+  border-radius: 999px;
+  color: var(--felt-dark);
+  background: var(--felt-soft);
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.rule-fact-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.rule-fact-grid > div {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fafaf5;
+}
+
+.rule-fact-grid span,
+.rule-fact-grid strong {
+  display: block;
+}
+
+.rule-fact-grid span {
+  margin-bottom: 5px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+
+.rule-fact-grid strong {
+  color: var(--felt-dark);
+  font-size: 1rem;
+}
+
+.rules-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.rule-card {
+  padding: clamp(20px, 3vw, 28px);
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: var(--surface-strong);
+}
+
+.rule-card-wide {
+  margin-bottom: 16px;
+}
+
+.rule-card-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.rule-card-heading > span {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 9px;
+  color: white;
+  background: var(--felt);
+  font-size: 0.68rem;
+  font-weight: 900;
+}
+
+.rule-card-heading h3 {
+  margin: 0;
+  color: var(--felt-dark);
+  font-family: Georgia, "Noto Serif SC", serif;
+  font-size: 1.12rem;
+}
+
+.rule-card > p {
+  margin-bottom: 13px;
+  color: #4e5d56;
+  font-size: 0.86rem;
+  line-height: 1.75;
+}
+
+.point-strip {
+  display: grid;
+  grid-template-columns: 0.65fr 1fr 1.65fr;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.point-strip > div {
+  padding: 13px 14px;
+  border-radius: 12px;
+  background: var(--felt-soft);
+}
+
+.point-strip strong,
+.point-strip span {
+  display: block;
+}
+
+.point-strip strong {
+  margin-bottom: 4px;
+  color: var(--felt-dark);
+}
+
+.point-strip span {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.deal-flow {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 18px 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: deal-step;
+}
+
+.deal-flow li {
+  position: relative;
+  padding: 11px 10px 11px 34px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: #405048;
+  background: #fafaf5;
+  font-size: 0.75rem;
+  counter-increment: deal-step;
+}
+
+.deal-flow li::before {
+  position: absolute;
+  top: 10px;
+  left: 11px;
+  color: var(--gold);
+  font-weight: 900;
+  content: counter(deal-step);
+}
+
+.rule-list {
+  margin: 0;
+  padding-left: 20px;
+  color: #4e5d56;
+  font-size: 0.84rem;
+  line-height: 1.8;
+}
+
+.simple-rule-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 10px;
+}
+
+.simple-rule-grid > div {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+}
+
+.simple-rule-grid strong,
+.simple-rule-grid span {
+  display: block;
+}
+
+.simple-rule-grid strong {
+  margin-bottom: 6px;
+  font-size: 1.05rem;
+}
+
+.simple-rule-grid span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.draw-rule {
+  border-color: #b8d7ca !important;
+  background: var(--felt-soft);
+}
+
+.stand-rule {
+  background: #fafaf5;
+}
+
+.natural-rule {
+  border-color: #e4cf9f !important;
+  background: #fff8e8;
+}
+
+.rules-table-wrap {
+  margin-top: 10px;
+}
+
+.rules-table {
+  min-width: 620px;
+}
+
+.rules-table th,
+.rules-table td {
+  text-align: left;
+}
+
+.rules-table td:last-child,
+.rules-table th:last-child {
+  text-align: right;
+}
+
+.rule-draw-text {
+  color: var(--positive);
+  font-weight: 800;
+}
+
+.paytable-list {
+  display: grid;
+  gap: 8px;
+}
+
+.paytable-list > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fafaf5;
+}
+
+.paytable-list span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-align: right;
+}
+
+.side-rule-table td:nth-child(2),
+.side-rule-table th:nth-child(2) {
+  white-space: normal;
+}
+
+.ev-rule-card {
+  border-color: #bad7cb;
+  background: linear-gradient(135deg, var(--surface-strong), var(--felt-soft));
+}
+
+.formula-box {
+  margin-bottom: 14px;
+  padding: 16px;
+  border: 1px solid #b8d7ca;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  text-align: center;
+}
+
+.formula-box code {
+  color: var(--felt-dark);
+  background: transparent;
+  font-size: 0.92rem;
+  font-weight: 800;
+}
+
+.rules-scope-note {
+  margin-bottom: 0 !important;
+  padding-top: 12px;
+  border-top: 1px solid rgba(13, 89, 68, 0.15);
+  font-size: 0.78rem !important;
+}
+
 .replay-heading {
   align-items: center;
 }
@@ -1023,6 +1332,10 @@ footer {
   .quality-panel {
     grid-template-columns: repeat(3, 1fr);
   }
+
+  .rule-fact-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
 }
 
 @media (max-width: 680px) {
@@ -1050,6 +1363,24 @@ footer {
   .replay-summary,
   .quality-panel {
     grid-template-columns: 1fr;
+  }
+
+  .rules-layout,
+  .rule-fact-grid,
+  .simple-rule-grid,
+  .point-strip,
+  .deal-flow {
+    grid-template-columns: 1fr;
+  }
+
+  .rules-hero {
+    flex-direction: column;
+  }
+
+  .game-tab {
+    flex: 1 1 auto;
+    padding-inline: 10px;
+    font-size: 0.8rem;
   }
 
   .header-badges {
