@@ -517,11 +517,44 @@ impl KellyPolicy {
         side_rules: SideBetRules,
         bankroll: f64,
     ) -> Result<CombinedBetPlan, KellyError> {
+        self.plan_all_with_side_bet_filter(
+            betting_policy,
+            main_weights,
+            main_rules,
+            side_weights,
+            side_rules,
+            bankroll,
+            |_| true,
+        )
+    }
+
+    /// 生成完整下注计划，但只允许通过调用方过滤规则的边注参与竞争。
+    ///
+    /// 过滤发生在 EV 候选比较之前；这比选出幸运 6/7 后再强制 Skip 更合理，
+    /// 因为禁用的幸运边注不应挡住本来可以下注的庄、闲、和或其他边注。
+    #[allow(clippy::too_many_arguments)]
+    pub fn plan_all_with_side_bet_filter<F>(
+        self,
+        betting_policy: &BettingPolicy,
+        main_weights: OutcomeWeights,
+        main_rules: MainBetRules,
+        side_weights: SideBetWeights,
+        side_rules: SideBetRules,
+        bankroll: f64,
+        allows_side_bet: F,
+    ) -> Result<CombinedBetPlan, KellyError>
+    where
+        F: Fn(SideBet) -> bool,
+    {
         validate_bankroll(bankroll)?;
 
         let main_analysis = MainBetAnalysis::from_weights(main_weights, main_rules);
         let side_analysis = SideBetAnalysis::calculate(side_weights, side_rules);
-        let decision = betting_policy.decide_all(main_analysis, side_analysis);
+        let decision = betting_policy.decide_all_with_side_bet_filter(
+            main_analysis,
+            side_analysis,
+            allows_side_bet,
+        );
 
         match *decision.action() {
             CombinedBetAction::Skip { reason } => Ok(CombinedBetPlan {
@@ -568,6 +601,99 @@ impl KellyPolicy {
                 })
             }
         }
+    }
+
+    /// 为所有达到 EV 门槛的目标生成下注计划。
+    ///
+    /// 每个目标先独立计算自己的凯利报价，然后把可下注金额放进同一个
+    /// 本局总风险预算。如果各目标的金额加总超过本金比例、单局金额、桌台
+    /// 金额或本金中的任意一个上限，就按比例同时缩小，避免多注模式把风险
+    /// 上限重复使用多次。
+    #[allow(clippy::too_many_arguments)]
+    pub fn plan_all_multiple_with_side_bet_filter<F>(
+        self,
+        betting_policy: &BettingPolicy,
+        main_weights: OutcomeWeights,
+        main_rules: MainBetRules,
+        side_weights: SideBetWeights,
+        side_rules: SideBetRules,
+        bankroll: f64,
+        allows_side_bet: F,
+    ) -> Result<Vec<CombinedBetPlan>, KellyError>
+    where
+        F: Fn(SideBet) -> bool,
+    {
+        validate_bankroll(bankroll)?;
+
+        let main_analysis = MainBetAnalysis::from_weights(main_weights, main_rules);
+        let side_analysis = SideBetAnalysis::calculate(side_weights, side_rules);
+        let decisions = betting_policy.eligible_all_with_side_bet_filter(
+            main_analysis,
+            side_analysis,
+            allows_side_bet,
+        );
+
+        let mut plans = Vec::with_capacity(decisions.len());
+        for decision in decisions {
+            let bet = decision.candidate();
+            let quote = match bet {
+                BetTarget::Main(main_bet) => self.quote(
+                    main_weights,
+                    main_rules,
+                    betting_policy.rebate(),
+                    main_bet,
+                    bankroll,
+                )?,
+                BetTarget::Side(side_bet) => {
+                    self.quote_side(side_weights, side_rules, side_bet, bankroll)?
+                }
+            };
+
+            let action = if self.strategy.requires_positive_kelly() && quote.kelly_fraction() <= 0.0
+            {
+                CombinedBetPlanAction::Skip {
+                    reason: BetPlanSkipReason::NonPositiveKelly,
+                }
+            } else if quote.amount() <= 0.0 {
+                CombinedBetPlanAction::Skip {
+                    reason: BetPlanSkipReason::RiskLimitIsZero,
+                }
+            } else {
+                CombinedBetPlanAction::Place {
+                    bet,
+                    amount: quote.amount(),
+                }
+            };
+
+            plans.push(CombinedBetPlan {
+                decision,
+                quote: Some(quote),
+                action,
+            });
+        }
+
+        let requested_total: f64 = plans
+            .iter()
+            .filter_map(|plan| match plan.action() {
+                CombinedBetPlanAction::Place { amount, .. } => Some(*amount),
+                CombinedBetPlanAction::Skip { .. } => None,
+            })
+            .sum();
+        let common_limit = (bankroll * self.max_fraction)
+            .min(self.max_round_stake)
+            .min(self.table_limit)
+            .min(bankroll);
+        let scale = if requested_total > common_limit && requested_total > 0.0 {
+            common_limit / requested_total
+        } else {
+            1.0
+        };
+
+        for plan in &mut plans {
+            plan.scale_amount(scale);
+        }
+
+        Ok(plans)
     }
 }
 
@@ -624,6 +750,21 @@ impl KellyQuote {
     /// 返回这笔建议金额对应的期望净盈利。
     pub const fn expected_profit(self) -> f64 {
         self.expected_profit
+    }
+
+    /// 按本局组合风险上限的比例缩放金额。
+    ///
+    /// 单个下注先按自身收益分布得到报价；多下注模式再把所有报价一起按同一
+    /// 比例收缩。凯利比例和金额策略目标比例保持原值，`applied_fraction`、
+    /// 最终金额与期望盈利则同步更新，方便审计“为什么实际金额变小”。
+    fn scaled_amount(self, scale: f64) -> Self {
+        let amount = self.amount * scale;
+        Self {
+            applied_fraction: self.applied_fraction * scale,
+            amount,
+            expected_profit: amount * self.effective_ev,
+            ..self
+        }
     }
 }
 
@@ -709,6 +850,28 @@ impl CombinedBetPlan {
 
     pub const fn action(&self) -> &CombinedBetPlanAction {
         &self.action
+    }
+
+    /// 将本计划的实际金额按组合风险比例缩放。
+    fn scale_amount(&mut self, scale: f64) {
+        let Some(quote) = self.quote else {
+            return;
+        };
+
+        let quote = quote.scaled_amount(scale);
+        self.quote = Some(quote);
+        self.action = match self.action {
+            CombinedBetPlanAction::Place { bet, .. } if quote.amount() > 0.0 => {
+                CombinedBetPlanAction::Place {
+                    bet,
+                    amount: quote.amount(),
+                }
+            }
+            CombinedBetPlanAction::Place { .. } => CombinedBetPlanAction::Skip {
+                reason: BetPlanSkipReason::RiskLimitIsZero,
+            },
+            action => action,
+        };
     }
 }
 
@@ -1144,8 +1307,9 @@ impl Error for KellyError {}
 #[cfg(test)]
 mod tests {
     use super::{
-        BetPlanAction, BetPlanSkipReason, KellyOutcome, KellyPolicy, StakeSizingStrategy,
-        calculate_kelly_fraction, main_bet_kelly_outcomes, side_bet_kelly_outcomes,
+        BetPlanAction, BetPlanSkipReason, CombinedBetPlanAction, KellyOutcome, KellyPolicy,
+        StakeSizingStrategy, calculate_kelly_fraction, main_bet_kelly_outcomes,
+        side_bet_kelly_outcomes,
     };
     use crate::{
         BetTarget, BettingPolicy, MainBet, MainBetAnalysis, MainBetRules, OutcomeWeights,
@@ -1516,6 +1680,50 @@ mod tests {
 
         assert_eq!(quote.bet(), BetTarget::Side(SideBet::AnyPair));
         assert_close(quote.amount(), 25.0);
+    }
+
+    #[test]
+    fn multiple_plans_share_the_common_round_risk_limit() {
+        let side_weights = SideBetWeights::new(
+            100, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, [0; 6], 0, [0; 6], 0,
+        );
+        let betting_policy = BettingPolicy::with_side_bet_minimum(RebateRule::None, 0.2, 0.0);
+        let kelly_policy = KellyPolicy::with_strategy(
+            StakeSizingStrategy::Fixed { amount: 100.0 },
+            1.0,
+            100.0,
+            1_000.0,
+        )
+        .and_then(|policy| policy.with_side_bet_limit(100.0))
+        .expect("多注测试的金额配置应该合法");
+
+        let plans = kelly_policy
+            .plan_all_multiple_with_side_bet_filter(
+                &betting_policy,
+                sample_weights(),
+                MainBetRules::standard(),
+                side_weights,
+                SideBetRules::default(),
+                1_000.0,
+                |_| true,
+            )
+            .expect("应该为所有合格目标生成计划");
+
+        assert_eq!(plans.len(), 2);
+        let total: f64 = plans
+            .iter()
+            .map(|plan| match plan.action() {
+                CombinedBetPlanAction::Place { amount, .. } => *amount,
+                CombinedBetPlanAction::Skip { .. } => 0.0,
+            })
+            .sum();
+        assert_close(total, 100.0);
+        for plan in plans {
+            assert!(matches!(
+                plan.action(),
+                CombinedBetPlanAction::Place { amount, .. } if (*amount - 50.0).abs() < 1e-10
+            ));
+        }
     }
 
     #[test]

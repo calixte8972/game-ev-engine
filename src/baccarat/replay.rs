@@ -39,6 +39,10 @@ pub struct CsvReplayConfig {
     max_round_stake: f64,
     table_limit: f64,
     side_bet_limit: f64,
+    /// 幸运 6、幸运 7、超级幸运 7 允许下注的最后局数；None 表示不限制。
+    lucky_bet_max_round: Option<u32>,
+    /// 是否允许同一局同时下注多个达到门槛的目标。
+    allow_multiple_bets: bool,
 }
 
 impl CsvReplayConfig {
@@ -151,7 +155,27 @@ impl CsvReplayConfig {
             max_round_stake,
             table_limit,
             side_bet_limit,
+            lucky_bet_max_round: None,
+            allow_multiple_bets: false,
         })
+    }
+
+    /// 设置幸运 6/7 可以参与策略的最后一局。
+    ///
+    /// `0` 表示不限制；`N > 0` 表示第 1..=N 局允许，从第 N+1 局起禁用。
+    /// 该限制只移除三种幸运边注，其他主注和边注仍照常比较 EV。
+    pub fn with_lucky_bet_max_round(mut self, max_round: u32) -> Self {
+        self.lucky_bet_max_round = (max_round > 0).then_some(max_round);
+        self
+    }
+
+    /// 设置是否允许同一局同时下注多个合格目标。
+    ///
+    /// 关闭时保留旧行为，只选择有效 EV 最高的一项；开启时会把所有通过
+    /// 各自 EV 门槛的目标都生成计划，并共享本局总风险上限。
+    pub fn with_multiple_bets(mut self, enabled: bool) -> Self {
+        self.allow_multiple_bets = enabled;
+        self
     }
 
     fn rebate(self) -> RebateRule {
@@ -196,6 +220,10 @@ pub struct CsvReplayConfigSnapshot {
     pub max_round_stake: f64,
     pub table_limit: f64,
     pub side_bet_limit: f64,
+    /// null 表示不限制；正整数 N 表示仅前 N 局允许幸运 6/7。
+    pub lucky_bet_max_round: Option<u32>,
+    /// 是否允许一局同时保存多笔下注明细。
+    pub allow_multiple_bets: bool,
 }
 
 /// CSV 文件与时间范围的基础画像。
@@ -395,6 +423,8 @@ pub fn replay_csv_text(
             max_round_stake: config.max_round_stake,
             table_limit: config.table_limit,
             side_bet_limit: config.side_bet_limit,
+            lucky_bet_max_round: config.lucky_bet_max_round,
+            allow_multiple_bets: config.allow_multiple_bets,
         },
         dataset,
         quality,
@@ -692,17 +722,47 @@ fn replay_rounds(
             weights
         };
 
-        let plan = kelly_policy
-            .plan_all(
-                &betting_policy,
-                weights,
-                rules,
-                side_weights,
-                side_rules,
-                current_bankroll,
-            )
-            .map_err(|error| CsvReplayError::Strategy(error.to_string()))?;
-        let decision = *plan.decision();
+        let lucky_bets_allowed = |side_bet| {
+            side_bet_allowed_for_round(side_bet, round.round_no, config.lucky_bet_max_round)
+        };
+        let mut plans = if config.allow_multiple_bets {
+            kelly_policy
+                .plan_all_multiple_with_side_bet_filter(
+                    &betting_policy,
+                    weights,
+                    rules,
+                    side_weights,
+                    side_rules,
+                    current_bankroll,
+                    lucky_bets_allowed,
+                )
+                .map_err(|error| CsvReplayError::Strategy(error.to_string()))?
+        } else {
+            Vec::new()
+        };
+
+        // 多注模式在“没有任何目标达到门槛”时返回空列表。此时仍保留单注
+        // 模式的最佳候选和跳过原因，保证汇总字段及页面提示不会丢失。
+        if plans.is_empty() {
+            plans.push(
+                kelly_policy
+                    .plan_all_with_side_bet_filter(
+                        &betting_policy,
+                        weights,
+                        rules,
+                        side_weights,
+                        side_rules,
+                        current_bankroll,
+                        lucky_bets_allowed,
+                    )
+                    .map_err(|error| CsvReplayError::Strategy(error.to_string()))?,
+            );
+        }
+
+        // 多注计划按有效 EV 从高到低排列，因此第一项继续作为旧版汇总中的
+        // “本局最优候选”；其余项通过 placed_bets 按目标分别累计。
+        let primary_plan = plans.first().expect("回放至少应该保留一个决策计划");
+        let decision = *primary_plan.decision();
         let candidate = decision.candidate();
         let effective_ev = decision.effective_ev();
         summary.candidate_bets.increment(candidate);
@@ -718,60 +778,109 @@ fn replay_rounds(
                 .map_or(effective_ev, |current| current.max(effective_ev)),
         );
 
-        if let CombinedBetPlanAction::Place { bet, amount } = *plan.action() {
-            let outcome = round.outcome.expect("可回放局应该有经过验证的结果");
-            let banker_total = round.banker_total.expect("可回放局应该有庄家最终点数");
-            let quote = plan.quote().expect("Place 动作应该保留凯利报价");
+        let has_placed_plan = plans
+            .iter()
+            .any(|plan| matches!(plan.action(), CombinedBetPlanAction::Place { .. }));
+        let outcome = round.outcome.expect("可回放局应该有经过验证的结果");
+        let banker_total = round.banker_total.expect("可回放局应该有庄家最终点数");
+        let round_result = has_placed_plan.then(|| {
             let cards = round.cards.as_deref().expect("可回放局应该有牌面");
-            let round_result = resolve_round(cards).expect("可回放牌局已通过规则验证");
+            resolve_round(cards).expect("可回放牌局已通过规则验证")
+        });
+        let mut round_profit = 0.0;
+        let mut placed_details = Vec::new();
 
-            // 基础输赢和返水分别结算，既方便审计，也能在报告中看出利润来源。
-            let (base_profit_per_unit, rebate_per_unit) = match bet {
-                BetTarget::Main(main_bet) => (
-                    rules.settle_with_banker_total(main_bet, outcome, banker_total),
-                    rebate.rate_for(main_bet, outcome),
-                ),
-                BetTarget::Side(side_bet) => (side_rules.settle(side_bet, round_result), 0.0),
-            };
-            let base_game_profit = amount * base_profit_per_unit;
-            let rebate_income = amount * rebate_per_unit;
-            let actual_profit = base_game_profit + rebate_income;
-            current_bankroll += actual_profit;
+        for plan in &plans {
+            match *plan.action() {
+                CombinedBetPlanAction::Place { bet, amount } => {
+                    let quote = plan.quote().expect("Place 动作应该保留凯利报价");
+                    // 基础输赢和返水分别结算，既方便审计，也能在报告中看出利润来源。
+                    let (base_profit_per_unit, rebate_per_unit) = match bet {
+                        BetTarget::Main(main_bet) => (
+                            rules.settle_with_banker_total(main_bet, outcome, banker_total),
+                            rebate.rate_for(main_bet, outcome),
+                        ),
+                        BetTarget::Side(side_bet) => (
+                            side_rules.settle(
+                                side_bet,
+                                round_result.expect("边注结算应该有已解析的牌局结果"),
+                            ),
+                            0.0,
+                        ),
+                    };
+                    let base_game_profit = amount * base_profit_per_unit;
+                    let rebate_income = amount * rebate_per_unit;
+                    let actual_profit = base_game_profit + rebate_income;
+                    round_profit += actual_profit;
 
-            summary.placed_bets.increment(bet);
-            summary.placed_bet_count += 1;
-            summary.total_stake += amount;
-            summary.total_expected_profit += quote.expected_profit();
-            summary.base_game_profit += base_game_profit;
-            summary.rebate_income += rebate_income;
+                    summary.placed_bets.increment(bet);
+                    summary.placed_bet_count += 1;
+                    summary.total_stake += amount;
+                    summary.total_expected_profit += quote.expected_profit();
+                    summary.base_game_profit += base_game_profit;
+                    summary.rebate_income += rebate_income;
 
-            let result = if base_profit_per_unit > 0.0 {
-                summary.wins += 1;
-                "win"
-            } else if base_profit_per_unit < 0.0 {
-                summary.losses += 1;
-                "loss"
-            } else {
-                summary.pushes += 1;
-                "push"
-            };
+                    let result = if base_profit_per_unit > 0.0 {
+                        summary.wins += 1;
+                        "win"
+                    } else if base_profit_per_unit < 0.0 {
+                        summary.losses += 1;
+                        "loss"
+                    } else {
+                        summary.pushes += 1;
+                        "push"
+                    };
 
-            peak_bankroll = peak_bankroll.max(current_bankroll);
-            let drawdown = (peak_bankroll - current_bankroll).max(0.0);
-            let drawdown_rate = if peak_bankroll > 0.0 {
-                drawdown / peak_bankroll
-            } else {
-                0.0
-            };
-            if drawdown > summary.maximum_drawdown {
-                summary.maximum_drawdown = drawdown;
+                    let round_result = round_result.expect("已下注局应该有已解析的牌局结果");
+                    placed_details.push((
+                        bet,
+                        quote,
+                        plan.decision().effective_ev(),
+                        round_result,
+                        result,
+                        base_game_profit,
+                        rebate_income,
+                        actual_profit,
+                        amount,
+                    ));
+                }
+                CombinedBetPlanAction::Skip { .. } => {
+                    summary.skipped_bets += 1;
+                }
             }
-            if drawdown_rate > summary.maximum_drawdown_rate {
-                summary.maximum_drawdown_rate = drawdown_rate;
-            }
+        }
 
-            // 报告保留每一笔真实下注。浏览器端通过分页控制一次创建的表格行数，
-            // 因此这里不能再为了 DOM 性能截断业务数据。
+        // 同一局的多笔下注必须同时结算，然后再更新一次本金和回撤；否则后面的
+        // 边注会错误地把同局前一笔输赢当成下一局资金变化。
+        current_bankroll += round_profit;
+        peak_bankroll = peak_bankroll.max(current_bankroll);
+        let drawdown = (peak_bankroll - current_bankroll).max(0.0);
+        let drawdown_rate = if peak_bankroll > 0.0 {
+            drawdown / peak_bankroll
+        } else {
+            0.0
+        };
+        if drawdown > summary.maximum_drawdown {
+            summary.maximum_drawdown = drawdown;
+        }
+        if drawdown_rate > summary.maximum_drawdown_rate {
+            summary.maximum_drawdown_rate = drawdown_rate;
+        }
+
+        // 报告保留每一笔真实下注。浏览器端通过分页控制一次创建的表格行数，
+        // 因此这里不能再为了 DOM 性能截断业务数据。
+        for (
+            bet,
+            quote,
+            effective_ev,
+            round_result,
+            result,
+            base_game_profit,
+            rebate_income,
+            actual_profit,
+            amount,
+        ) in placed_details
+        {
             details.push(CsvBetDetail {
                 started_at: round.started_at.clone(),
                 table_id: round.table_id,
@@ -795,8 +904,6 @@ fn replay_rounds(
                 actual_profit,
                 bankroll_after: current_bankroll,
             });
-        } else {
-            summary.skipped_bets += 1;
         }
 
         // 本局决策和真实结算完成后才扣牌，禁止未来牌泄漏到当前决策。
@@ -824,6 +931,23 @@ fn replay_rounds(
     summary.return_on_initial = summary.total_profit / config.initial_bankroll;
 
     Ok((summary, details))
+}
+
+/// 判断某种边注在当前牌靴局号是否仍可参与策略比较。
+///
+/// 限制只适用于幸运 6、幸运 7 和超级幸运 7。其他边注无论局号多少都返回
+/// true。边界采用包含语义：配置 20 时，第 20 局可下，第 21 局不可下。
+fn side_bet_allowed_for_round(
+    side_bet: SideBet,
+    round_no: u32,
+    lucky_bet_max_round: Option<u32>,
+) -> bool {
+    let is_lucky_bet = matches!(
+        side_bet,
+        SideBet::LuckySix | SideBet::LuckySeven | SideBet::SuperLuckySeven
+    );
+
+    !is_lucky_bet || lucky_bet_max_round.is_none_or(|max_round| round_no <= max_round)
 }
 
 /// 把一方最终实际使用的两张或三张牌转换成稳定、易读的牌面字符串。
@@ -1031,8 +1155,11 @@ impl Error for CsvReplayError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{CsvReplayConfig, parse_raw_cards, provider_card, replay_csv_text};
-    use crate::{MainBetRules, StakeSizingStrategy};
+    use super::{
+        CsvReplayConfig, parse_raw_cards, provider_card, replay_csv_text,
+        side_bet_allowed_for_round,
+    };
+    use crate::{MainBetRules, SideBet, StakeSizingStrategy};
 
     const HEADER: &str =
         "__source_pk,table_id,session_id,round_no,started_at,settled_at,raw_cards,result_code\n";
@@ -1053,6 +1180,29 @@ mod tests {
             .expect("本局应该有牌");
         let text: Vec<String> = cards.into_iter().map(|card| card.to_string()).collect();
         assert_eq!(text, ["JD", "4D", "2H", "JD", "7H", "5H"]);
+    }
+
+    #[test]
+    fn lucky_bet_round_limit_includes_the_configured_boundary() {
+        let limit = Some(20);
+
+        for side_bet in [
+            SideBet::LuckySix,
+            SideBet::LuckySeven,
+            SideBet::SuperLuckySeven,
+        ] {
+            assert!(side_bet_allowed_for_round(side_bet, 20, limit));
+            assert!(!side_bet_allowed_for_round(side_bet, 21, limit));
+            assert!(side_bet_allowed_for_round(side_bet, 999, None));
+        }
+
+        // 局数限制不影响普通对子、大小、龙宝等其他边注。
+        assert!(side_bet_allowed_for_round(SideBet::BankerPair, 21, limit));
+        assert!(side_bet_allowed_for_round(
+            SideBet::BankerDragonBonus,
+            21,
+            limit
+        ));
     }
 
     #[test]

@@ -141,6 +141,22 @@
             </label>
 
             <label class="field">
+              <span>幸运 6/7 最晚下注局数</span>
+              <span class="input-suffix">
+                <input id="lucky-bet-max-round" type="number" value="0" min="0" step="1" />
+                <span>局</span>
+              </span>
+            </label>
+
+            <label class="mode-option policy-toggle">
+              <input id="allow-multiple-bets" type="checkbox" />
+              <span>
+                <strong>允许同局多下注</strong>
+                <small>开启后所有达到各自 EV 门槛的目标都会计划下注，并共享本局总风险上限。</small>
+              </span>
+            </label>
+
+            <label class="field">
               <span>桌台金额上限</span>
               <span class="input-prefix">
                 <span>¥</span>
@@ -150,7 +166,7 @@
           </div>
 
           <p class="field-help policy-help">
-            方向仍由 EV 门槛决定；金额可以使用分数凯利、固定金额、固定本金比例、固定期望盈利或目标波动率。所有策略都会经过本金比例、单局金额、桌台和边注上限。
+            方向仍由 EV 门槛决定；金额可以使用分数凯利、固定金额、固定本金比例、固定期望盈利或目标波动率。所有策略都会经过本金比例、单局金额、桌台和边注上限。幸运 6/7 最晚局数填 0 表示不限制；填 N 时仅第 1 至 N 局可下注幸运 6、幸运 7 和超级幸运 7。关闭“同局多下注”时只选最优 EV，开启后多个合格目标会按比例共享本局总风险预算。
           </p>
 
           <div class="subsection-heading shoe-heading">
@@ -253,6 +269,28 @@
             <strong id="recommended-ev">—</strong>
           </div>
           <span id="recommended-action" class="action-pill">—</span>
+        </div>
+
+        <div id="multiple-recommendations" class="multiple-recommendations" hidden>
+          <div class="subsection-heading">
+            <h3>同局合格下注</h3>
+            <span><strong id="multiple-bet-count">—</strong> · 合计 <strong id="multiple-total-amount">—</strong></span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">目标</th>
+                  <th scope="col">类别</th>
+                  <th scope="col">有效 EV</th>
+                  <th scope="col">建议金额</th>
+                  <th scope="col">期望盈利</th>
+                  <th scope="col">动作</th>
+                </tr>
+              </thead>
+              <tbody id="multiple-recommendation-body"></tbody>
+            </table>
+          </div>
         </div>
 
         <div class="decision-grid" aria-label="资金决策">

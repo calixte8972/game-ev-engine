@@ -20,6 +20,10 @@ if (!/<input id="bankroll"[^>]*step="0\.01"/.test(pageHtml)) {
   throw new Error("初始本金输入框必须允许 0.01 精度，避免整数本金被判为非法");
 }
 
+if (!/id="allow-multiple-bets"/.test(pageHtml)) {
+  throw new Error("页面没有同局多下注开关");
+}
+
 if (!/id="replay-pagination"/.test(pageHtml)
     || !/id="replay-last-page"/.test(pageHtml)) {
   throw new Error("CSV 全量下注明细必须提供分页和末页导航");
@@ -34,6 +38,7 @@ const manual = JSON.parse(
   analyzeBaccaratStrategy(
     "consumed", 8, "", 0.009, 0, 10_000, 0.05, 500, 10_000,
     "standard", "full_kelly", 0, 0, 100,
+    false,
   ),
 );
 
@@ -45,6 +50,7 @@ const bankrollFraction = JSON.parse(
   analyzeBaccaratStrategy(
     "consumed", 8, "", 0.02, 0, 10_000, 1, 1_000, 1_000,
     "standard", "bankroll_fraction", 0.02, 0, 100,
+    false,
   ),
 );
 
@@ -59,8 +65,22 @@ const sideRecommendation = JSON.parse(
   analyzeBaccaratStrategy(
     "remaining", 8, "AS AC AD AH AS AC", 0, 0, 1_000, 1, 500, 1_000,
     "standard", "full_kelly", 0, 0, 25,
+    false,
   ),
 );
+
+const multipleRecommendation = JSON.parse(
+  analyzeBaccaratStrategy(
+    "consumed", 8, "", 0, -1, 1_000, 1, 500, 1_000,
+    "standard", "fixed", 100, -1, 25, true,
+  ),
+);
+
+if (!multipleRecommendation.allow_multiple_bets
+    || multipleRecommendation.recommendations.length < 2
+    || multipleRecommendation.total_suggested_amount > 500 + 1e-9) {
+  throw new Error("同局多下注没有返回多个合格目标，或没有共享本局总风险上限");
+}
 
 if (sideRecommendation.recommendation.candidate_bet !== "banker_pair"
     || sideRecommendation.recommendation.suggested_amount !== 25) {
@@ -100,6 +120,8 @@ const tinyReplay = JSON.parse(
   replayBaccaratCsv(
     tinyCsv, 8, 0.02, 0, 10_000, 0.05, 1_000, 1_000,
     "no_commission", "half_kelly", 0, 0, 100,
+    1,
+    false,
   ),
 );
 
@@ -109,6 +131,8 @@ const legacyReplay = JSON.parse(
   replayBaccaratCsv(
     tinyCsv, 8, 0.02, 0, 10_000, 0.05, 1_000, 1_000,
     "standard", "fixed", 100, Number.NaN, Number.NaN,
+    0,
+    false,
   ),
 );
 
@@ -117,8 +141,13 @@ if (tinyReplay.summary.replayed_rounds !== 2) {
 }
 
 if (legacyReplay.config.minimum_side_bet_ev !== 0
-    || legacyReplay.config.side_bet_limit !== 1_000) {
+    || legacyReplay.config.side_bet_limit !== 1_000
+    || legacyReplay.config.lucky_bet_max_round !== null) {
   throw new Error("旧页面缺少边注配置字段时没有正确回退");
+}
+
+if (tinyReplay.config.lucky_bet_max_round !== 1) {
+  throw new Error("幸运 6/7 最晚下注局数没有进入 WASM 回放配置");
 }
 
 if (!tinyReplay.bets[0]?.player_cards
@@ -165,6 +194,8 @@ if (csvPath) {
     replayBaccaratCsv(
       csvText, 8, 0.009, 0, 10_000, 0.05, 500, 10_000,
       "no_commission", "half_kelly", 0, 0, 100,
+      0,
+      false,
     ),
   );
   output.full_replay = {

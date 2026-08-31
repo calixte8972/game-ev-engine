@@ -200,6 +200,23 @@ impl BettingPolicy {
         main_analysis: MainBetAnalysis,
         side_analysis: SideBetAnalysis,
     ) -> CombinedBetDecision {
+        self.decide_all_with_side_bet_filter(main_analysis, side_analysis, |_| true)
+    }
+
+    /// 在比较全部下注方向前，先用调用方规则过滤暂时不可下注的边注。
+    ///
+    /// `allows_side_bet` 只控制边注候选是否进入本局比较；庄、闲、和三种主注
+    /// 始终保留。CSV 回放用它实现“超过指定局数后禁用幸运 6/7”，同时不会
+    /// 因为幸运边注被禁用而错误跳过其他仍然合法的下注方向。
+    pub fn decide_all_with_side_bet_filter<F>(
+        &self,
+        main_analysis: MainBetAnalysis,
+        side_analysis: SideBetAnalysis,
+        allows_side_bet: F,
+    ) -> CombinedBetDecision
+    where
+        F: Fn(SideBet) -> bool,
+    {
         let main_candidates = [MainBet::Player, MainBet::Banker, MainBet::Tie].map(|bet| {
             let metrics = main_analysis.effective_metrics(bet, self.rebate);
             CandidateMetrics {
@@ -210,19 +227,23 @@ impl BettingPolicy {
                 minimum_ev: self.minimum_effective_ev,
             }
         });
-        let side_candidates = SideBet::ALL.map(|bet| {
-            let metrics = side_analysis.metrics(bet);
-            CandidateMetrics {
-                target: BetTarget::Side(bet),
-                base_ev: metrics.ev(),
-                rebate_ev: 0.0,
-                effective_ev: metrics.ev(),
-                minimum_ev: self.minimum_side_bet_ev,
-            }
-        });
 
         let mut best_overall = main_candidates[0];
         let mut best_eligible: Option<CandidateMetrics> = None;
+
+        let side_candidates = SideBet::ALL
+            .into_iter()
+            .filter(|bet| allows_side_bet(*bet))
+            .map(|bet| {
+                let metrics = side_analysis.metrics(bet);
+                CandidateMetrics {
+                    target: BetTarget::Side(bet),
+                    base_ev: metrics.ev(),
+                    rebate_ev: 0.0,
+                    effective_ev: metrics.ev(),
+                    minimum_ev: self.minimum_side_bet_ev,
+                }
+            });
 
         for candidate in main_candidates.into_iter().chain(side_candidates) {
             if candidate.effective_ev > best_overall.effective_ev {
@@ -262,6 +283,76 @@ impl BettingPolicy {
             minimum_ev: candidate.minimum_ev,
             action,
         }
+    }
+
+    /// 返回所有达到各自 EV 门槛的下注目标。
+    ///
+    /// 结果按有效 EV 从高到低排列，因此第一个目标仍然是原来单注模式下
+    /// 的“最优目标”。开启多注模式时，调用方可以继续使用后面的合格目标。
+    pub fn eligible_all(
+        &self,
+        main_analysis: MainBetAnalysis,
+        side_analysis: SideBetAnalysis,
+    ) -> Vec<CombinedBetDecision> {
+        self.eligible_all_with_side_bet_filter(main_analysis, side_analysis, |_| true)
+    }
+
+    /// 返回通过 EV 门槛且没有被临时边注过滤器移除的全部目标。
+    pub fn eligible_all_with_side_bet_filter<F>(
+        &self,
+        main_analysis: MainBetAnalysis,
+        side_analysis: SideBetAnalysis,
+        allows_side_bet: F,
+    ) -> Vec<CombinedBetDecision>
+    where
+        F: Fn(SideBet) -> bool,
+    {
+        let mut candidates = Vec::with_capacity(3 + SideBet::ALL.len());
+
+        for bet in [MainBet::Player, MainBet::Banker, MainBet::Tie] {
+            let metrics = main_analysis.effective_metrics(bet, self.rebate);
+            candidates.push(CandidateMetrics {
+                target: BetTarget::Main(bet),
+                base_ev: metrics.base_ev(),
+                rebate_ev: metrics.rebate_ev(),
+                effective_ev: metrics.effective_ev(),
+                minimum_ev: self.minimum_effective_ev,
+            });
+        }
+
+        for bet in SideBet::ALL {
+            if !allows_side_bet(bet) {
+                continue;
+            }
+            let metrics = side_analysis.metrics(bet);
+            candidates.push(CandidateMetrics {
+                target: BetTarget::Side(bet),
+                base_ev: metrics.ev(),
+                rebate_ev: 0.0,
+                effective_ev: metrics.ev(),
+                minimum_ev: self.minimum_side_bet_ev,
+            });
+        }
+
+        let mut decisions: Vec<_> = candidates
+            .into_iter()
+            .filter(|candidate| candidate.effective_ev >= candidate.minimum_ev)
+            .map(|candidate| CombinedBetDecision {
+                candidate: candidate.target,
+                base_ev: candidate.base_ev,
+                rebate_ev: candidate.rebate_ev,
+                effective_ev: candidate.effective_ev,
+                minimum_ev: candidate.minimum_ev,
+                action: CombinedBetAction::Place {
+                    bet: candidate.target,
+                },
+            })
+            .collect();
+
+        // `total_cmp` 对有限 EV 和异常浮点值都有确定顺序，避免排序过程中
+        // 因 `partial_cmp(...).unwrap()` 发生崩溃。正常输入下 EV 都是有限值。
+        decisions.sort_by(|left, right| right.effective_ev.total_cmp(&left.effective_ev));
+        decisions
     }
 }
 impl BetDecision {
@@ -445,6 +536,48 @@ mod tests {
                 bet: BetTarget::Side(SideBet::LuckySix)
             }
         ));
+    }
+
+    #[test]
+    fn decide_all_filter_removes_lucky_bets_without_blocking_other_targets() {
+        let policy = BettingPolicy::with_side_bet_minimum(RebateRule::None, 0.0, 0.0);
+        let decision = policy.decide_all_with_side_bet_filter(
+            sample_analysis(),
+            side_analysis_with_positive_lucky_six(),
+            |bet| {
+                !matches!(
+                    bet,
+                    SideBet::LuckySix | SideBet::LuckySeven | SideBet::SuperLuckySeven
+                )
+            },
+        );
+
+        // 幸运 6 原本以 EV=1.6 胜出；过滤后策略继续比较其他方向，
+        // 因此改选这组测试数据中 EV=0.5 的和注，而不是整局停止下注。
+        assert_eq!(decision.candidate(), BetTarget::Main(MainBet::Tie));
+        assert_close(decision.effective_ev(), 0.5);
+        assert!(matches!(
+            decision.action(),
+            CombinedBetAction::Place {
+                bet: BetTarget::Main(MainBet::Tie)
+            }
+        ));
+    }
+
+    #[test]
+    fn eligible_all_returns_every_target_that_reaches_its_threshold() {
+        let policy = BettingPolicy::with_side_bet_minimum(RebateRule::None, 0.2, 0.0);
+        let decisions =
+            policy.eligible_all(sample_analysis(), side_analysis_with_positive_any_pair());
+
+        assert_eq!(decisions[0].candidate(), BetTarget::Side(SideBet::AnyPair));
+        assert_eq!(decisions[1].candidate(), BetTarget::Main(MainBet::Tie));
+        assert_eq!(decisions.len(), 2);
+        assert!(
+            decisions
+                .iter()
+                .all(|decision| matches!(decision.action(), CombinedBetAction::Place { .. }))
+        );
     }
 
     #[test]

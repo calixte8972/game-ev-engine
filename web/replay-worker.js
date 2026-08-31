@@ -31,6 +31,10 @@ self.addEventListener("message", async (event) => {
       config.minimumEffectiveEv,
     );
     const sideBetLimit = finiteNumberOr(config.sideBetLimit, config.maxRoundStake);
+    // 新字段缺失时按 0 处理，0 在 Rust 核心中表示“不限制局数”。
+    const luckyBetMaxRound = finiteNumberOr(config.luckyBetMaxRound, 0);
+    // 新字段缺失时关闭多注，保证旧页面仍然只选择一个最优目标。
+    const allowMultipleBets = Boolean(config.allowMultipleBets);
     const started = performance.now();
     const json = replayBaccaratCsv(
       csvText,
@@ -46,6 +50,8 @@ self.addEventListener("message", async (event) => {
       config.strategyParameter,
       minimumSideBetEv,
       sideBetLimit,
+      luckyBetMaxRound,
+      allowMultipleBets,
     );
     self.postMessage({
       type: "complete",

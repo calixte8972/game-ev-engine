@@ -12,7 +12,7 @@
 use serde::Serialize;
 
 use crate::{
-    BetPlanSkipReason, BettingPolicy, BlackjackAnalysis, BlackjackRules, Card,
+    BetPlanSkipReason, BettingPolicy, BlackjackAnalysis, BlackjackRules, Card, CombinedBetPlan,
     CombinedBetPlanAction, CsvReplayConfig, EffectiveBetMetrics, KellyPolicy, MainBet,
     MainBetAnalysis, MainBetRules, RebateRule, Shoe, SideBet, SideBetAnalysis, SideBetMetrics,
     SideBetRules, SkipReason, StakeSizingStrategy, analyze_blackjack_hand,
@@ -63,8 +63,9 @@ pub fn analyze_baccarat_strategy(
     strategy_parameter: f64,
     minimum_side_bet_ev: f64,
     side_bet_limit: f64,
+    allow_multiple_bets: bool,
 ) -> Result<String, JsValue> {
-    analyze_baccarat_strategy_json_with_side_bets(
+    analyze_baccarat_strategy_json_with_side_bets_and_multiple(
         source_mode,
         decks,
         cards_text,
@@ -79,6 +80,7 @@ pub fn analyze_baccarat_strategy(
         strategy_parameter,
         minimum_side_bet_ev,
         side_bet_limit,
+        allow_multiple_bets,
     )
     .map_err(|message| JsValue::from_str(&message))
 }
@@ -103,8 +105,10 @@ pub fn replay_baccarat_csv(
     strategy_parameter: f64,
     minimum_side_bet_ev: f64,
     side_bet_limit: f64,
+    lucky_bet_max_round: u32,
+    allow_multiple_bets: bool,
 ) -> Result<String, JsValue> {
-    replay_baccarat_csv_json_with_side_bets(
+    replay_baccarat_csv_json_with_side_bets_and_lucky_limit_and_multiple(
         csv_text,
         decks,
         rebate_rate,
@@ -118,6 +122,8 @@ pub fn replay_baccarat_csv(
         strategy_parameter,
         minimum_side_bet_ev,
         side_bet_limit,
+        lucky_bet_max_round,
+        allow_multiple_bets,
     )
     .map_err(|message| JsValue::from_str(&message))
 }
@@ -311,6 +317,47 @@ pub fn analyze_baccarat_strategy_json_with_side_bets(
     minimum_side_bet_ev: f64,
     side_bet_limit: f64,
 ) -> Result<String, String> {
+    analyze_baccarat_strategy_json_with_side_bets_and_multiple(
+        source_mode,
+        decks,
+        cards_text,
+        rebate_rate,
+        minimum_effective_ev,
+        bankroll,
+        max_fraction,
+        max_round_stake,
+        table_limit,
+        payout_rule,
+        stake_strategy,
+        strategy_parameter,
+        minimum_side_bet_ev,
+        side_bet_limit,
+        false,
+    )
+}
+
+/// 主注和边注共同参与策略，并可选择一局下注多个合格目标。
+///
+/// `allow_multiple_bets = false` 保留旧行为，只返回有效 EV 最高的一项；开启后
+/// 会返回所有达到各自 EV 门槛的目标，并让它们共享本局的资金上限。
+#[allow(clippy::too_many_arguments)]
+pub fn analyze_baccarat_strategy_json_with_side_bets_and_multiple(
+    source_mode: &str,
+    decks: u8,
+    cards_text: &str,
+    rebate_rate: f64,
+    minimum_effective_ev: f64,
+    bankroll: f64,
+    max_fraction: f64,
+    max_round_stake: f64,
+    table_limit: f64,
+    payout_rule: &str,
+    stake_strategy: &str,
+    strategy_parameter: f64,
+    minimum_side_bet_ev: f64,
+    side_bet_limit: f64,
+    allow_multiple_bets: bool,
+) -> Result<String, String> {
     if !rebate_rate.is_finite() || !(0.0..=1.0).contains(&rebate_rate) {
         return Err("返水比例必须是 0% 到 100% 之间的有限数字".to_owned());
     }
@@ -361,23 +408,51 @@ pub fn analyze_baccarat_strategy_json_with_side_bets(
     let (weights, side_weights) = calculate_main_and_side_outcomes(&shoe)
         .map_err(|error| format!("概率与 EV 计算失败：{error}"))?;
     let analysis = MainBetAnalysis::from_weights(weights, rules);
-    let side_analysis = SideBetAnalysis::calculate(side_weights, SideBetRules::default());
-    let plan = kelly_policy
-        .plan_all(
-            &policy,
-            weights,
-            rules,
-            side_weights,
-            SideBetRules::default(),
-            bankroll,
-        )
-        .map_err(|error| format!("下注策略计算失败：{error}"))?;
-    let decision = *plan.decision();
-    let quote = plan.quote();
-    let (action, reason) = match *plan.action() {
-        CombinedBetPlanAction::Place { .. } => ("place", None),
-        CombinedBetPlanAction::Skip { reason } => ("skip", Some(skip_reason_code(reason))),
+    let side_rules = SideBetRules::default();
+    let side_analysis = SideBetAnalysis::calculate(side_weights, side_rules);
+    let plans = if allow_multiple_bets {
+        let plans = kelly_policy
+            .plan_all_multiple_with_side_bet_filter(
+                &policy,
+                weights,
+                rules,
+                side_weights,
+                side_rules,
+                bankroll,
+                |_| true,
+            )
+            .map_err(|error| format!("下注策略计算失败：{error}"))?;
+
+        // 没有任何目标达到门槛时，多注接口返回空列表；保留一个旧版单注
+        // 计划，这样页面仍能显示“最优候选”和明确的跳过原因。
+        if plans.is_empty() {
+            vec![
+                kelly_policy
+                    .plan_all(&policy, weights, rules, side_weights, side_rules, bankroll)
+                    .map_err(|error| format!("下注策略计算失败：{error}"))?,
+            ]
+        } else {
+            plans
+        }
+    } else {
+        vec![
+            kelly_policy
+                .plan_all(&policy, weights, rules, side_weights, side_rules, bankroll)
+                .map_err(|error| format!("下注策略计算失败：{error}"))?,
+        ]
     };
+    let primary_plan = plans.first().expect("浏览器分析至少应该返回一个下注计划");
+    let recommendation = browser_recommendation(*primary_plan, bankroll);
+    let recommendations: Vec<_> = plans
+        .iter()
+        .copied()
+        .map(|plan| browser_recommendation(plan, bankroll))
+        .collect();
+    let total_suggested_amount = recommendations
+        .iter()
+        .filter(|recommendation| recommendation.action == "place")
+        .map(|recommendation| recommendation.suggested_amount)
+        .sum();
 
     let response = BrowserAnalysis {
         source_mode: normalized_mode,
@@ -392,6 +467,7 @@ pub fn analyze_baccarat_strategy_json_with_side_bets(
         minimum_main_bet_ev: minimum_effective_ev,
         minimum_side_bet_ev,
         side_bet_limit,
+        allow_multiple_bets,
         bets: BrowserBets {
             player: BrowserBetMetrics::from_analysis(analysis, MainBet::Player, rebate),
             banker: BrowserBetMetrics::from_analysis(analysis, MainBet::Banker, rebate),
@@ -435,25 +511,9 @@ pub fn analyze_baccarat_strategy_json_with_side_bets(
                 "点差4/5/6/7/8/9：1/2/3/5/10/30:1；Natural赢/双方Natural和为Push",
             ),
         },
-        recommendation: BrowserRecommendation {
-            candidate_bet: decision.candidate().as_str(),
-            bet_category: if decision.candidate().is_side() {
-                "side"
-            } else {
-                "main"
-            },
-            base_ev: decision.base_ev(),
-            rebate_ev: decision.rebate_ev(),
-            effective_ev: decision.effective_ev(),
-            action,
-            reason,
-            bankroll,
-            kelly_fraction: quote.map(|value| value.kelly_fraction()),
-            strategy_fraction: quote.map(|value| value.strategy_fraction()),
-            applied_fraction: quote.map(|value| value.applied_fraction()),
-            suggested_amount: quote.map_or(0.0, |value| value.amount()),
-            expected_profit: quote.map_or(0.0, |value| value.expected_profit()),
-        },
+        recommendation,
+        recommendations,
+        total_suggested_amount,
     };
 
     serde_json::to_string(&response).map_err(|error| format!("结果序列化失败：{error}"))
@@ -508,6 +568,80 @@ pub fn replay_baccarat_csv_json_with_side_bets(
     minimum_side_bet_ev: f64,
     side_bet_limit: f64,
 ) -> Result<String, String> {
+    replay_baccarat_csv_json_with_side_bets_and_lucky_limit(
+        csv_text,
+        decks,
+        rebate_rate,
+        minimum_effective_ev,
+        initial_bankroll,
+        max_fraction,
+        max_round_stake,
+        table_limit,
+        payout_rule,
+        stake_strategy,
+        strategy_parameter,
+        minimum_side_bet_ev,
+        side_bet_limit,
+        0,
+    )
+}
+
+/// 主注、边注和幸运 6/7 局数限制共同参与的完整 CSV 回放入口。
+#[allow(clippy::too_many_arguments)]
+pub fn replay_baccarat_csv_json_with_side_bets_and_lucky_limit(
+    csv_text: &str,
+    decks: u8,
+    rebate_rate: f64,
+    minimum_effective_ev: f64,
+    initial_bankroll: f64,
+    max_fraction: f64,
+    max_round_stake: f64,
+    table_limit: f64,
+    payout_rule: &str,
+    stake_strategy: &str,
+    strategy_parameter: f64,
+    minimum_side_bet_ev: f64,
+    side_bet_limit: f64,
+    lucky_bet_max_round: u32,
+) -> Result<String, String> {
+    replay_baccarat_csv_json_with_side_bets_and_lucky_limit_and_multiple(
+        csv_text,
+        decks,
+        rebate_rate,
+        minimum_effective_ev,
+        initial_bankroll,
+        max_fraction,
+        max_round_stake,
+        table_limit,
+        payout_rule,
+        stake_strategy,
+        strategy_parameter,
+        minimum_side_bet_ev,
+        side_bet_limit,
+        lucky_bet_max_round,
+        false,
+    )
+}
+
+/// 主注、边注、幸运 6/7 局数限制和同局多下注共同参与的完整 CSV 回放入口。
+#[allow(clippy::too_many_arguments)]
+pub fn replay_baccarat_csv_json_with_side_bets_and_lucky_limit_and_multiple(
+    csv_text: &str,
+    decks: u8,
+    rebate_rate: f64,
+    minimum_effective_ev: f64,
+    initial_bankroll: f64,
+    max_fraction: f64,
+    max_round_stake: f64,
+    table_limit: f64,
+    payout_rule: &str,
+    stake_strategy: &str,
+    strategy_parameter: f64,
+    minimum_side_bet_ev: f64,
+    side_bet_limit: f64,
+    lucky_bet_max_round: u32,
+    allow_multiple_bets: bool,
+) -> Result<String, String> {
     // 兼容仍在浏览器中打开的旧页面：旧页面没有这两个后来新增的字段，
     // `undefined` 经过 wasm-bindgen 会变成 NaN。只有两项同时缺失时才按旧版
     // 语义回退；若调用者只传了一个非法值，仍交给领域层返回明确错误。
@@ -533,7 +667,9 @@ pub fn replay_baccarat_csv_json_with_side_bets(
         table_limit,
         side_bet_limit,
     )
-    .map_err(|error| format!("回放配置不合法：{error}"))?;
+    .map_err(|error| format!("回放配置不合法：{error}"))?
+    .with_lucky_bet_max_round(lucky_bet_max_round)
+    .with_multiple_bets(allow_multiple_bets);
     let report = replay_csv_text(csv_text, config).map_err(|error| error.to_string())?;
 
     serde_json::to_string(&report).map_err(|error| format!("回放结果序列化失败：{error}"))
@@ -588,6 +724,39 @@ fn skip_reason_code(reason: BetPlanSkipReason) -> &'static str {
     }
 }
 
+/// 把一个核心下注计划转换成浏览器稳定的 JSON 行。
+///
+/// 多注模式和旧版单注模式共用这一个转换函数，避免前端收到两套字段含义不
+/// 一致的结果。`plan` 已经完成 EV 门槛、凯利公式和所有金额上限检查。
+fn browser_recommendation(plan: CombinedBetPlan, bankroll: f64) -> BrowserRecommendation {
+    let decision = *plan.decision();
+    let quote = plan.quote();
+    let (action, reason) = match *plan.action() {
+        CombinedBetPlanAction::Place { .. } => ("place", None),
+        CombinedBetPlanAction::Skip { reason } => ("skip", Some(skip_reason_code(reason))),
+    };
+
+    BrowserRecommendation {
+        candidate_bet: decision.candidate().as_str(),
+        bet_category: if decision.candidate().is_side() {
+            "side"
+        } else {
+            "main"
+        },
+        base_ev: decision.base_ev(),
+        rebate_ev: decision.rebate_ev(),
+        effective_ev: decision.effective_ev(),
+        action,
+        reason,
+        bankroll,
+        kelly_fraction: quote.map(|value| value.kelly_fraction()),
+        strategy_fraction: quote.map(|value| value.strategy_fraction()),
+        applied_fraction: quote.map(|value| value.applied_fraction()),
+        suggested_amount: quote.map_or(0.0, |value| value.amount()),
+        expected_profit: quote.map_or(0.0, |value| value.expected_profit()),
+    }
+}
+
 /// 把空格、逗号、分号或中文顿号分隔的牌面文本解析成牌列表。
 fn parse_cards(input: &str) -> Result<Vec<Card>, String> {
     input
@@ -635,10 +804,15 @@ struct BrowserAnalysis {
     minimum_main_bet_ev: f64,
     minimum_side_bet_ev: f64,
     side_bet_limit: f64,
+    /// 是否允许一局把多个达到门槛的目标一起下注。
+    allow_multiple_bets: bool,
     bets: BrowserBets,
     side_bet_rules: &'static str,
     side_bets: BrowserSideBets,
+    /// 主推荐在第一项；多注模式下其余合格目标也会出现在这里。
     recommendation: BrowserRecommendation,
+    recommendations: Vec<BrowserRecommendation>,
+    total_suggested_amount: f64,
 }
 
 /// 三个主注方向的指标。
@@ -737,8 +911,10 @@ mod tests {
 
     use super::{
         analyze_baccarat_json, analyze_baccarat_strategy_json,
-        analyze_baccarat_strategy_json_with_side_bets, analyze_blackjack_json,
+        analyze_baccarat_strategy_json_with_side_bets,
+        analyze_baccarat_strategy_json_with_side_bets_and_multiple, analyze_blackjack_json,
         replay_baccarat_csv_json, replay_baccarat_csv_json_with_side_bets,
+        replay_baccarat_csv_json_with_side_bets_and_lucky_limit_and_multiple,
     };
 
     #[test]
@@ -1057,6 +1233,33 @@ mod tests {
     }
 
     #[test]
+    fn multiple_strategy_returns_all_eligible_targets_and_shares_round_limit() {
+        let value: Value = serde_json::from_str(
+            &analyze_baccarat_strategy_json_with_side_bets_and_multiple(
+                "consumed", 8, "", 0.0, -1.0, 1_000.0, 1.0, 500.0, 1_000.0, "standard", "fixed",
+                100.0, -1.0, 25.0, true,
+            )
+            .expect("同局多下注应该返回多个目标"),
+        )
+        .expect("接口应返回合法 JSON");
+
+        assert_eq!(value["allow_multiple_bets"], true);
+        assert!(
+            value["recommendations"]
+                .as_array()
+                .expect("多注结果应为数组")
+                .len()
+                >= 2
+        );
+        assert!(
+            value["total_suggested_amount"]
+                .as_f64()
+                .expect("多注合计金额应为数字")
+                <= 500.0 + 1e-12
+        );
+    }
+
+    #[test]
     fn csv_replay_uses_the_selected_payout_and_stake_strategy() {
         let csv = "__source_pk,table_id,session_id,round_no,started_at,settled_at,raw_cards,result_code\n\
                    a,1,9001,1,2026-08-20 00:00:12,2026-08-20 00:00:44,\"b:24,31,45;p:31,42,47\",36\n";
@@ -1114,5 +1317,29 @@ mod tests {
 
         assert_eq!(value["config"]["minimum_side_bet_ev"], 0.0);
         assert_eq!(value["config"]["side_bet_limit"], 1_000.0);
+        assert_eq!(value["config"]["lucky_bet_max_round"], Value::Null);
+    }
+
+    #[test]
+    fn csv_replay_settles_multiple_bets_from_the_same_round_together() {
+        let csv = "__source_pk,table_id,session_id,round_no,started_at,settled_at,raw_cards,result_code\n\
+                   a,1,9001,1,2026-08-20 00:00:12,2026-08-20 00:00:44,\"b:24,31,45;p:31,42,47\",36\n";
+        let value: Value = serde_json::from_str(
+            &replay_baccarat_csv_json_with_side_bets_and_lucky_limit_and_multiple(
+                csv, 8, 0.0, -1.0, 10_000.0, 1.0, 1_000.0, 1_000.0, "standard", "fixed", 100.0,
+                -1.0, 100.0, 0, true,
+            )
+            .expect("多注回放应该成功"),
+        )
+        .expect("回放接口应返回合法 JSON");
+
+        assert_eq!(value["config"]["allow_multiple_bets"], true);
+        assert!(
+            value["summary"]["placed_bet_count"]
+                .as_u64()
+                .expect("下注笔数应为整数")
+                > 1
+        );
+        assert!(value["bets"].as_array().expect("明细应为数组").len() > 1);
     }
 }

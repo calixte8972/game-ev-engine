@@ -12,6 +12,8 @@ const errorMessage = document.querySelector("#error-message");
 const resultBody = document.querySelector("#result-body");
 const sideResultBody = document.querySelector("#side-result-body");
 const recommendation = document.querySelector("#recommendation");
+const multipleRecommendations = document.querySelector("#multiple-recommendations");
+const multipleRecommendationBody = document.querySelector("#multiple-recommendation-body");
 const csvFileInput = document.querySelector("#csv-file");
 const selectedFile = document.querySelector("#selected-file");
 const replayButton = document.querySelector("#replay-button");
@@ -35,6 +37,7 @@ const strategyParameterWrapper = document.querySelector("#strategy-parameter-wra
 const strategyParameterInput = document.querySelector("#strategy-parameter");
 const strategyParameterPrefix = document.querySelector("#strategy-parameter-prefix");
 const strategyParameterSuffix = document.querySelector("#strategy-parameter-suffix");
+const allowMultipleBets = document.querySelector("#allow-multiple-bets");
 const gameTabs = document.querySelectorAll(".game-tab");
 const blackjackForm = document.querySelector("#blackjack-form");
 const blackjackAnalyzeButton = document.querySelector("#blackjack-analyze-button");
@@ -130,7 +133,7 @@ let currentReplayPage = 1;
 
 // URL 上的版本标记强制浏览器为当前页面创建同版本 Worker，避免发布后仍复用
 // 旧 Worker，进而把新增配置字段当成 undefined 传给 WASM。
-const replayWorker = new Worker(new URL("./replay-worker.js?v=15", import.meta.url), {
+const replayWorker = new Worker(new URL("./replay-worker.js?v=17", import.meta.url), {
   type: "module",
 });
 
@@ -180,6 +183,9 @@ function readNumber(selector, label, options = {}) {
   if (options.max != null && value > options.max) {
     throw new Error(`${label}不能大于 ${options.max}`);
   }
+  if (options.integer && !Number.isInteger(value)) {
+    throw new Error(`${label}必须是整数`);
+  }
   return value;
 }
 
@@ -206,6 +212,11 @@ function strategyConfig() {
     }) / 100,
     maxRoundStake: readNumber("#max-round-stake", "单局金额上限", { min: 0 }),
     sideBetLimit: readNumber("#side-bet-limit", "边注单笔金额上限", { min: 0 }),
+    luckyBetMaxRound: readNumber("#lucky-bet-max-round", "幸运 6/7 最晚下注局数", {
+      min: 0,
+      integer: true,
+    }),
+    allowMultipleBets: allowMultipleBets.checked,
     tableLimit: readNumber("#table-limit", "桌台金额上限", { min: 0 }),
     payoutRule: payoutRule.value,
     stakeStrategy: selectedStakeStrategy,
@@ -330,15 +341,49 @@ function renderResults(data, elapsedMilliseconds) {
   setText("#strategy-fraction", percent(decision.strategy_fraction, 3));
   setText("#applied-fraction", percent(decision.applied_fraction, 3));
   setText("#suggested-amount", money(decision.suggested_amount));
-  setText("#summary-amount", money(decision.suggested_amount));
   setText("#expected-profit", money(decision.expected_profit));
   applySignedClass(document.querySelector("#expected-profit"), decision.expected_profit);
+
+  // 多注模式的每个计划都已经由 Rust 完成 EV、凯利和金额上限计算，页面只
+  // 负责展示。主推荐仍然保留在上方，表格用于查看同局其余合格目标。
+  const plans = Array.isArray(data.recommendations) ? data.recommendations : [decision];
+  const placedPlans = plans.filter((plan) => plan.action === "place");
+  const totalSuggestedAmount = data.total_suggested_amount
+    ?? placedPlans.reduce((total, plan) => total + plan.suggested_amount, 0);
+  setText("#summary-amount", money(data.allow_multiple_bets
+    ? totalSuggestedAmount
+    : decision.suggested_amount));
+
+  if (data.allow_multiple_bets && plans.length > 0) {
+    multipleRecommendations.hidden = false;
+    setText("#multiple-bet-count", `${placedPlans.length} 笔可下注`);
+    setText("#multiple-total-amount", money(totalSuggestedAmount));
+    multipleRecommendationBody.replaceChildren();
+    for (const plan of plans) {
+      const row = document.createElement("tr");
+      const actionText = plan.action === "place"
+        ? "可下注"
+        : (skipReasonLabels[plan.reason] ?? "跳过");
+      row.append(
+        detailCell(allBetLabels[plan.candidate_bet] ?? plan.candidate_bet),
+        detailCell(plan.bet_category === "side" ? "边注" : "主注"),
+        detailCell(percent(plan.effective_ev), evClass(plan.effective_ev)),
+        detailCell(money(plan.suggested_amount)),
+        detailCell(money(plan.expected_profit), evClass(plan.expected_profit)),
+        detailCell(actionText),
+      );
+      multipleRecommendationBody.append(row);
+    }
+  } else {
+    multipleRecommendations.hidden = true;
+    multipleRecommendationBody.replaceChildren();
+  }
 
   const targetLimitText = decision.bet_category === "side"
     ? "，并应用边注单独金额上限"
     : "";
   const reason = decision.action === "place"
-    ? `采用${payoutRuleLabels[data.payout_rule]}与${stakeStrategyLabels[data.stake_strategy]}，已通过对应 EV 门槛；建议下${allBetLabels[decision.candidate_bet]}，金额已经过共同风险上限${targetLimitText}。`
+    ? `${data.allow_multiple_bets ? `已开启同局多下注，共 ${placedPlans.length} 笔计划，合计 ${money(totalSuggestedAmount)}；` : ""}采用${payoutRuleLabels[data.payout_rule]}与${stakeStrategyLabels[data.stake_strategy]}，已通过对应 EV 门槛；建议下${allBetLabels[decision.candidate_bet]}，金额已经过共同风险上限${targetLimitText}。`
     : skipReasonLabels[decision.reason] ?? "当前策略决定跳过本局。";
   setText("#decision-reason", reason);
 }
@@ -374,6 +419,7 @@ function calculate() {
       config.strategyParameter,
       config.minimumSideBetEv,
       config.sideBetLimit,
+      config.allowMultipleBets,
     );
     renderResults(JSON.parse(json), performance.now() - started);
   } catch (error) {
@@ -641,6 +687,7 @@ stakeStrategy.addEventListener("change", () => {
 });
 
 payoutRule.addEventListener("change", calculate);
+allowMultipleBets.addEventListener("change", calculate);
 
 sampleButton.addEventListener("click", () => {
   form.elements["source-mode"].value = "consumed";
