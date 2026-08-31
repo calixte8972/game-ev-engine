@@ -33,6 +33,9 @@ const appSource = readFileSync(resolve(webDirectory, "app.js"), "utf8");
 if (/report\.bets\.slice\(0,\s*500\)/.test(appSource)) {
   throw new Error("页面仍然只读取前 500 笔下注明细");
 }
+if (!/suitSymbols/.test(appSource) || !/appendCardLine/.test(appSource)) {
+  throw new Error("回放明细没有把 ASCII 牌面转换为带花色符号的真实牌面");
+}
 
 const manual = JSON.parse(
   analyzeBaccaratStrategy(

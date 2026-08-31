@@ -1356,6 +1356,33 @@ td:first-child {
   line-height: 1.55;
 }
 
+.outcome-detail-cell .hand-label,
+.outcome-detail-cell .hand-total {
+  display: inline;
+}
+
+.outcome-detail-cell .replay-card {
+  display: inline-block;
+  min-width: 1.35em;
+  margin-right: 2px;
+  padding: 0 3px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--ink);
+  background: var(--surface-strong);
+  font-weight: 700;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.outcome-detail-cell .replay-card.suit-red {
+  color: #b13d4b;
+}
+
+.outcome-detail-cell .replay-card.suit-black {
+  color: #273943;
+}
+
 footer {
   display: flex;
   justify-content: space-between;

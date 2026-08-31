@@ -71,6 +71,14 @@ const sideBetLabels = {
 
 const allBetLabels = { ...betLabels, ...sideBetLabels };
 
+const suitSymbols = {
+  C: "♣",
+  D: "♦",
+  H: "♥",
+  S: "♠",
+};
+const redSuits = new Set(["D", "H"]);
+
 const resultLabels = {
   win: "赢",
   loss: "输",
@@ -527,6 +535,38 @@ function detailCell(value, className = "") {
   return cell;
 }
 
+function appendCardLine(container, label, cardsText, total) {
+  const labelNode = document.createElement("span");
+  labelNode.className = "hand-label";
+  labelNode.textContent = `${label} `;
+  container.append(labelNode);
+
+  const cards = cardsText.trim().split(/\s+/).filter(Boolean);
+  cards.forEach((rawCard, index) => {
+    if (index > 0) container.append(document.createTextNode(" "));
+
+    const normalized = rawCard.toUpperCase();
+    const match = normalized.match(/^(10|[2-9]|[AJQK])([CDHS])$/);
+    const card = document.createElement("span");
+    card.className = "replay-card";
+    card.title = rawCard;
+    if (match) {
+      const suit = match[2];
+      card.classList.add(redSuits.has(suit) ? "suit-red" : "suit-black");
+      card.textContent = `${match[1]}${suitSymbols[suit]}`;
+    } else {
+      // 未来如果供应商返回了新牌面格式，仍保留原始值，不让整行消失。
+      card.textContent = rawCard;
+    }
+    container.append(card);
+  });
+
+  const totalNode = document.createElement("span");
+  totalNode.className = "hand-total";
+  totalNode.textContent = ` · ${total} 点`;
+  container.append(totalNode);
+}
+
 function outcomeDetailCell(bet) {
   const cell = document.createElement("td");
   cell.className = "outcome-detail-cell";
@@ -535,10 +575,12 @@ function outcomeDetailCell(bet) {
   result.textContent = `${betLabels[bet.outcome]} · ${resultLabels[bet.result]}`;
 
   const playerCards = document.createElement("span");
-  playerCards.textContent = `闲 ${bet.player_cards} · ${bet.player_total} 点`;
+  playerCards.className = "hand-line";
+  appendCardLine(playerCards, "闲", bet.player_cards, bet.player_total);
 
   const bankerCards = document.createElement("span");
-  bankerCards.textContent = `庄 ${bet.banker_cards} · ${bet.banker_total} 点`;
+  bankerCards.className = "hand-line";
+  appendCardLine(bankerCards, "庄", bet.banker_cards, bet.banker_total);
 
   cell.append(result, playerCards, bankerCards);
   return cell;
