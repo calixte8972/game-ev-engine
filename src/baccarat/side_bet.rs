@@ -18,6 +18,11 @@
 //!
 //! 赔率属于规则输入，不属于概率本身。将它们集中放在 [`SideBetRules`] 中，
 //! 未来接入不同供应商时可以复用同一份精确概率，只替换赔付表。
+//!
+//! 边注结算统一遵守一个顺序：先判断是否命中，再选择命中的赔率档位，最后
+//! 对未命中返回 `-1.0`。概率层记录的是“命中各档位的序列权重”，EV 层再把
+//! 每个档位的概率与 `1 + payout` 的总返还相乘；因此多档边注不能只保留一个
+//! 平均赔率，否则凯利层会丢失收益分布信息。
 
 use std::{error::Error, fmt};
 
@@ -223,6 +228,9 @@ impl SideBetRules {
     /// 返回值统一使用“每下注 1 单位的净盈利”口径：命中返回对应档位净赔付，
     /// 未命中返回 `-1.0`。龙宝的 Natural 退回本金时返回 `0.0`；边注不会叠加主注返水。
     pub fn settle(self, bet: SideBet, round: RoundResult) -> f64 {
+        // 先提取手牌和常用条件，后面的 match 只负责业务判断，不再重复访问
+        // RoundResult。所有判断都发生在“真实结果已知”的结算阶段；下注前的
+        // 概率/EV 计算使用的是同一规则对应的权重桶。
         let player = round.player_hand();
         let banker = round.banker_hand();
         let player_pair = player.first_card().rank() == player.second_card().rank();
@@ -231,6 +239,8 @@ impl SideBetRules {
         let banker_perfect_pair = banker.first_card() == banker.second_card();
         let outcome = round.outcome();
 
+        // match 的每个 guard 对应一个玩法命中条件。返回 Option 是为了把“命中
+        // 某个赔率档位”和“没有命中”分开，最后统一把 None 映射成 -1.0。
         let payout = match bet {
             SideBet::AnyPair if player_pair || banker_pair => Some(self.any_pair),
             SideBet::BankerPair if banker_pair => Some(self.banker_pair),
@@ -303,6 +313,7 @@ impl Default for SideBetRules {
 /// 精确枚举得到的边注整数权重，所有字段共用 `(N)₆` 分母。
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct SideBetWeights {
+    /// 所有六张有序物理发牌序列的共同分母。
     total: u64,
     any_pair: u64,
     banker_pair: u64,
@@ -436,6 +447,8 @@ impl SideBetWeights {
 
     /// 返回某个边注命中的总概率。
     pub fn probability(self, bet: SideBet) -> f64 {
+        // 命中率只统计 win_weight；龙宝 Natural Push 单独保存，不能把 Push
+        // 当作“命中赔率”混入这里。
         self.win_weight(bet) as f64 / self.total as f64
     }
 
@@ -527,6 +540,8 @@ pub struct SideBetAnalysis {
 impl SideBetAnalysis {
     /// 把精确命中权重与赔付表组合成概率和 EV。
     pub fn calculate(weights: SideBetWeights, rules: SideBetRules) -> Self {
+        // 单赔率边注可以统一走 single；多赔率边注必须保留完整档位数组，
+        // 龙宝还要把 Natural Push 传给带 push 的公式。
         let total = weights.total_weight();
         let single = |bet: SideBet| {
             metrics_from_tiers(
@@ -607,6 +622,8 @@ fn metrics_from_tiers_with_push(
     payouts: &[f64],
     push_weight: u64,
 ) -> SideBetMetrics {
+    // tier_weights 与 payouts 一一对应：每个命中档位的总返还为 1 + payout；
+    // 未命中不返还，Push 返还本金但不计入命中率。最后用 RTP - 1 转回净 EV。
     debug_assert_eq!(tier_weights.len(), payouts.len());
     let probability = tier_weights.iter().sum::<u64>() as f64 / total as f64;
     let winning_return = tier_weights

@@ -1,3 +1,11 @@
+/*
+ * 页面视觉层只负责布局和状态样式，不承载计算逻辑。
+ *
+ * 结构上把页面分成：顶部身份/游戏切换 -> 输入与结果 -> CSV 回放。
+ * 响应式断点把宽屏双列工作区收拢成单列；长表格保留横向滚动，避免
+ * 为了塞进屏幕而把字号压缩到不可读。
+ */
+/* 颜色、阴影和字体是全局设计 token；组件尽量引用变量，方便统一调整主题。 */
 :root {
   color-scheme: light;
   --page: #f4f6f2;
@@ -51,7 +59,6 @@ input[type="radio"] {
 }
 
 .app-header,
-.game-tabs,
 .workspace,
 footer {
   width: min(1480px, calc(100% - 64px));
@@ -61,21 +68,24 @@ footer {
 .game-tabs {
   display: flex;
   align-items: center;
-  gap: 4px;
-  margin-bottom: 20px;
-  padding: 5px;
+  flex: 0 0 auto;
+  gap: 3px;
+  margin: 0;
+  padding: 3px;
   border: 1px solid var(--line);
-  border-radius: 13px;
+  border-radius: 11px;
   background: rgba(255, 255, 255, 0.76);
-  box-shadow: var(--shadow-soft);
 }
 
 .game-tab {
-  min-height: 42px;
-  padding: 0 20px;
+  min-height: 34px;
+  padding: 0 13px;
   border: 1px solid transparent;
+  border-radius: 8px;
   color: var(--muted);
   background: transparent;
+  font-size: 0.82rem;
+  font-weight: 750;
 }
 
 .game-tab:hover:not(:disabled) {
@@ -90,26 +100,6 @@ footer {
   box-shadow: 0 6px 14px rgba(8, 113, 88, 0.18);
 }
 
-.tabs-label,
-.tabs-hint {
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 750;
-}
-
-.tabs-label {
-  padding: 0 12px 0 10px;
-  color: var(--ink);
-  letter-spacing: 0.04em;
-  cursor: default;
-  pointer-events: none;
-}
-
-.tabs-hint {
-  margin-left: auto;
-  padding: 0 12px;
-}
-
 .blackjack-section[hidden],
 .baccarat-section[hidden],
 .rules-section[hidden] {
@@ -120,8 +110,8 @@ footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 36px;
-  padding: 34px 0 22px;
+  gap: 20px;
+  padding: 14px 0;
 }
 
 .header-main,
@@ -132,7 +122,7 @@ footer {
 
 .header-main {
   min-width: 0;
-  gap: 16px;
+  gap: 11px;
 }
 
 .header-copy {
@@ -141,25 +131,24 @@ footer {
 
 .brand-mark {
   display: grid;
-  width: 52px;
-  height: 52px;
+  width: 40px;
+  height: 40px;
   flex: 0 0 auto;
   place-items: center;
   border: 1px solid #b8d9cb;
-  border-radius: 17px;
+  border-radius: 12px;
   color: white;
   background: linear-gradient(145deg, #0b8064, #07513f);
-  box-shadow: 0 10px 22px rgba(8, 113, 88, 0.2);
+  box-shadow: 0 7px 16px rgba(8, 113, 88, 0.18);
   font-family: Georgia, "Noto Serif SC", serif;
-  font-size: 1.18rem;
+  font-size: 0.94rem;
   font-weight: 700;
   letter-spacing: -0.08em;
 }
 
 .header-actions {
-  align-items: flex-end;
-  flex-direction: column;
-  gap: 10px;
+  align-items: center;
+  gap: 8px;
   flex: 0 0 auto;
 }
 
@@ -167,34 +156,32 @@ footer {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  min-height: 40px;
-  padding: 0 15px;
+  min-height: 34px;
+  padding: 0 11px;
   border-color: #b8d9cb;
   border-radius: 12px;
   color: var(--felt-dark);
   background: rgba(255, 255, 255, 0.84);
-  box-shadow: var(--shadow-soft);
 }
 
 .rules-shortcut span {
   display: grid;
-  width: 21px;
-  height: 21px;
+  width: 18px;
+  height: 18px;
   place-items: center;
   border: 1px solid currentColor;
   border-radius: 50%;
-  font-size: 0.72rem;
+  font-size: 0.66rem;
   font-weight: 800;
 }
 
-.header-badges {
-  display: flex;
-  align-items: flex-end;
-  flex-direction: column;
-  gap: 7px;
+/* 规则也是一个可切换工作区，激活时与百家乐/21 点使用相同的选中反馈。 */
+.rules-shortcut.active {
+  border-color: var(--felt);
+  color: white;
+  background: var(--felt);
 }
 
-.eyebrow,
 .section-number {
   margin: 0 0 8px;
   color: var(--felt);
@@ -216,21 +203,21 @@ h3 {
 }
 
 h1 {
-  margin-bottom: 7px;
+  margin-bottom: 2px;
   font-family: Georgia, "Noto Serif SC", serif;
-  font-size: clamp(2rem, 3.6vw, 3.25rem);
+  font-size: clamp(1.45rem, 2.2vw, 2rem);
   font-weight: 600;
   letter-spacing: -0.045em;
+  line-height: 1.1;
 }
 
 .subtitle {
   margin-bottom: 0;
   color: var(--muted);
-  font-size: 0.9rem;
-  line-height: 1.55;
+  font-size: 0.75rem;
+  line-height: 1.35;
 }
 
-.privacy-badge,
 .wasm-status,
 .calculation-time,
 .action-pill {
@@ -242,24 +229,23 @@ h1 {
   white-space: nowrap;
 }
 
-.privacy-badge {
-  padding: 9px 12px;
-  border: 1px solid #bed8cd;
-  color: var(--felt-dark);
-  background: var(--felt-soft);
-  font-size: 0.82rem;
-  font-weight: 700;
+.wasm-status::before {
+  width: 7px;
+  height: 7px;
+  content: "";
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--gold);
+  box-shadow: 0 0 0 3px rgba(195, 139, 47, 0.12);
 }
 
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+.wasm-status.ready::before {
   background: #19a879;
-  box-shadow: 0 0 0 4px rgba(25, 168, 121, 0.13);
+  box-shadow: 0 0 0 3px rgba(25, 168, 121, 0.12);
 }
 
 .workspace {
+  /* 宽屏把输入与结果并排，回放面板通过自身规则占满整行。 */
   display: grid;
   grid-template-columns: minmax(360px, 0.76fr) minmax(0, 1.24fr);
   gap: 24px;
@@ -267,6 +253,8 @@ h1 {
 }
 
 .panel {
+  /* 主要工作区共用同一层卡片容器，内部选择器只负责内容层级。 */
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: 18px;
   background: rgba(251, 252, 250, 0.96);
@@ -275,8 +263,51 @@ h1 {
 
 .input-panel,
 .result-panel,
-.replay-panel {
+.replay-panel,
+.side-results-panel {
   padding: clamp(22px, 2.6vw, 32px);
+}
+
+.baccarat-subnav {
+  grid-column: 1 / -1;
+  display: inline-flex;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: rgba(251, 252, 250, 0.9);
+  box-shadow: var(--shadow-soft);
+}
+
+.baccarat-view-tab {
+  min-height: 38px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 800;
+  transition: color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+
+.baccarat-view-tab:hover {
+  color: var(--felt-dark);
+  background: #edf7f2;
+}
+
+.baccarat-view-tab.active {
+  color: white;
+  background: var(--felt);
+  box-shadow: 0 5px 14px rgba(8, 113, 88, 0.18);
+}
+
+.baccarat-view-tab:focus-visible {
+  outline: 3px solid rgba(8, 113, 88, 0.24);
+  outline-offset: 2px;
 }
 
 .section-heading {
@@ -288,9 +319,8 @@ h1 {
 }
 
 .quick-action-bar {
-  position: sticky;
-  z-index: 4;
-  top: 12px;
+  /* 配置已折叠，按钮无需悬浮遮挡后面的牌靴输入。 */
+  position: static;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -374,7 +404,9 @@ h1 {
 
 .wasm-status,
 .calculation-time {
-  padding: 7px 10px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
   color: var(--muted);
   background: #f0f1ed;
   font-size: 0.75rem;
@@ -467,10 +499,9 @@ textarea:focus-visible {
   margin-bottom: 18px;
 }
 
-.strategy-grid {
+.strategy-config-stack {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 14px 12px;
+  gap: 10px;
 }
 
 .advanced-config {
@@ -481,31 +512,126 @@ textarea:focus-visible {
   background: var(--surface-tint);
 }
 
-.advanced-config summary {
+.advanced-config summary,
+.side-limit-config summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  min-height: 44px;
-  padding: 0 13px;
+  gap: 12px;
+  min-height: 50px;
+  padding: 0 14px;
   color: var(--felt-dark);
   cursor: pointer;
   font-size: 0.78rem;
   font-weight: 800;
-  list-style-position: inside;
+  list-style: none;
+  border-radius: inherit;
+  user-select: none;
+  transition: background 160ms ease;
 }
 
-.advanced-config summary small {
+.advanced-config summary::-webkit-details-marker,
+.side-limit-config summary::-webkit-details-marker {
+  display: none;
+}
+
+.config-summary-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 16px;
+}
+
+.config-summary-copy strong {
+  min-width: 0;
+  font-size: 0.79rem;
+  line-height: 1.3;
+}
+
+.config-summary-copy small {
+  min-width: 0;
   color: var(--muted);
   font-size: 0.68rem;
   font-weight: 600;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.config-summary-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 66px;
+  min-height: 30px;
+  flex: 0 0 auto;
+  padding: 0 9px;
+  border: 1px solid #a9cec0;
+  border-radius: 999px;
+  color: var(--felt-dark);
+  background: white;
+  box-shadow: 0 3px 10px rgba(8, 113, 88, 0.07);
+  font-size: 0.68rem;
+  font-weight: 800;
+  transition:
+    color 160ms ease,
+    background 160ms ease,
+    transform 160ms ease;
+}
+
+.config-summary-action::before {
+  content: "展开";
+}
+
+.config-summary-action::after {
+  content: "↓";
+  font-size: 0.76rem;
+}
+
+details[open] > summary .config-summary-action::before {
+  content: "收起";
+}
+
+details[open] > summary .config-summary-action::after {
+  content: "↑";
+}
+
+.advanced-config summary:hover,
+.side-limit-config summary:hover {
+  background: #edf7f2;
+}
+
+.advanced-config[open] > summary,
+.side-limit-config[open] > summary {
+  border-bottom: 1px solid var(--line);
+  border-bottom-right-radius: 0;
+  border-bottom-left-radius: 0;
+  background: #edf7f2;
+}
+
+.advanced-config summary:hover .config-summary-action,
+.side-limit-config summary:hover .config-summary-action,
+.advanced-config summary:focus-visible .config-summary-action,
+.side-limit-config summary:focus-visible .config-summary-action {
+  color: white;
+  background: var(--felt);
+  transform: translateY(-1px);
+}
+
+.advanced-config summary:focus-visible,
+.side-limit-config summary:focus-visible {
+  outline: 3px solid rgba(8, 113, 88, 0.24);
+  outline-offset: 2px;
+  border-radius: inherit;
 }
 
 .advanced-config-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 12px;
-  padding: 0 13px 13px;
+  padding: 12px 13px 13px;
 }
 
 .advanced-config-grid .policy-toggle {
@@ -517,25 +643,6 @@ textarea:focus-visible {
   border: 1px solid var(--line);
   border-radius: 14px;
   background: #fafaf5;
-}
-
-.side-limit-config summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 15px 16px;
-  color: var(--felt-dark);
-  cursor: pointer;
-  font-weight: 800;
-  list-style-position: inside;
-}
-
-.side-limit-config summary small {
-  color: var(--muted);
-  font-size: 0.68rem;
-  font-weight: 600;
-  text-align: right;
 }
 
 .side-limit-config > p {
@@ -601,6 +708,19 @@ textarea:focus-visible {
   margin: 18px 0 8px;
 }
 
+.blackjack-primary-inputs {
+  margin-top: 0;
+}
+
+.blackjack-rules-config {
+  margin-top: 18px;
+}
+
+.blackjack-rule-help {
+  margin: 0;
+  padding: 0 13px 13px;
+}
+
 .blackjack-visible-grid input {
   font-family: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
 }
@@ -610,7 +730,7 @@ textarea:focus-visible {
 }
 
 .side-bet-heading {
-  margin-top: 22px;
+  margin-top: 0;
 }
 
 .side-bet-note {
@@ -940,11 +1060,64 @@ button:disabled {
 }
 
 .table-wrap {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   overflow-x: auto;
   border: 1px solid var(--line);
   border-radius: 15px;
   background: var(--surface-strong);
   box-shadow: 0 4px 14px rgba(28, 48, 39, 0.025);
+}
+
+.side-results-panel {
+  grid-column: 1 / -1;
+}
+
+.side-results-panel table {
+  min-width: 620px;
+}
+
+.side-metric-details {
+  position: relative;
+}
+
+.side-metric-details summary {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 10px;
+  border: 1px solid #b9d5ca;
+  border-radius: 999px;
+  color: var(--felt-dark);
+  background: #f4faf7;
+  cursor: pointer;
+  font-size: 0.72rem;
+  font-weight: 800;
+  list-style: none;
+}
+
+.side-metric-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.side-metric-details[open] summary {
+  color: white;
+  background: var(--felt);
+}
+
+.side-metric-details div {
+  display: grid;
+  gap: 5px;
+  margin-top: 8px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  color: var(--muted);
+  background: #fffdf8;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  text-align: left;
 }
 
 table {
@@ -1612,6 +1785,7 @@ td:first-child {
 }
 
 .bankroll-chart-panel {
+  /* 图表独立成一层，Canvas 的绘制尺寸不会影响摘要卡片和明细表。 */
   --chart-path-color: var(--positive);
   margin-bottom: 28px;
   padding: 20px 20px 16px;
@@ -1774,6 +1948,18 @@ td:first-child {
   font-size: 0.78rem;
 }
 
+.bankroll-chart-panel:has(.bankroll-chart-plot[hidden]) {
+  padding-bottom: 14px;
+}
+
+.bankroll-chart-panel:has(.bankroll-chart-plot[hidden]) .bankroll-chart-heading {
+  margin-bottom: 8px;
+}
+
+.bankroll-chart-panel:has(.bankroll-chart-plot[hidden]) .bankroll-chart-empty {
+  padding: 16px 14px;
+}
+
 .bankroll-chart-plot[hidden],
 .bankroll-chart-empty[hidden],
 .bankroll-chart-guide[hidden],
@@ -1920,8 +2106,9 @@ footer {
 }
 
 @media (max-width: 1050px) {
+  /* 中等屏幕改为单列，避免输入面板和结果面板各自过窄。 */
   .workspace {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .replay-input-grid {
@@ -1950,8 +2137,8 @@ footer {
 }
 
 @media (max-width: 680px) {
+  /* 手机布局减少外围留白，复杂表格仍通过横向滚动保持可读。 */
   .app-header,
-  .game-tabs,
   .workspace,
   footer {
     width: min(100% - 28px, 1480px);
@@ -1960,24 +2147,23 @@ footer {
   .app-header {
     align-items: flex-start;
     flex-direction: column;
-    gap: 22px;
-    padding-top: 26px;
+    gap: 10px;
+    padding: 12px 0;
   }
 
   .header-main {
-    align-items: flex-start;
-    gap: 12px;
+    align-items: center;
+    gap: 10px;
   }
 
   .brand-mark {
-    width: 48px;
-    height: 48px;
-    border-radius: 14px;
-    font-size: 1rem;
+    width: 36px;
+    height: 36px;
+    border-radius: 11px;
+    font-size: 0.86rem;
   }
 
   .quick-action-bar {
-    top: 8px;
     align-items: stretch;
     flex-direction: column;
     gap: 9px;
@@ -1991,21 +2177,34 @@ footer {
 
   .header-actions {
     width: 100%;
-    align-items: flex-start;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
   }
 
-  .header-badges {
+  .config-summary-copy {
     align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
   }
 
-  .tabs-label,
-  .tabs-hint {
-    display: none;
+  .config-summary-copy small {
+    text-align: left;
+  }
+
+  .baccarat-subnav {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .baccarat-view-tab {
+    padding-inline: 10px;
   }
 
   .mode-switch,
   .field-grid,
-  .strategy-grid,
+  .advanced-config-grid,
   .blackjack-visible-grid,
   .blackjack-facts,
   .shoe-summary,

@@ -24,6 +24,11 @@
 //!
 //! 把方向选择和资金管理拆开后，EV 门槛、返水、凯利公式和金额上限都可以
 //! 单独测试。以后即使把完整凯利换成半凯利，也不需要重写概率枚举器。
+//!
+//! 资金层的一个容易混淆的点是：策略比例和安全上限不是同一个东西。
+//! 例如半凯利先把数学凯利比例乘以 0.5，再与 `max_fraction`、单局金额、
+//! 桌台上限和当前本金逐层取最小值。前者回答“数学上想下注多少”，后者回答
+//! “运营上最多允许下注多少”。
 
 use std::{error::Error, fmt};
 
@@ -103,6 +108,7 @@ impl StakeSizingStrategy {
         outcomes: &[KellyOutcome],
     ) -> f64 {
         match self {
+            // 这些策略都先从同一份收益分布得到完整凯利，再只改变目标比例。
             Self::FullKelly => full_kelly_fraction,
             Self::HalfKelly => full_kelly_fraction * 0.5,
             Self::QuarterKelly => full_kelly_fraction * 0.25,
@@ -110,6 +116,8 @@ impl StakeSizingStrategy {
             Self::Fixed { amount } => amount / bankroll,
             Self::FixedBankrollFraction { fraction } => fraction,
             Self::TargetExpectedProfit { amount } => {
+                // EV 是每下注 1 单位的期望盈利，所以 amount / EV 得到目标
+                // 下注额，再除以 bankroll 转成统一的“本金比例”。
                 if effective_ev > 0.0 {
                     amount / (bankroll * effective_ev)
                 } else {
@@ -117,6 +125,9 @@ impl StakeSizingStrategy {
                 }
             }
             Self::TargetVolatility { fraction } => {
+                // 对单位下注收益计算方差。下注额是本金 × f，标准差为
+                // bankroll × f × sqrt(variance)，令它占本金 fraction 后可得
+                // f = fraction / sqrt(variance)。
                 let variance = outcomes
                     .iter()
                     .map(|outcome| {
@@ -653,6 +664,8 @@ impl KellyPolicy {
             allows_side_bet,
         );
 
+        // 每个达标目标先独立报价。此时 quote.amount() 只受到“单个目标”的
+        // 边注上限/共同基础上限影响，暂时还没有把同局其他下注加进来。
         let mut plans = Vec::with_capacity(decisions.len());
         for decision in decisions {
             let bet = decision.candidate();
@@ -707,6 +720,8 @@ impl KellyPolicy {
             .min(self.max_round_stake)
             .min(self.table_limit)
             .min(bankroll);
+        // 如果多个目标的独立报价合计超过同局预算，所有 Place 计划按同一比例
+        // 缩小。按比例而不是按顺序截断，可以避免候选排列顺序决定谁拿到预算。
         let scale = if requested_total > common_limit && requested_total > 0.0 {
             common_limit / requested_total
         } else {
@@ -851,27 +866,35 @@ impl BetPlan {
 /// 主注和边注共同比较后的最终动作。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CombinedBetPlanAction {
+    /// 该目标通过策略和资金检查后的实际下注。
     Place { bet: BetTarget, amount: f64 },
+    /// 该目标最终没有执行，并保留跳过原因。
     Skip { reason: BetPlanSkipReason },
 }
 
 /// 十四种目标统一经过 EV 门槛、凯利公式和金额上限后的完整计划。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CombinedBetPlan {
+    /// 方向层生成的候选和 EV 门槛结果。
     decision: CombinedBetDecision,
+    /// 该目标的凯利/金额报价；策略层直接 Skip 时为 `None`。
     quote: Option<KellyQuote>,
+    /// 上层真正需要执行的动作。
     action: CombinedBetPlanAction,
 }
 
 impl CombinedBetPlan {
+    /// 返回方向层决策，包含候选、基础 EV、返水 EV 和门槛。
     pub const fn decision(&self) -> &CombinedBetDecision {
         &self.decision
     }
 
+    /// 返回金额报价；没有进入金额计算时为 `None`。
     pub const fn quote(self) -> Option<KellyQuote> {
         self.quote
     }
 
+    /// 返回经过所有检查后的最终动作。
     pub const fn action(&self) -> &CombinedBetPlanAction {
         &self.action
     }
@@ -882,6 +905,8 @@ impl CombinedBetPlan {
             return;
         };
 
+        // 多注模式先为每个目标独立算报价，再在这里按共同比例同步缩放。
+        // 这样每个下注仍保留自己的 EV/凯利信息，同时总暴露不超过本局预算。
         let quote = quote.scaled_amount(scale);
         self.quote = Some(quote);
         self.action = match self.action {
@@ -1089,6 +1114,8 @@ pub fn calculate_kelly_fraction(
     outcomes: &[KellyOutcome],
     max_fraction: f64,
 ) -> Result<f64, KellyError> {
+    // outcomes 必须是互斥且穷尽的完整收益分布；不能只传“赢的概率”，
+    // 因为多档赔率、Push 和返水都会改变最优比例。
     validate_max_fraction(max_fraction)?;
     let effective_ev = validate_outcomes(outcomes)?;
 
@@ -1142,6 +1169,8 @@ pub fn calculate_kelly_fraction(
 fn growth_derivative(outcomes: &[KellyOutcome], fraction: f64) -> f64 {
     // 这是 G'(f)。调用者只关心它的正负：正数表示比例还可以增大，
     // 负数表示比例已经过大。无需直接计算 ln，也能找到 G(f) 的最大点。
+    // 每个结果的导数贡献都按该结果概率加权；对所有互斥结果求和后，
+    // 只需观察总导数正负就能决定二分区间方向。
     outcomes
         .iter()
         .map(|outcome| {

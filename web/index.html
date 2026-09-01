@@ -11,16 +11,21 @@
     <link rel="stylesheet" href="./styles.css" />
   </head>
   <body>
+    <!-- 首屏工具栏把品牌、游戏切换、规则入口和运行状态放在同一行。 -->
     <header class="app-header">
       <div class="header-main">
         <div class="brand-mark" aria-hidden="true">EV</div>
         <div class="header-copy">
-          <p class="eyebrow">SHOE ANALYTICS · RUST / WASM</p>
           <h1>牌靴 EV 策略实验室</h1>
-          <p class="subtitle">在浏览器内还原牌靴、比较期望值，并把下注策略回放到真实数据。</p>
+          <p class="subtitle">Rust / WASM · 本地牌靴分析与策略回放</p>
         </div>
       </div>
       <div class="header-actions">
+        <!-- 通过 data-game 与 app.js 的 setActiveGame() 连接三个可见工作区。 -->
+        <nav class="game-tabs" aria-label="选择游戏">
+          <button class="game-tab active" type="button" data-game="baccarat" aria-selected="true">百家乐</button>
+          <button class="game-tab" type="button" data-game="blackjack" aria-selected="false">21 点</button>
+        </nav>
         <button
           class="game-tab rules-shortcut"
           type="button"
@@ -28,24 +33,34 @@
           aria-selected="false"
         >
           <span aria-hidden="true">?</span>
-          &#30334;&#23478;&#20048;&#35268;&#21017;
+          规则
         </button>
-        <div class="header-badges">
-          <span class="privacy-badge"><span class="status-dot"></span>本地计算 · 数据不上传</span>
-          <span id="wasm-status" class="wasm-status">正在加载 WASM…</span>
-        </div>
+        <span
+          id="wasm-status"
+          class="wasm-status"
+          title="牌靴与 CSV 数据只在当前浏览器计算，不上传服务器"
+        >WASM 加载中…</span>
       </div>
     </header>
 
-    <nav class="game-tabs" aria-label="选择游戏">
-      <span class="tabs-label">选择游戏：</span>
-      <button class="game-tab active" type="button" data-game="baccarat" aria-selected="true">百家乐</button>
-      <button class="game-tab" type="button" data-game="blackjack" aria-selected="false">21 点</button>
-      <span class="tabs-hint">选择游戏后，所有计算都在当前浏览器完成</span>
-    </nav>
-
     <main class="workspace">
-      <section class="panel input-panel baccarat-section" aria-labelledby="strategy-title">
+      <nav class="baccarat-subnav baccarat-section" aria-label="百家乐功能">
+        <button
+          class="baccarat-view-tab active"
+          type="button"
+          data-baccarat-view-tab="analysis"
+          aria-selected="true"
+        >即时分析</button>
+        <button
+          class="baccarat-view-tab"
+          type="button"
+          data-baccarat-view-tab="replay"
+          aria-selected="false"
+        >CSV 策略回放</button>
+      </nav>
+
+      <!-- 01：所有手工输入和下注策略配置，表单提交后调用 Rust/WASM。 -->
+      <section class="panel input-panel baccarat-section" data-baccarat-view="analysis" aria-labelledby="strategy-title">
         <div class="section-heading">
           <div>
             <p class="section-number">01</p>
@@ -64,79 +79,88 @@
             </button>
           </div>
 
-          <div class="subsection-heading">
-            <h3>资金与下注门槛</h3>
-            <span>当前计算与 CSV 回放共用</span>
-          </div>
+          <div class="strategy-config-stack">
+            <details class="advanced-config">
+              <summary>
+                <span class="config-summary-copy">
+                  <strong>资金与下注门槛</strong>
+                  <small id="funding-config-summary">标准庄 · 完整凯利 · 本金 ¥10,000 · 返水 0.9%</small>
+                </span>
+                <span class="config-summary-action" aria-hidden="true"></span>
+              </summary>
+              <div class="advanced-config-grid">
+                <label class="field">
+                  <span>庄家赔付规则</span>
+                  <select id="payout-rule">
+                    <option value="standard" selected>标准庄 · 赢赔 0.95</option>
+                    <option value="no_commission">庄免佣 · 庄 6 赢赔 0.5</option>
+                  </select>
+                </label>
 
-          <div class="strategy-grid">
-            <label class="field">
-              <span>庄家赔付规则</span>
-              <select id="payout-rule">
-                <option value="standard" selected>标准庄 · 赢赔 0.95</option>
-                <option value="no_commission">庄免佣 · 庄 6 赢赔 0.5</option>
-              </select>
-            </label>
+                <label class="field">
+                  <span>下注金额策略</span>
+                  <select id="stake-strategy">
+                    <option value="full_kelly" selected>完整凯利</option>
+                    <option value="half_kelly">半凯利</option>
+                    <option value="quarter_kelly">四分之一凯利</option>
+                    <option value="custom_kelly">自定义分数凯利</option>
+                    <option value="fixed">固定金额</option>
+                    <option value="bankroll_fraction">固定本金比例</option>
+                    <option value="target_expected_profit">固定期望盈利</option>
+                    <option value="target_volatility">目标波动率</option>
+                  </select>
+                </label>
 
-            <label class="field">
-              <span>下注金额策略</span>
-              <select id="stake-strategy">
-                <option value="full_kelly" selected>完整凯利</option>
-                <option value="half_kelly">半凯利</option>
-                <option value="quarter_kelly">四分之一凯利</option>
-                <option value="custom_kelly">自定义分数凯利</option>
-                <option value="fixed">固定金额</option>
-                <option value="bankroll_fraction">固定本金比例</option>
-                <option value="target_expected_profit">固定期望盈利</option>
-                <option value="target_volatility">目标波动率</option>
-              </select>
-            </label>
+                <label id="strategy-parameter-field" class="field" hidden>
+                  <span id="strategy-parameter-label">策略参数</span>
+                  <span id="strategy-parameter-wrapper" class="input-prefix">
+                    <span id="strategy-parameter-prefix">¥</span>
+                    <input id="strategy-parameter" type="number" value="100" min="0" step="10" />
+                    <span id="strategy-parameter-suffix" hidden>%</span>
+                  </span>
+                </label>
 
-            <label id="strategy-parameter-field" class="field" hidden>
-              <span id="strategy-parameter-label">策略参数</span>
-              <span id="strategy-parameter-wrapper" class="input-prefix">
-                <span id="strategy-parameter-prefix">¥</span>
-                <input id="strategy-parameter" type="number" value="100" min="0" step="10" />
-                <span id="strategy-parameter-suffix" hidden>%</span>
-              </span>
-            </label>
+                <label class="field">
+                  <span>初始／当前本金</span>
+                  <span class="input-prefix">
+                    <span>¥</span>
+                    <input id="bankroll" type="number" value="10000" min="0.01" step="0.01" />
+                  </span>
+                </label>
 
-            <label class="field">
-              <span>初始／当前本金</span>
-              <span class="input-prefix">
-                <span>¥</span>
-                <input id="bankroll" type="number" value="10000" min="0.01" step="0.01" />
-              </span>
-            </label>
+                <label class="field">
+                  <span>主注最低有效 EV</span>
+                  <span class="input-suffix">
+                    <input id="minimum-ev" type="number" value="0" step="0.01" />
+                    <span>%</span>
+                  </span>
+                </label>
 
-            <label class="field">
-              <span>主注最低有效 EV</span>
-              <span class="input-suffix">
-                <input id="minimum-ev" type="number" value="0" step="0.01" />
-                <span>%</span>
-              </span>
-            </label>
+                <label class="field">
+                  <span>边注最低 EV</span>
+                  <span class="input-suffix">
+                    <input id="minimum-side-bet-ev" type="number" value="0" step="0.01" />
+                    <span>%</span>
+                  </span>
+                </label>
 
-            <label class="field">
-              <span>边注最低 EV</span>
-              <span class="input-suffix">
-                <input id="minimum-side-bet-ev" type="number" value="0" step="0.01" />
-                <span>%</span>
-              </span>
-            </label>
-
-            <label class="field">
-              <span>返水比例</span>
-              <span class="input-suffix">
-                <input id="rebate-rate" type="number" value="0.9" min="0" max="100" step="0.1" />
-                <span>%</span>
-              </span>
-            </label>
+                <label class="field">
+                  <span>返水比例</span>
+                  <span class="input-suffix">
+                    <input id="rebate-rate" type="number" value="0.9" min="0" max="100" step="0.1" />
+                    <span>%</span>
+                  </span>
+                </label>
+              </div>
+            </details>
 
             <details class="advanced-config">
               <summary>
-                <span>高级风险设置（可选）</span>
-                <small>单局、桌台和多下注限制</small>
+                <span class="config-summary-copy">
+                  <strong>高级风险设置（可选）</strong>
+                  <small id="risk-config-summary">单局 5% · 上限 ¥500 · 边注 ¥100</small>
+                </span>
+                <span class="config-summary-action" aria-hidden="true"></span>
               </summary>
               <div class="advanced-config-grid">
                 <label class="field">
@@ -184,8 +208,11 @@
 
           <details class="side-limit-config">
             <summary>
-              <span>每种边注的可下注截止局</span>
-              <small>默认：大/小 20 局，完美对子 45 局，其余边注 50 局</small>
+              <span class="config-summary-copy">
+                <strong>每种边注的可下注截止局</strong>
+                <small>默认：大/小 20 局，完美对子 45 局，其余边注 50 局</small>
+              </span>
+              <span class="config-summary-action" aria-hidden="true"></span>
             </summary>
             <p class="side-limit-explanation"><strong>怎么填：</strong>输入“最后允许下注的局号”。例如填 20：第 1～20 局可下注，第 21 局开始禁用；填 0：不限制。</p>
             <div class="side-limit-grid">
@@ -204,7 +231,7 @@
           </details>
 
           <p class="field-help policy-help">
-            方向仍由 EV 门槛决定；金额可以使用分数凯利、固定金额、固定本金比例、固定期望盈利或目标波动率。所有策略都会经过本金比例、单局金额、桌台和边注上限。每种边注会在超过自己的最后可下注局数后、进入 EV 比较前被移除。关闭“同局多下注”时只选最优 EV，开启后多个合格目标会按比例共享本局总风险预算。
+            系统先按 EV 门槛筛选目标，再应用资金策略、单局上限、桌台上限和边注截止局；开启多下注后，合格目标共享本局风险预算。
           </p>
 
           <div class="subsection-heading shoe-heading">
@@ -266,7 +293,8 @@
         <div id="error-message" class="error-message" role="alert" hidden></div>
       </section>
 
-      <section class="panel result-panel baccarat-section" aria-labelledby="result-title">
+      <!-- 02：展示单局概率、EV、推荐方向和资金策略结果。这里只渲染 JSON。 -->
+      <section class="panel result-panel baccarat-section" data-baccarat-view="analysis" aria-labelledby="result-title">
         <div class="section-heading">
           <div>
             <p class="section-number">02</p>
@@ -296,7 +324,7 @@
 
         <div id="recommendation" class="recommendation" data-action="pending">
           <div>
-            <span class="recommendation-label">通过门槛后的最优目标</span>
+            <span id="recommendation-label" class="recommendation-label">当前最优候选</span>
             <strong id="recommended-bet">等待计算</strong>
           </div>
           <div class="recommendation-metric">
@@ -376,8 +404,11 @@
           “最优”不等于“下注”：还要通过最低 EV 门槛和金额上限；凯利类策略还要求完整凯利比例为正。
         </p>
 
+      </section>
+
+      <section class="panel side-results-panel baccarat-section" data-baccarat-view="analysis" aria-labelledby="side-result-title">
         <div class="subsection-heading side-bet-heading">
-          <h3>边注概率与基础 EV</h3>
+          <h3 id="side-result-title">边注概率与有效 EV</h3>
           <span>按当前剩余牌靴精确计算</span>
         </div>
 
@@ -387,17 +418,14 @@
               <tr>
                 <th scope="col">边注</th>
                 <th scope="col">命中率</th>
-                <th scope="col">净赔付</th>
-                <th scope="col">基础 EV</th>
-                <th scope="col">返水 EV</th>
                 <th scope="col">有效 EV</th>
-                <th scope="col">有效庄家优势</th>
                 <th scope="col">有效 RTP</th>
+                <th scope="col">详情</th>
               </tr>
             </thead>
             <tbody id="side-result-body">
               <tr class="placeholder-row">
-                <td colspan="8">计算牌靴后显示对子、幸运 6/7、龙宝与大/小。</td>
+                <td colspan="5">计算牌靴后显示对子、幸运 6/7、龙宝与大/小。</td>
               </tr>
             </tbody>
           </table>
@@ -407,7 +435,8 @@
         </p>
       </section>
 
-      <section class="panel replay-panel baccarat-section" aria-labelledby="replay-title">
+      <!-- 03：CSV 由主线程读取后交给 Web Worker，回放完成再展示摘要/图表/明细。 -->
+      <section class="panel replay-panel baccarat-section" data-baccarat-view="replay" aria-labelledby="replay-title" hidden>
         <div class="section-heading replay-heading">
           <div>
             <p class="section-number">03</p>
@@ -445,6 +474,7 @@
 
         <div id="replay-error" class="error-message" role="alert" hidden></div>
 
+        <!-- 图表只显示下注结算后的资金点；跳过局没有资金变化点。 -->
         <section class="bankroll-chart-panel" aria-labelledby="bankroll-chart-title">
           <div class="bankroll-chart-heading">
             <div>
@@ -477,6 +507,8 @@
           </div>
         </section>
 
+        <!-- 回放结果区默认隐藏，直到 Worker 返回完整报告。分页只影响 DOM 行数，
+             不影响 Rust 报告和图表使用的全部下注数据。 -->
         <div id="replay-results" class="replay-results" hidden>
           <div class="replay-summary" aria-label="回放结果概要">
             <div>
@@ -624,6 +656,7 @@
         </div>
       </section>
 
+      <!-- 21 点输入与百家乐独立，但仍调用同一 WASM 包；这里分析的是动作 EV。 -->
       <section class="panel input-panel blackjack-section" aria-labelledby="blackjack-input-title" hidden>
         <div class="section-heading">
           <div>
@@ -633,50 +666,17 @@
         </div>
 
         <form id="blackjack-form">
-          <div class="strategy-grid">
+          <div class="blackjack-visible-grid blackjack-primary-inputs">
             <label class="field">
-              <span>牌靴副数</span>
-              <select id="blackjack-decks">
-                <option value="8" selected>8 副牌</option>
-                <option value="6">6 副牌</option>
-                <option value="4">4 副牌</option>
-                <option value="2">2 副牌</option>
-                <option value="1">1 副牌</option>
-              </select>
+              <span>玩家起手牌（正好 2 张）</span>
+              <input id="blackjack-player-cards" value="5S 6H" spellcheck="false" />
             </label>
             <label class="field">
-              <span>天然 21 点赔付</span>
-              <select id="blackjack-payout">
-                <option value="1.5" selected>3:2</option>
-                <option value="1.2">6:5</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>庄家软 17</span>
-              <select id="dealer-soft-17">
-                <option value="stand" selected>S17 · 停牌</option>
-                <option value="hit">H17 · 补牌</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>晚投降</span>
-              <select id="late-surrender">
-                <option value="yes" selected>允许</option>
-                <option value="no">不允许</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>当前原始底注</span>
-              <span class="input-prefix">
-                <span>¥</span>
-                <input id="blackjack-base-stake" type="number" value="100" min="0.01" step="1" />
-              </span>
+              <span>庄家明牌（正好 1 张）</span>
+              <input id="blackjack-dealer-upcard" value="6C" spellcheck="false" />
             </label>
           </div>
-
-          <p class="field-help policy-help">
-            固定规则：美式暗牌与 Peek、任意两张可加倍、DAS、最多 4 手、可再次分 A；分 A 后每手只补一张。
-          </p>
+          <p class="card-format">格式与百家乐一致，例如 <code>AS</code>、<code>10H</code>。花色用于验证真实牌靴，21 点点数计算会聚合 10/J/Q/K。</p>
 
           <fieldset class="mode-switch shoe-heading">
             <legend>牌靴输入表示什么</legend>
@@ -696,17 +696,58 @@
           </label>
           <p id="blackjack-mode-help" class="field-help">留空表示从完整牌靴开始分析本手。</p>
 
-          <div class="blackjack-visible-grid">
-            <label class="field">
-              <span>玩家起手牌（正好 2 张）</span>
-              <input id="blackjack-player-cards" value="5S 6H" spellcheck="false" />
-            </label>
-            <label class="field">
-              <span>庄家明牌（正好 1 张）</span>
-              <input id="blackjack-dealer-upcard" value="6C" spellcheck="false" />
-            </label>
-          </div>
-          <p class="card-format">格式与百家乐一致，例如 <code>AS</code>、<code>10H</code>。花色用于验证真实牌靴，21 点点数计算会聚合 10/J/Q/K。</p>
+          <details class="advanced-config blackjack-rules-config">
+            <summary>
+              <span class="config-summary-copy">
+                <strong>牌桌规则与金额</strong>
+                <small id="blackjack-config-summary">8 副牌 · 3:2 · S17 · 允许晚投降 · 底注 ¥100</small>
+              </span>
+              <span class="config-summary-action" aria-hidden="true"></span>
+            </summary>
+            <div class="advanced-config-grid">
+              <label class="field">
+                <span>牌靴副数</span>
+                <select id="blackjack-decks">
+                  <option value="8" selected>8 副牌</option>
+                  <option value="6">6 副牌</option>
+                  <option value="4">4 副牌</option>
+                  <option value="2">2 副牌</option>
+                  <option value="1">1 副牌</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>天然 21 点赔付</span>
+                <select id="blackjack-payout">
+                  <option value="1.5" selected>3:2</option>
+                  <option value="1.2">6:5</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>庄家软 17</span>
+                <select id="dealer-soft-17">
+                  <option value="stand" selected>S17 · 停牌</option>
+                  <option value="hit">H17 · 补牌</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>晚投降</span>
+                <select id="late-surrender">
+                  <option value="yes" selected>允许</option>
+                  <option value="no">不允许</option>
+                </select>
+              </label>
+              <label class="field">
+                <span>当前原始底注</span>
+                <span class="input-prefix">
+                  <span>¥</span>
+                  <input id="blackjack-base-stake" type="number" value="100" min="0.01" step="1" />
+                </span>
+              </label>
+            </div>
+            <p class="field-help blackjack-rule-help">
+              固定规则：美式暗牌与 Peek、任意两张可加倍、DAS、最多 4 手、可再次分 A；分 A 后每手只补一张。
+            </p>
+          </details>
 
           <div class="form-actions">
             <button id="blackjack-analyze-button" class="primary-button" type="button" disabled>计算动作 EV</button>

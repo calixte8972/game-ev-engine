@@ -2,6 +2,18 @@
 //!
 //! 本模块只决定“是否下注”和“下注哪个方向”，不决定下注金额。
 //! 下注金额由 `risk` 模块中的 `KellyPolicy` 根据这里的决策继续计算。
+//!
+//! 这里的“有效 EV”是方向策略唯一比较的数值：
+//!
+//! ```text
+//! 基础概率 + 赔付规则 -> base EV
+//! 可能结果 + 返水规则 -> rebate EV
+//! base EV + rebate EV -> effective EV
+//! effective EV >= 对应门槛 -> Place，否则 Skip
+//! ```
+//!
+//! 因此“最优”与“值得下注”是两个不同问题：先在候选中找有效 EV 最大者，
+//! 再检查它是否达到门槛；多注模式则返回所有达到各自门槛的候选，而不是只保留第一名。
 
 use crate::baccarat::RebateRule;
 use crate::{MainBet, MainBetAnalysis, SideBet, SideBetAnalysis};
@@ -60,14 +72,24 @@ pub enum CombinedBetAction {
 /// 十四种下注目标共同比较后的可审计结果。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CombinedBetDecision {
+    /// 这次比较中有效 EV 最高的候选，若无目标达标也保留它用于解释 Skip。
     candidate: BetTarget,
+    /// 候选目标不含返水的基础 EV。
     base_ev: f64,
+    /// 候选目标由返水带来的期望贡献。
     rebate_ev: f64,
+    /// `base_ev + rebate_ev`，实际用于排序和门槛比较。
     effective_ev: f64,
+    /// 候选所属类别的最低有效 EV 门槛。
     minimum_ev: f64,
+    /// 该候选最终是 Place 还是 Skip。
     action: CombinedBetAction,
 }
 
+/// 策略比较阶段的统一候选记录。
+///
+/// 主注和边注的原始指标结构不同，但进入策略后都可以抽象成这五个字段。
+/// 先统一成该类型，后面的“过滤门槛、比较 EV、排序”就不需要分别写两套逻辑。
 #[derive(Debug, Clone, Copy)]
 struct CandidateMetrics {
     target: BetTarget,
@@ -218,6 +240,8 @@ impl BettingPolicy {
     where
         F: Fn(SideBet) -> bool,
     {
+        // 主注和边注的门槛可能不同，所以不能先把所有 EV 排序再统一判断；
+        // 每个候选都要携带自己的 minimum_ev，只有达标者才进入 best_eligible。
         let main_candidates = [MainBet::Player, MainBet::Banker, MainBet::Tie].map(|bet| {
             let metrics = main_analysis.effective_metrics(bet, self.rebate);
             CandidateMetrics {
@@ -229,6 +253,7 @@ impl BettingPolicy {
             }
         });
 
+        // best_overall 用于“全部不达标”时解释为什么跳过；它不代表一定可以下注。
         let mut best_overall = main_candidates[0];
         let mut best_eligible: Option<CandidateMetrics> = None;
 
@@ -250,6 +275,8 @@ impl BettingPolicy {
                 }
             });
 
+        // 这里一次遍历完成两件事：保存无门槛的最大值用于 Skip，
+        // 保存达标候选的最大值用于 Place。这样被禁用的边注不会影响其他目标。
         for candidate in main_candidates.into_iter().chain(side_candidates) {
             if candidate.effective_ev > best_overall.effective_ev {
                 best_overall = candidate;
@@ -261,6 +288,7 @@ impl BettingPolicy {
             }
         }
 
+        // 有达标候选时返回它；没有时退回 best_overall，并把门槛差距写入原因。
         let (candidate, action) = if let Some(candidate) = best_eligible {
             (
                 candidate,
@@ -312,6 +340,8 @@ impl BettingPolicy {
     where
         F: Fn(SideBet) -> bool,
     {
+        // 多注模式不能沿用 decide_all 的“只保存一个 best”逻辑，先把所有
+        // 候选收集起来，再逐个过滤并按 effective EV 排序。
         let mut candidates = Vec::with_capacity(3 + SideBet::ALL.len());
 
         for bet in [MainBet::Player, MainBet::Banker, MainBet::Tie] {
@@ -390,26 +420,32 @@ impl BetDecision {
 }
 
 impl CombinedBetDecision {
+    /// 返回比较结果中的候选下注目标。
     pub const fn candidate(self) -> BetTarget {
         self.candidate
     }
 
+    /// 返回候选目标不含返水的基础 EV。
     pub const fn base_ev(self) -> f64 {
         self.base_ev
     }
 
+    /// 返回返水对候选目标的 EV 贡献。
     pub const fn rebate_ev(self) -> f64 {
         self.rebate_ev
     }
 
+    /// 返回包含返水、实际用于策略判断的有效 EV。
     pub const fn effective_ev(self) -> f64 {
         self.effective_ev
     }
 
+    /// 返回本候选需要达到的最低有效 EV。
     pub const fn minimum_ev(self) -> f64 {
         self.minimum_ev
     }
 
+    /// 借用最终动作，避免读取时移动整个决策对象。
     pub const fn action(&self) -> &CombinedBetAction {
         &self.action
     }

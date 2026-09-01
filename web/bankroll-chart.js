@@ -1,3 +1,14 @@
+/*
+ * 本文件只负责把 Rust 回放报告中的下注明细画成可交互的本金曲线。
+ *
+ * 处理分三步：
+ *   逐笔明细 -> buildBankrollSeries() 按牌局合并
+ *             -> sampleBankrollSeries() 为有限画布保留峰谷
+ *             -> Canvas 绘制 + 指针/键盘悬停
+ *
+ * 报告中的完整下注明细始终保留；抽样仅用于绘图，避免几万点在 Canvas 上
+ * 重复画出，同时不隐藏最大本金和最低本金等关键风险位置。
+ */
 const compactMoneyFormatter = new Intl.NumberFormat("zh-CN", {
   notation: "compact",
   maximumFractionDigits: 1,
@@ -17,6 +28,7 @@ function finiteNumber(value, fallback = 0) {
   return Number.isFinite(number) ? number : fallback;
 }
 
+// 金额格式化集中在图表模块，确保坐标轴、标记和悬停提示使用相同精度。
 function money(value) {
   return `¥${moneyFormatter.format(value)}`;
 }
@@ -37,6 +49,8 @@ function roundKey(bet) {
  * 同一局只在资金曲线上出现一次，同时保留该局下注合计和净输赢供悬停查看。
  */
 export function buildBankrollSeries(report) {
+  // 同一局可能有多条明细（允许同局多下注）。由于 Rust 已经把该局所有
+  // 下注结算后的同一个 bankroll_after 写入每条明细，所以这里只需按局键合并。
   const initialBankroll = Number(report?.summary?.initial_bankroll);
   if (!Number.isFinite(initialBankroll)) return [];
 
@@ -69,6 +83,8 @@ export function buildBankrollSeries(report) {
     settlement.betCount += 1;
   }
 
+  // 第 0 个点表示模拟开始，不是一次下注结算；它让图表能显示初始本金基线，
+  // 也使第一局的回撤有明确的比较起点。
   let runningPeak = initialBankroll;
   const points = [{
     index: 0,
@@ -115,6 +131,8 @@ export function sampleBankrollSeries(points, maximumPoints) {
   const bucketCount = Math.max(1, Math.floor((safeMaximum - 2) / 2));
   const sampled = [first];
 
+  // 每个区间同时保留最低点和最高点，并按时间顺序写入，避免折线因为抽样
+  // 顺序错乱而出现人为回折。第一点和最后一点始终保留。
   for (let bucket = 0; bucket < bucketCount; bucket += 1) {
     const start = 1 + Math.floor((bucket * innerLength) / bucketCount);
     const end = 1 + Math.floor(((bucket + 1) * innerLength) / bucketCount);
@@ -165,6 +183,8 @@ export function createBankrollChart({
   guide,
   focus,
 }) {
+  // 某些页面/测试可能没有图表 DOM。返回空控制器让调用方仍可无条件调用
+  // render/reset，这比在每个调用处都写一份 null 判断更简单。
   if (!canvas || !plot) return { render() {}, reset() {} };
 
   const context = canvas.getContext("2d");
@@ -194,6 +214,7 @@ export function createBankrollChart({
     focus.style.top = `${y}px`;
     focus.hidden = false;
 
+    // 初始点没有桌台/牌靴/局号；其他点才显示一次下注结算局的定位信息。
     if (point.index === 0) {
       tooltipTitle.textContent = "模拟开始";
       tooltipMeta.textContent = "初始本金";
@@ -252,6 +273,8 @@ export function createBankrollChart({
     context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
     context.clearRect(0, 0, width, height);
 
+    // Canvas 的 CSS 尺寸与真实像素尺寸分开设置，乘以 devicePixelRatio 后
+    // 再缩放绘图上下文，保证高 DPI 屏幕上的文字和线条不模糊。
     const compact = width < 620;
     const left = compact ? 62 : 82;
     const right = compact ? 14 : 24;
@@ -259,6 +282,8 @@ export function createBankrollChart({
     const bottom = compact ? 44 : 46;
     const plotWidth = width - left - right;
     const plotHeight = height - top - bottom;
+    // 先从完整 points 找到坐标范围，不能用绘图抽样后的点计算范围，否则
+    // 被抽掉的峰值/谷值可能导致曲线超出图表或风险幅度显示失真。
     let rawMinimum = points[0].bankroll;
     let rawMaximum = points[0].bankroll;
     for (const point of points) {
@@ -273,6 +298,8 @@ export function createBankrollChart({
     const maximum = rawMaximum + padding;
     const range = maximum - minimum;
     const finalIndex = points.at(-1).index;
+    // 横轴按结算点序号等距分布，纵轴按本金线性映射；鼠标和键盘也复用
+    // 同一个 geometry，因此标记与悬停位置始终一致。
     const xForIndex = (index) => left + (index / finalIndex) * plotWidth;
     const yForValue = (value) => top + ((maximum - value) / range) * plotHeight;
     geometry = { width, height, left, top, plotWidth, plotHeight, xForIndex, yForValue };
@@ -329,6 +356,8 @@ export function createBankrollChart({
     context.font = "700 10px Inter, system-ui, sans-serif";
     context.fillText(`初始 ${compactMoney(points[0].bankroll)}`, width - right - 3, initialY - 7);
 
+    // 屏幕能显示的有效像素有限，绘图时只抽样到约每两个像素一个点；
+    // 但最高/最低点由峰谷抽样保留，视觉上不会抹掉重要风险事件。
     const drawablePoints = sampleBankrollSeries(points, Math.max(120, Math.floor(plotWidth * 2)));
     const gradient = context.createLinearGradient(0, top, 0, top + plotHeight);
     gradient.addColorStop(0, `${pathColor}29`);
@@ -386,6 +415,8 @@ export function createBankrollChart({
       return;
     }
     const ratio = (x - geometry.left) / geometry.plotWidth;
+    // 指针位置映射回完整 points，而不是 drawablePoints，所以即使图形绘制
+    // 经过抽样，悬停仍能查看完整报告中的每个结算点。
     keyboardIndex = Math.round(ratio * (points.length - 1));
     showTooltip(points[keyboardIndex]);
   });
@@ -427,6 +458,8 @@ export function createBankrollChart({
       hideTooltip();
     },
     render(report) {
+      // 每次新报告到来都重新建立完整曲线；图表不会在内部累加旧报告，
+      // 这样重新上传 CSV 或重新配置策略时不会串入上一次的本金数据。
       points = buildBankrollSeries(report);
       const settlementCount = Math.max(0, points.length - 1);
       pointCount.textContent = settlementCount > 0

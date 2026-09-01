@@ -11,6 +11,16 @@
 //! 例如某项是“两张 0、三张 1、一张 7”，当前数量为 `n0、n1、n7`，每种
 //! 抽象排列代表的物理序列数就是 `(n0)₂ × (n1)₃ × (n7)₁`。`(n)ₖ` 是下降
 //! 阶乘，准确表达不放回抽牌，所以本算法不是概率近似。
+//!
+//! 可以把本文件理解成两个阶段：
+//!
+//! 1. `build_composition_table` 只根据百家乐规则，把每一种六点数序列归类，
+//!    这一步与当前牌靴无关，并通过 `OnceLock` 在进程内只做一次；
+//! 2. `point_outcomes` 读取当前牌靴的点数数量，为每个组合计算物理权重，
+//!    再把系数表中的各个结果桶加权汇总。
+//!
+//! 因此“规则判定”与“牌靴组成”是分离的：规则表只需要预计算一次，牌靴每局
+//! 变化时只重新计算下降阶乘和加权求和。这也是回放大量局数时的主要性能来源。
 
 use std::{collections::HashMap, sync::OnceLock};
 
@@ -28,7 +38,11 @@ const COMPOSITION_COUNT: usize = 5_005;
 /// 组成的抽象排列分别产生多少种结果。计数最大不超过 `6! = 720`。
 #[derive(Debug)]
 struct CompositionCoefficient {
+    /// 该项组合在六个发牌位置中各点数出现的次数。
     multiplicities: [u8; 10],
+    // 下列字段统计同一个点数组成的所有有序排列中，分别有多少排列会落入
+    // 对应结果或赔率档位。它们只统计“点数排列”，还没有乘入当前牌靴的
+    // 具体物理牌数量；真正的物理权重在 point_outcomes() 中再计算。
     player_permutations: u16,
     banker_permutations: u16,
     tie_permutations: u16,
@@ -76,6 +90,7 @@ pub fn calculate_main_and_side_outcomes(
 /// 一次点数聚合枚举的内部累计结果。
 #[derive(Debug, Clone, Copy)]
 struct PointOutcomeAccumulator {
+    /// 当前牌靴剩余的具体牌总数，用来生成统一的六张有序序列分母。
     total_cards: u16,
     player: u64,
     banker: u64,
@@ -97,6 +112,11 @@ struct PointOutcomeAccumulator {
 }
 
 impl PointOutcomeAccumulator {
+    /// 把内部累计桶转换成带完整性校验的主注权重。
+    ///
+    /// 在枚举过程中不能直接构造 [`OutcomeWeights`]，因为它要求庄、闲、和
+    /// 三个桶已经覆盖完整分母。等所有组合都累计完成后再转换，能把校验集中
+    /// 在一个地方，并让中途的可变累加状态保持简单。
     fn main_weights(self) -> Result<OutcomeWeights, ProbabilityError> {
         OutcomeWeights::from_detailed_weights(
             self.total_cards,
@@ -107,6 +127,10 @@ impl PointOutcomeAccumulator {
         )
     }
 
+    /// 把点数枚举结果和具体牌 Rank/花色枚举结果合并成边注权重。
+    ///
+    /// 大小、幸运 6/7、龙宝只依赖点数与牌局结构，所以可以直接复用本对象；
+    /// 只有对子和完美对子需要额外查看前四张具体牌，故通过 `pairs` 参数补入。
     fn side_bet_weights(self, pairs: PairWeights) -> SideBetWeights {
         let total = falling_factorial(self.total_cards, 6);
         SideBetWeights::new(
@@ -134,6 +158,8 @@ impl PointOutcomeAccumulator {
 
 fn point_outcomes(shoe: &Shoe) -> Result<PointOutcomeAccumulator, ProbabilityError> {
     let total_cards = shoe.total_remaining();
+    // 所有终局都统一扩展到六张有序序列。少于六张时，即使某些规则只用
+    // 四张牌也没有足够的“补全位置”来建立共同分母，所以直接拒绝。
     if total_cards < 6 {
         return Err(ProbabilityError::NotEnoughCards {
             remaining: total_cards,
@@ -141,6 +167,8 @@ fn point_outcomes(shoe: &Shoe) -> Result<PointOutcomeAccumulator, ProbabilityErr
     }
 
     let point_counts = shoe.baccarat_point_counts();
+    // 从这里开始不再区分具体牌面。例如 A、2、3、4 会分别落在 1、2、3、4
+    // 点；10/J/Q/K 都落在点数 0。对子所需的 Rank 信息由 pair_weights 单独处理。
 
     // 一项组合最多取同一点数六次。先计算每个点数的 (n)₀ 到 (n)₆，
     // 避免在 5,005 项循环里反复计算相同下降阶乘。
@@ -190,6 +218,9 @@ fn point_outcomes(shoe: &Shoe) -> Result<PointOutcomeAccumulator, ProbabilityErr
             continue;
         }
 
+        // 一项的总贡献 = 当前牌靴能实现这项点数组合的物理序列数 ×
+        // 该组合中属于某个结果的点数排列数。每个结果桶都使用同一项物理权重，
+        // 因为它们只是同一批抽牌序列按规则划分后的不同集合。
         player = add_weight(
             player,
             physical_sequences_per_permutation,
@@ -279,6 +310,8 @@ fn point_outcomes(shoe: &Shoe) -> Result<PointOutcomeAccumulator, ProbabilityErr
         )?;
     }
 
+    // 此时每个可达的六点数组合都已处理完。主注转换器会继续验证三种结果
+    // 是否恰好覆盖 falling_factorial(total_cards, 6)。
     Ok(PointOutcomeAccumulator {
         total_cards,
         player,
@@ -312,6 +345,7 @@ struct PairWeights {
 
 fn pair_weights(shoe: &Shoe) -> Result<PairWeights, ProbabilityError> {
     let total_cards = shoe.total_remaining();
+    // 前四张决定庄对/闲对；统一六张分母还需要为后两张保留任意排列。
     if total_cards < 6 {
         return Err(ProbabilityError::NotEnoughCards {
             remaining: total_cards,
@@ -319,8 +353,12 @@ fn pair_weights(shoe: &Shoe) -> Result<PairWeights, ProbabilityError> {
     }
 
     let mut counts = shoe.rank_counts();
+    // 这里是 13 个 Rank 的计数，而不是 52 个具体牌的计数。普通对子只问
+    // “两张 Rank 是否相同”，因此不同花色、不同副本应作为同一 Rank 的可选项。
     let completion_weight = falling_factorial(total_cards - 4, 2);
     let mut result = PairWeights {
+        // 完美对子必须保留花色和具体牌身份，所以这部分不能从 13 类 counts
+        // 推导，而要使用 52 类 card_counts 单独做一次容斥计算。
         perfect: perfect_pair_first_four_weight(shoe)?
             .checked_mul(completion_weight)
             .ok_or(ProbabilityError::WeightOverflow)?,
@@ -366,6 +404,10 @@ fn pair_weights(shoe: &Shoe) -> Result<PairWeights, ProbabilityError> {
                     let player_pair = player_first == player_second;
                     let banker_pair = banker_first == banker_second;
 
+                    // first_four_weight 是按四个发牌位置依次选择具体 Rank 的
+                    // 有序数量；completion_weight 再把已经结束后的两个无关位置
+                    // 补进共同六张分母。any_pair 使用“或”，故不会重复计算双方
+                    // 同时成对的同一条序列。
                     if player_pair {
                         result.player = result
                             .player
@@ -386,6 +428,8 @@ fn pair_weights(shoe: &Shoe) -> Result<PairWeights, ProbabilityError> {
                     }
                 }
 
+                // 离开 player_second 分支前恢复它，保证下一种第二张牌看到的是
+                // 同一个父节点状态。下面两层恢复逻辑与具体牌回溯器相同。
                 counts[player_second] += 1;
             }
 
@@ -475,6 +519,8 @@ fn add_weight(
     physical_weight: u64,
     permutations: u16,
 ) -> Result<u64, ProbabilityError> {
+    // permutations 来自静态规则表，physical_weight 来自当前牌靴；两者相乘
+    // 后才是这一结果桶实际覆盖的有序物理发牌序列数。
     let contribution = physical_weight
         .checked_mul(u64::from(permutations))
         .ok_or(ProbabilityError::WeightOverflow)?;
@@ -483,11 +529,20 @@ fn add_weight(
         .ok_or(ProbabilityError::WeightOverflow)
 }
 
+/// 返回进程内共享的组合系数表。
+///
+/// `OnceLock` 保证第一次调用时完成初始化，之后只读复用；这对 CLI、WASM 页面
+/// 和 CSV 回放都有效，但只限于同一个进程/WASM 实例。它不会把不同牌靴的状态
+/// 混在一起，因为表中没有任何牌靴数量，牌靴数据始终由调用者单独传入。
 fn composition_table() -> &'static [CompositionCoefficient] {
     COMPOSITION_TABLE.get_or_init(build_composition_table)
 }
 
 /// 一次性把 10^6 种六张点数顺序归并为 5,005 项。
+///
+/// `HashMap` 的键是十种点数的出现次数，而不是六个位置的顺序。这样所有
+/// 具有相同多重集合的序列共享一个条目；值中的各类 permutation 字段再记录
+/// 这些序列分别属于哪些结果和边注档位。
 fn build_composition_table() -> Vec<CompositionCoefficient> {
     let mut coefficients =
         HashMap::<[u8; 10], CompositionCoefficient>::with_capacity(COMPOSITION_COUNT);
@@ -511,6 +566,8 @@ fn enumerate_abstract_sequences(
     coefficients: &mut HashMap<[u8; 10], CompositionCoefficient>,
 ) {
     if position == points.len() {
+        // 叶节点代表一条完整的六点数有序序列。先用统一回合解析器确定
+        // 实际只用 4/5/6 张中的哪一种，再把该叶节点归入对应组合桶。
         let result = resolve_six_position_sequence(points);
         let coefficient =
             coefficients
@@ -536,12 +593,15 @@ fn enumerate_abstract_sequences(
                     big_permutations: 0,
                 });
 
+        // 主注结果三选一；这三项对每一条完整六点数序列都是互斥且穷尽的。
         match result.outcome() {
             RoundOutcome::Player => coefficient.player_permutations += 1,
             RoundOutcome::Banker => coefficient.banker_permutations += 1,
             RoundOutcome::Tie => coefficient.tie_permutations += 1,
         }
         if result.outcome() == RoundOutcome::Banker && result.banker_total() == 6 {
+            // 庄六是庄赢的子集，同时还是幸运六的命中集合；这里分别记桶，
+            // 后面才能用不同用途的赔率读取相同的底层路径。
             coefficient.banker_win_on_six_permutations += 1;
             if result.banker_card_count() == 2 {
                 coefficient.lucky_six_two_cards_permutations += 1;
@@ -550,11 +610,15 @@ fn enumerate_abstract_sequences(
             }
         }
         if result.card_count() == 4 {
+            // 大小只看最终实际发牌张数。四张是 Small，五/六张是 Big，
+            // 所以两个桶在所有可达序列上应当互斥并覆盖全部序列。
             coefficient.small_permutations += 1;
         } else {
             coefficient.big_permutations += 1;
         }
         if result.outcome() == RoundOutcome::Player && result.player_total() == 7 {
+            // Lucky Seven 先筛选“闲赢且闲为 7”，再按闲家用了两张还是三张
+            // 分档；Super Lucky Seven 在同一筛选内再要求庄为 6。
             if result.player_card_count() == 2 {
                 coefficient.lucky_seven_two_cards_permutations += 1;
             } else {
@@ -576,6 +640,8 @@ fn enumerate_abstract_sequences(
         let banker_natural =
             result.banker_card_count() == 2 && matches!(result.banker_total(), 8 | 9);
         match result.outcome() {
+            // 龙宝的 Natural 不是普通点差赔率，而是退回本金的 Push；
+            // 非 Natural 的胜方才按点差 4～9 进入赔率数组。
             RoundOutcome::Player if player_natural => {
                 coefficient.player_dragon_bonus_push_permutations += 1;
             }
@@ -603,6 +669,9 @@ fn enumerate_abstract_sequences(
         return;
     }
 
+    // 非叶节点：给当前位置依次放入 0～9 点，并在递归返回后撤销计数。
+    // `multiplicities` 的加一/减一是回溯不变量；如果忘记减一，后续叶节点
+    // 就会把父分支的点数数量带进来，最终不会得到正确的 5,005 个组合。
     for point in 0_u8..=9 {
         points[position] = point;
         multiplicities[usize::from(point)] += 1;
@@ -616,8 +685,13 @@ fn enumerate_abstract_sequences(
 /// 逐个尝试合法前缀可复用生产补牌规则；自然牌或停牌后未使用的位置仍属于
 /// 共同六张分母中的补全位置，与原递归枚举器语义相同。
 fn resolve_six_position_sequence(points: &[u8; 6]) -> super::round::PointRoundResult {
+    // 同一条六点数序列先尝试四张，再尝试五张，最后尝试六张。
+    // `resolve_point_round` 返回“缺牌”时，表示前缀还没有走完，而不是规则
+    // 错误；因此继续扩大前缀。第一次成功的前缀就是实际终局长度。
     for used in 4..=6 {
         match resolve_point_round(&points[..used]) {
+            // 即使牌局在四或五张已经结束，后面的点数仍作为统一六张分母的
+            // 补全位置存在，但不再影响本局结果；这里直接返回实际终局结果。
             Ok(result) => return result,
             Err(
                 RoundError::NotEnoughInitialCards

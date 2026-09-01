@@ -4,6 +4,19 @@
 //! 美式 Peek 规则下，如果庄家明牌为 A 或 10 点牌，结果以“庄家已经确认
 //! 没有 Blackjack”为条件。未知暗牌仍然真实占用牌靴，并通过后验权重参与
 //! 后续补牌概率，计算过程不会偷看暗牌。
+//!
+//! 计算分成三层：
+//!
+//! ```text
+//! Shoe + 玩家两张牌 + 庄家明牌
+//!   ↓ 扣除可见牌、建立暗牌后验
+//! Solver：递归计算庄家终局分布与玩家动作 EV
+//!   ↓ 比较 Stand / Hit / Double / Split / Surrender
+//! BlackjackAnalysis
+//! ```
+//!
+//! 这里的动作 EV 都按原始底注 1 单位计量。加倍会把最终输赢乘 2；分牌当前
+//! 采用两手边际 EV 的透明估算，并在结果字段中明确标出它不是联合耗牌精确值。
 
 use std::{collections::HashMap, error::Error, fmt};
 
@@ -81,6 +94,7 @@ pub enum BlackjackAction {
 }
 
 impl BlackjackAction {
+    /// 返回供 JSON 和前端使用的稳定动作名称。
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Blackjack => "blackjack",
@@ -96,27 +110,42 @@ impl BlackjackAction {
 /// 每个可用动作按“原始下注 1 单位”计量的期望净盈利。
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct BlackjackActionEvs {
+    /// 停牌的期望净盈利；合法输入下始终存在。
     pub stand: Option<f64>,
+    /// 补牌的期望净盈利；爆牌或其他边界仍由核心返回数值。
     pub hit: Option<f64>,
+    /// 加倍的期望净盈利；起手决策点可用时才存在。
     pub double: Option<f64>,
+    /// 分牌的期望净盈利；只有两张牌 Rank 相同才存在。
     pub split: Option<f64>,
+    /// 投降的期望净盈利；桌规关闭晚投降时为 `None`。
     pub surrender: Option<f64>,
 }
 
 /// 一次已知手牌分析的完整结果。
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct BlackjackAnalysis {
+    /// 玩家起手牌按二十一点规则计算的最终点数。
     pub player_total: u8,
+    /// 是否为软牌：至少有一张 A 按 11 计分仍不爆牌。
     pub player_soft: bool,
+    /// 是否为两张牌组成的天然 Blackjack。
     pub player_blackjack: bool,
+    /// 两张起手牌的 Rank 是否相同，决定是否存在分牌动作。
     pub pair: bool,
+    /// 庄家明牌的稳定文本，例如 `A` 或 `10`。
     pub dealer_upcard: &'static str,
+    /// Peek 前庄家暗牌组成 Blackjack 的概率。
     pub dealer_blackjack_probability_before_peek: f64,
+    /// 庄家明牌为 A/10 时，动作 EV 是否建立在“Peek 已确认无 Blackjack”条件下。
     pub conditional_on_no_dealer_blackjack: bool,
     /// 保险按保险下注自身 1 单位计算：庄家 Blackjack 净赢 2，否则净输 1。
     pub insurance_ev: Option<f64>,
+    /// 所有动作的可用 EV；不可用动作用 `None` 表示，而不是伪造一个数值。
     pub actions: BlackjackActionEvs,
+    /// 按动作 EV 选出的最优动作。
     pub optimal_action: BlackjackAction,
+    /// 最优动作对应的期望净盈利。
     pub optimal_ev: f64,
     /// 当前分牌实现使用有限牌靴的一手边际 EV，再乘以两手。
     /// 它考虑暗牌后验和牌靴组成，但尚未联合枚举两手之间的互相耗牌。
@@ -128,11 +157,17 @@ pub struct BlackjackAnalysis {
 struct HandState {
     /// 所有 A 都先按 1 计入的总点数。
     hard_total: u8,
+    /// 当前手牌中 A 的数量；用来判断是否可以把其中一张按 11 计。
     aces: u8,
+    /// 当前手牌张数；天然 Blackjack 需要恰好两张。
     cards: u8,
 }
 
 impl HandState {
+    /// 从具体牌转换为递归求解使用的紧凑状态。
+    ///
+    /// A 先按 1 计入 `hard_total`，最后由 `total` 在不爆牌时补上 10；
+    /// 这样不用枚举 A 的“软/硬”两种表示，状态也更容易作为缓存键。
     fn from_cards(cards: &[Card]) -> Self {
         let mut hand = Self {
             hard_total: 0,
@@ -146,6 +181,7 @@ impl HandState {
     }
 
     fn from_value(value: usize) -> Self {
+        // 递归抽牌已经被压缩成 0..9 的价值类，因此不需要重新构造 Card。
         Self {
             hard_total: 0,
             aces: 0,
@@ -155,6 +191,7 @@ impl HandState {
     }
 
     fn add_value(mut self, value: usize) -> Self {
+        // 返回新的 Self 而不是修改外部引用，便于在递归分支中保留父节点状态。
         self.cards += 1;
         if value == ACE_INDEX {
             self.hard_total += 1;
@@ -166,6 +203,7 @@ impl HandState {
     }
 
     fn total(self) -> u8 {
+        // 只有“硬点数 + 10”仍不超过 21 时，才把一张 A 从 1 提升为 11。
         if self.aces > 0 && self.hard_total + 10 <= 21 {
             self.hard_total + 10
         } else {
@@ -241,6 +279,9 @@ impl Solver {
 
     /// 给定已经观察到的后续明牌，重新计算未知暗牌属于每一类牌的后验权重。
     fn hole_weights(&self, counts: &[u16; VALUE_CLASS_COUNT]) -> [f64; VALUE_CLASS_COUNT] {
+        // 暗牌没有被观察到，不能简单按当前 counts 直接均匀处理：
+        // 每个候选暗牌都会导致一套不同的后续剩余牌数量。这里返回每种暗牌
+        // 对应的“可观察历史权重”，visible_draw_probabilities 再用它混合。
         let mut weights = [0.0; VALUE_CLASS_COUNT];
         for (hole, hole_weight) in weights.iter_mut().enumerate() {
             if !self.allowed_holes[hole] || self.root_counts[hole] == 0 {
@@ -272,6 +313,8 @@ impl Solver {
         &self,
         counts: &[u16; VALUE_CLASS_COUNT],
     ) -> [f64; VALUE_CLASS_COUNT] {
+        // 对每个可能暗牌分别计算“下一张可见牌”的数量，再按暗牌后验加权。
+        // 分母是所有暗牌假设权重 × 暗牌之后可抽取的牌数。
         let weights = self.hole_weights(counts);
         let weight_sum: f64 = weights.iter().sum();
         let drawable = counts.iter().sum::<u16>().saturating_sub(1);
@@ -294,6 +337,7 @@ impl Solver {
     }
 
     fn stand_ev(&mut self, counts: [u16; VALUE_CLASS_COUNT], player: HandState) -> f64 {
+        // 停牌时只需要枚举庄家暗牌和庄家后续自动补牌，不再消耗玩家牌。
         if player.is_bust() {
             return -1.0;
         }
@@ -324,6 +368,8 @@ impl Solver {
         counts: [u16; VALUE_CLASS_COUNT],
         hand: HandState,
     ) -> [f64; 6] {
+        // 返回 [爆牌, 17, 18, 19, 20, 21] 六个互斥结果的概率。
+        // 这是庄家自动补牌的递归子问题，使用 memo 避免不同玩家动作重复计算。
         if hand.is_bust() {
             return [1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
         }
@@ -332,6 +378,7 @@ impl Solver {
         let should_hit =
             total < 17 || (total == 17 && hand.is_soft() && self.rules.dealer_hits_soft_17);
         if !should_hit {
+            // 庄家已经停牌，只有当前点数对应的桶为 1。
             let mut distribution = [0.0; 6];
             distribution[usize::from(total.saturating_sub(16))] = 1.0;
             return distribution;
@@ -364,6 +411,8 @@ impl Solver {
     }
 
     fn hit_ev(&mut self, counts: [u16; VALUE_CLASS_COUNT], hand: HandState) -> f64 {
+        // 补一张后，如果爆牌立即是 -1；否则玩家还可以继续在每个后续状态
+        // 选择 Hit 或 Stand，所以递归调用 optimal_hit_or_stand。
         let probabilities = self.visible_draw_probabilities(&counts);
         let mut expected = 0.0;
         for value in 0..VALUE_CLASS_COUNT {
@@ -385,6 +434,8 @@ impl Solver {
     }
 
     fn optimal_hit_or_stand(&mut self, counts: [u16; VALUE_CLASS_COUNT], hand: HandState) -> f64 {
+        // 相同“剩余价值类计数 + 玩家手牌状态”具有相同的最优后续价值，
+        // 因此先查缓存，再在当前状态比较停牌与继续补牌。
         let key = PlayerMemoKey { counts, hand };
         if let Some(cached) = self.player_memo.get(&key) {
             return *cached;
@@ -400,6 +451,8 @@ impl Solver {
     }
 
     fn double_ev(&mut self, counts: [u16; VALUE_CLASS_COUNT], hand: HandState) -> f64 {
+        // 加倍只允许再发一张牌，之后必须停牌；所以这里不会递归到 hit。
+        // 因为下注额翻倍，赢/输/庄家结算结果也整体乘 2。
         let probabilities = self.visible_draw_probabilities(&counts);
         let mut expected = 0.0;
         for value in 0..VALUE_CLASS_COUNT {
@@ -421,6 +474,8 @@ impl Solver {
     }
 
     fn split_estimate(&mut self, counts: [u16; VALUE_CLASS_COUNT], pair_value: usize) -> f64 {
+        // 当前版本把两手分牌拆成两个独立的一手边际问题，各手使用同一套
+        // 后验与策略规则，最后相加。它没有联合模拟两手依次耗牌的相关性。
         let probabilities = self.visible_draw_probabilities(&counts);
         let mut one_hand_ev = 0.0;
         for value in 0..VALUE_CLASS_COUNT {
@@ -452,6 +507,8 @@ pub fn analyze_blackjack_hand(
     dealer_upcard: Card,
     rules: BlackjackRules,
 ) -> Result<BlackjackAnalysis, BlackjackError> {
+    // 入口约定 shoe 已经扣除了玩家两张牌和庄家明牌；这里不重复扣除，
+    // 只把可见牌转换成状态并把它们与未知牌靴交给 Solver。
     let rules = rules.validate()?;
     if player_cards.len() != 2 {
         return Err(BlackjackError::ExpectedTwoPlayerCards(player_cards.len()));
@@ -463,11 +520,15 @@ pub fn analyze_blackjack_hand(
     }
 
     let counts = blackjack_value_counts(shoe_after_visible_cards);
+    // 点数 10/J/Q/K 对二十一点动作来说完全等价，因此从 13 个 Rank
+    // 压缩成 10 个价值类；具体牌靴仍由上层保留，避免影响百家乐功能。
     let upcard = value_index(dealer_upcard.rank());
     let player = HandState::from_cards(player_cards);
     let pair_value = value_index(player_cards[0].rank());
     let pair = pair_value == value_index(player_cards[1].rank());
     let total_unseen = counts.iter().sum::<u16>();
+    // 保险与 Peek 前概率只看庄家暗牌是否能补成 21；动作 EV 则在 Solver 内
+    // 根据明牌条件重新混合暗牌后验。
     let dealer_blackjack_probability_before_peek = if upcard == ACE_INDEX {
         f64::from(counts[TEN_INDEX]) / f64::from(total_unseen)
     } else if upcard == TEN_INDEX {
@@ -481,6 +542,8 @@ pub fn analyze_blackjack_hand(
     let mut solver = Solver::new(rules, upcard, counts)?;
 
     if player.is_blackjack() {
+        // 天然 Blackjack 不再进入普通 Hit/Stand 状态树；它直接按天然赔付
+        // 结算，同时保留保险和 Peek 相关信息给调用者。
         return Ok(BlackjackAnalysis {
             player_total: 21,
             player_soft: true,
@@ -504,11 +567,15 @@ pub fn analyze_blackjack_hand(
         });
     }
 
+    // 所有动作从同一个“看到起手牌之后”的 counts 开始。Solver 内部缓存庄家
+    // 分布和玩家后续状态，使比较动作时不会重复展开相同子树。
     let stand = solver.stand_ev(counts, player);
     let hit = solver.hit_ev(counts, player);
     let double = solver.double_ev(counts, player);
     let split = pair.then(|| solver.split_estimate(counts, pair_value));
     let surrender = rules.late_surrender.then_some(-0.5);
+    // 用 Stand 作为固定初始值，随后只在严格更优且超过浮点容差时替换，
+    // 保证完全相等或微小舍入差异不会让动作在不同平台来回变化。
     let mut best = (BlackjackAction::Stand, stand);
     for candidate in [
         (BlackjackAction::Hit, Some(hit)),
@@ -547,6 +614,7 @@ pub fn analyze_blackjack_hand(
 }
 
 fn blackjack_value_counts(shoe: &Shoe) -> [u16; VALUE_CLASS_COUNT] {
+    // 前 9 类保留 A..9；最后一类把 10/J/Q/K 的 Rank 数量合并。
     let ranks = shoe.rank_counts();
     let mut counts = [0; VALUE_CLASS_COUNT];
     counts[..9].copy_from_slice(&ranks[..9]);
@@ -555,6 +623,7 @@ fn blackjack_value_counts(shoe: &Shoe) -> [u16; VALUE_CLASS_COUNT] {
 }
 
 fn value_index(rank: Rank) -> usize {
+    // 这里的下标是二十一点价值类，不是 Card/Ranks 的底层数组下标。
     match rank {
         Rank::Ace => ACE_INDEX,
         Rank::Two => 1,
@@ -570,11 +639,14 @@ fn value_index(rank: Rank) -> usize {
 }
 
 fn value_name(value: usize) -> &'static str {
+    // 与 VALUE_CLASS_COUNT 对齐，最后一个类统一显示为“10”。
     ["A", "2", "3", "4", "5", "6", "7", "8", "9", "10"][value]
 }
 
 /// `distribution[0]` 是庄家爆牌，`1..=5` 分别是 17..=21。
 fn settle_against_dealer(player_total: u8, distribution: [f64; 6]) -> f64 {
+    // 爆牌对玩家下注的净收益固定为 +1；庄家 17..21 时再按点数比较，
+    // 相等是 Push，贡献 0。
     let mut expected = distribution[0];
     for dealer_total in 17..=21_u8 {
         let probability = distribution[usize::from(dealer_total - 16)];
@@ -591,10 +663,15 @@ fn settle_against_dealer(player_total: u8, distribution: [f64; 6]) -> f64 {
 /// 二十一点输入或规则无法构成合法分析时返回的错误。
 #[derive(Debug, Clone, PartialEq)]
 pub enum BlackjackError {
+    /// 玩家起手牌不是恰好两张。
     ExpectedTwoPlayerCards(usize),
+    /// 扣除可见牌后剩余牌不足以建立庄家暗牌/后续抽牌分布。
     NotEnoughCards(u16),
+    /// Peek 条件下没有任何合法的庄家暗牌价值仍可发生。
     NoPossibleDealerHoleCard,
+    /// 天然 Blackjack 赔付不是有限正数。
     InvalidBlackjackPayout(f64),
+    /// 当前实现要求最大分牌手数在 2..=4 内。
     InvalidMaxSplitHands(u8),
 }
 

@@ -8,6 +8,16 @@
 //!
 //! 真正的发牌规则、概率枚举、EV 和返水计算仍然全部复用 Rust 核心。这样本地
 //! 回放、未来 Python 调用和浏览器页面不会各自维护一套容易分叉的算法。
+//!
+//! 本模块的边界职责可以概括为三件事：
+//!
+//! 1. 把 JavaScript 的字符串输入转换成 `Card`、`Shoe` 和强类型规则；
+//! 2. 调用核心层的一次完整分析或 CSV 回放；
+//! 3. 把核心结果转换成稳定 JSON。核心算法不应该为了适应页面而返回 DOM
+//!    或 JavaScript 类型，页面也不应该自己重新计算概率、EV 或凯利金额。
+//!
+//! 带 `#[wasm_bindgen]` 的函数是最外层 ABI；不带该属性的 `*_json` 函数可以在
+//! 普通 Rust 测试中直接调用。这样输入校验和 JSON 协议不必依赖浏览器才能验证。
 
 use serde::Serialize;
 
@@ -38,6 +48,8 @@ pub fn analyze_baccarat(
     cards_text: &str,
     rebate_rate: f64,
 ) -> Result<String, JsValue> {
+    // WASM ABI 只负责把 Rust 的 String 错误转成 JavaScript 可读取的异常值；
+    // 实际解析和计算委托给可测试的纯 Rust JSON 函数。
     analyze_baccarat_json(source_mode, decks, cards_text, rebate_rate)
         .map_err(|message| JsValue::from_str(&message))
 }
@@ -65,6 +77,8 @@ pub fn analyze_baccarat_strategy(
     side_bet_limit: f64,
     allow_multiple_bets: bool,
 ) -> Result<String, JsValue> {
+    // 保持 WASM 参数为基础字符串/数字类型，避免 wasm-bindgen 直接跨边界传递
+    // 复杂 Rust 枚举；函数内部再恢复成强类型策略。
     analyze_baccarat_strategy_json_with_side_bets_and_multiple(
         source_mode,
         decks,
@@ -108,6 +122,8 @@ pub fn replay_baccarat_csv(
     lucky_bet_max_round: u32,
     allow_multiple_bets: bool,
 ) -> Result<String, JsValue> {
+    // 这个旧 ABI 保留单一幸运边注上限，内部会转换成新版的结构化限制对象。
+    // 新页面使用下面的 WithSideBetLimits 入口，避免继续增加位置参数。
     replay_baccarat_csv_json_with_side_bets_and_lucky_limit_and_multiple(
         csv_text,
         decks,
@@ -151,6 +167,8 @@ pub fn replay_baccarat_csv_with_side_bet_limits(
     side_bet_round_limits_json: &str,
     allow_multiple_bets: bool,
 ) -> Result<String, JsValue> {
+    // 大文件回放由前端 Worker 调用，但 Rust 侧仍然同步执行；Worker 只负责
+    // 把耗时任务移出 UI 线程，不改变核心计算顺序。
     replay_baccarat_csv_json_with_side_bet_round_limits_and_multiple(
         csv_text,
         decks,
@@ -189,6 +207,7 @@ pub fn analyze_blackjack(
     late_surrender: bool,
     current_base_stake: f64,
 ) -> Result<String, JsValue> {
+    // 二十一点页面与百家乐共用“字符串输入 -> 强类型核心 -> JSON”边界模式。
     analyze_blackjack_json(
         source_mode,
         decks,
@@ -220,6 +239,8 @@ pub fn analyze_blackjack_json(
     late_surrender: bool,
     current_base_stake: f64,
 ) -> Result<String, String> {
+    // 先校验底注和可见牌数量，再构造牌靴；顺序错误时尽早返回可读消息，
+    // 不让无效输入进入递归动作求解器。
     if !current_base_stake.is_finite() || current_base_stake <= 0.0 {
         return Err("当前底注必须是有限正数".to_owned());
     }
@@ -292,6 +313,8 @@ pub fn analyze_baccarat_json(
     cards_text: &str,
     rebate_rate: f64,
 ) -> Result<String, String> {
+    // 兼容入口只填充默认策略参数，真正逻辑集中在最完整的策略函数中，
+    // 避免旧 API 与新 API 产生两套计算结果。
     analyze_baccarat_strategy_json(
         source_mode,
         decks,
@@ -401,6 +424,9 @@ pub fn analyze_baccarat_strategy_json_with_side_bets_and_multiple(
     side_bet_limit: f64,
     allow_multiple_bets: bool,
 ) -> Result<String, String> {
+    // 输入校验与计算分成清晰的流水线：校验标量 -> 解析牌 -> 构造 Shoe ->
+    // 解析规则/策略 -> 枚举概率 -> 生成计划 -> 组装 JSON。任何一步失败都
+    // 在进入下一层前返回中文错误，前端可以直接展示。
     if !rebate_rate.is_finite() || !(0.0..=1.0).contains(&rebate_rate) {
         return Err("返水比例必须是 0% 到 100% 之间的有限数字".to_owned());
     }
@@ -435,6 +461,8 @@ pub fn analyze_baccarat_strategy_json_with_side_bets_and_multiple(
         ));
     }
 
+    // 这些解析函数把开放的字符串边界收紧成领域枚举，之后核心层不再处理
+    // 拼写、大小写或未知策略名等页面输入问题。
     let (rules, payout_rule_code) = parse_payout_rule(payout_rule)?;
     let stake_strategy = parse_stake_strategy(stake_strategy, strategy_parameter)?;
     let rebate = if rebate_rate == 0.0 {
@@ -448,11 +476,15 @@ pub fn analyze_baccarat_strategy_json_with_side_bets_and_multiple(
         KellyPolicy::with_strategy(stake_strategy, max_fraction, max_round_stake, table_limit)
             .and_then(|policy| policy.with_side_bet_limit(side_bet_limit))
             .map_err(|error| format!("资金策略不合法：{error}"))?;
+    // 主注和边注在同一次点数枚举中产生；这样浏览器一次点击不会重复构造
+    // 组合系数表或重复遍历当前牌靴。
     let (weights, side_weights) = calculate_main_and_side_outcomes(&shoe)
         .map_err(|error| format!("概率与 EV 计算失败：{error}"))?;
     let analysis = MainBetAnalysis::from_weights(weights, rules);
     let side_rules = SideBetRules::default();
     let side_analysis = SideBetAnalysis::calculate(side_weights, side_rules);
+    // 多注开关只改变“取一个计划还是保留全部合格计划”，不改变任何概率、
+    // EV 或单个目标的凯利公式。多注计划最后还会共享本局总风险上限。
     let plans = if allow_multiple_bets {
         let plans = kelly_policy
             .plan_all_multiple_with_side_bet_filter(
@@ -749,6 +781,8 @@ pub fn replay_baccarat_csv_json_with_side_bet_round_limits_and_multiple(
     side_bet_round_limits_json: &str,
     allow_multiple_bets: bool,
 ) -> Result<String, String> {
+    // 这是回放 JSON 的最终入口。上面的旧函数都只负责填默认值并转发到这里，
+    // 因此 CSV 解析、配置校验、资金回放和输出结构只维护一份。
     // 兼容仍在浏览器中打开的旧页面：旧页面没有这两个后来新增的字段，
     // `undefined` 经过 wasm-bindgen 会变成 NaN。只有两项同时缺失时才按旧版
     // 语义回退；若调用者只传了一个非法值，仍交给领域层返回明确错误。
@@ -787,6 +821,8 @@ pub fn replay_baccarat_csv_json_with_side_bet_round_limits_and_multiple(
 
 /// 把浏览器稳定字符串转换成核心赔付规则。
 fn parse_payout_rule(input: &str) -> Result<(MainBetRules, &'static str), String> {
+    // `trim + to_ascii_lowercase` 只在边界层做宽松输入；核心规则接收的始终是
+    // 明确的 MainBetRules，而不是用户可能拼错的字符串。
     match input.trim().to_ascii_lowercase().as_str() {
         "standard" => Ok((MainBetRules::standard(), "standard")),
         "no_commission" => Ok((MainBetRules::no_commission(), "no_commission")),
@@ -799,6 +835,8 @@ fn parse_stake_strategy(
     input: &str,
     strategy_parameter: f64,
 ) -> Result<StakeSizingStrategy, String> {
+    // 一个 strategy_parameter 根据策略类型有不同含义：可以是百分比、固定金额
+    // 或目标金额。这里只负责绑定枚举，范围验证统一由 KellyPolicy 完成。
     match input.trim().to_ascii_lowercase().as_str() {
         "full_kelly" => Ok(StakeSizingStrategy::FullKelly),
         "half_kelly" => Ok(StakeSizingStrategy::HalfKelly),
@@ -869,6 +907,8 @@ fn browser_recommendation(plan: CombinedBetPlan, bankroll: f64) -> BrowserRecomm
 
 /// 把空格、逗号、分号或中文顿号分隔的牌面文本解析成牌列表。
 fn parse_cards(input: &str) -> Result<Vec<Card>, String> {
+    // 浏览器输入允许多种分隔符，但每个 token 最终都必须通过 Card::FromStr；
+    // 因此页面可以接受中文标点，核心仍只维护一套牌面语法。
     input
         .split(|character: char| {
             character.is_whitespace() || matches!(character, ',' | '，' | ';' | '；' | '、')
@@ -888,12 +928,19 @@ fn parse_cards(input: &str) -> Result<Vec<Card>, String> {
 /// 追加多少筹码”。初始底注在看到牌之前已经发生，不能用事后动作 EV 重新决定。
 #[derive(Debug, Serialize)]
 struct BrowserBlackjackAnalysis {
+    /// 用户选择的输入模式，原样规范化为 consumed/remaining。
     source_mode: String,
+    /// 牌靴副数。
     decks: u8,
+    /// 用户在“已消耗模式”文本中输入的牌数。
     input_shoe_card_count: usize,
+    /// 扣除可见牌后仍在牌靴中的牌数。
     remaining_card_count: u16,
+    /// 玩家已经投入的原始底注。
     current_base_stake: f64,
+    /// 最优动作还需要追加几个底注单位；通常加倍/分牌为 1。
     additional_stake_units: f64,
+    /// 追加金额，不重新计算或改变原始底注。
     suggested_additional_stake: f64,
     #[serde(flatten)]
     analysis: BlackjackAnalysis,
@@ -902,70 +949,114 @@ struct BrowserBlackjackAnalysis {
 /// 浏览器需要的一次完整分析结果。
 #[derive(Debug, Serialize)]
 struct BrowserAnalysis {
+    /// 牌面输入的解释模式。
     source_mode: String,
+    /// 牌靴副数。
     decks: u8,
+    /// 用户输入的牌数量，不代表当前剩余总牌数。
     input_card_count: usize,
+    /// 构造完成后下一局真正可抽的牌数。
     remaining_card_count: u16,
+    /// 返水率的小数值。
     rebate_rate: f64,
+    /// 稳定的主注赔付规则代码。
     payout_rule: &'static str,
+    /// 稳定的金额策略代码。
     stake_strategy: &'static str,
+    /// 金额策略参数；无参数策略为 `None`。
     strategy_parameter: Option<f64>,
+    /// 固定金额策略的金额；其他策略为 `None`。
     fixed_stake: Option<f64>,
+    /// 主注最低有效 EV。
     minimum_main_bet_ev: f64,
+    /// 边注最低有效 EV。
     minimum_side_bet_ev: f64,
+    /// 边注单笔金额上限。
     side_bet_limit: f64,
     /// 是否允许一局把多个达到门槛的目标一起下注。
     allow_multiple_bets: bool,
+    /// 三种主注的概率、基础 EV 和有效 EV。
     bets: BrowserBets,
+    /// 当前页面采用的边注赔付表说明文本。
     side_bet_rules: &'static str,
+    /// 十一种边注的概率、赔率、基础 EV 和有效 EV。
     side_bets: BrowserSideBets,
     /// 主推荐在第一项；多注模式下其余合格目标也会出现在这里。
     recommendation: BrowserRecommendation,
+    /// 多注模式下按有效 EV 降序排列的全部计划；单注模式只有一项。
     recommendations: Vec<BrowserRecommendation>,
+    /// 多注模式下所有 Place 计划的金额合计。
     total_suggested_amount: f64,
 }
 
 /// 三个主注方向的指标。
 #[derive(Debug, Serialize)]
 struct BrowserBets {
+    /// 闲注指标。
     player: BrowserBetMetrics,
+    /// 庄注指标。
     banker: BrowserBetMetrics,
+    /// 和注指标。
     tie: BrowserBetMetrics,
 }
 
 /// 第一批边注的浏览器展示结果。
 #[derive(Debug, Serialize)]
 struct BrowserSideBets {
+    /// 任意对子指标。
     any_pair: BrowserSideBetMetrics,
+    /// 庄对指标。
     banker_pair: BrowserSideBetMetrics,
+    /// 闲对指标。
     player_pair: BrowserSideBetMetrics,
+    /// 完美对子指标。
     perfect_pair: BrowserSideBetMetrics,
+    /// 大指标。
     big: BrowserSideBetMetrics,
+    /// 小指标。
     small: BrowserSideBetMetrics,
+    /// 幸运 7 指标。
     lucky_seven: BrowserSideBetMetrics,
+    /// 超级幸运 7 指标。
     super_lucky_seven: BrowserSideBetMetrics,
+    /// 幸运 6 指标。
     lucky_six: BrowserSideBetMetrics,
+    /// 庄龙宝指标。
     banker_dragon_bonus: BrowserSideBetMetrics,
+    /// 闲龙宝指标。
     player_dragon_bonus: BrowserSideBetMetrics,
 }
 
 /// 边注的一行概率、基础 EV 与赔付说明。
 #[derive(Debug, Serialize)]
 struct BrowserSideBetMetrics {
+    /// 边注命中任一档位的概率。
     probability: f64,
     /// 不含返水的边注基础 EV；保留 `ev` 是为了兼容旧前端和已有调用者。
     ev: f64,
+    /// 与 `ev` 相同含义的明确字段，便于新前端区分基础值和有效值。
     base_ev: f64,
+    /// 边注按下注额获得的返水 EV。
     rebate_ev: f64,
+    /// 包含返水后的有效 EV。
     effective_ev: f64,
+    /// 不含返水的赌场优势。
     house_edge: f64,
+    /// 不含返水的 RTP。
     rtp: f64,
+    /// 包含返水后的赌场优势。
     effective_house_edge: f64,
+    /// 包含返水后的 RTP。
     effective_rtp: f64,
+    /// 页面显示的赔付档位说明。
     payout: &'static str,
 }
 
 impl BrowserSideBetMetrics {
+    /// 把核心边注指标转换为页面需要的基础/返水/有效三组字段。
+    ///
+    /// 概率和基础 EV 来自 Rust 核心；页面只负责显示，避免 JavaScript 自己
+    /// 复制赔率公式导致与 CSV 回放结算口径不一致。
     fn new(metrics: SideBetMetrics, payout: &'static str, rebate: RebateRule) -> Self {
         let base_ev = metrics.ev();
         // 所有边注结果都按实际下注额返水，因此期望返水就是返水率本身。
@@ -989,11 +1080,17 @@ impl BrowserSideBetMetrics {
 /// 页面表格中一行需要显示的概率和 EV 指标。
 #[derive(Debug, Serialize)]
 struct BrowserBetMetrics {
+    /// 对应庄、闲、和结果的发生概率。
     probability: f64,
+    /// 不含返水的基础 EV。
     base_ev: f64,
+    /// 返水按可能结果加权后的 EV 贡献。
     rebate_ev: f64,
+    /// `base_ev + rebate_ev`。
     effective_ev: f64,
+    /// 不含返水的 House Edge。
     house_edge: f64,
+    /// 不含返水的 RTP。
     rtp: f64,
 }
 
@@ -1015,18 +1112,31 @@ impl BrowserBetMetrics {
 /// 有效 EV 方向策略的最终结果。
 #[derive(Debug, Serialize)]
 struct BrowserRecommendation {
+    /// 候选下注的稳定名称。
     candidate_bet: &'static str,
+    /// `main` 或 `side`，供前端选择显示文案。
     bet_category: &'static str,
+    /// 不含返水的基础 EV。
     base_ev: f64,
+    /// 返水贡献的 EV。
     rebate_ev: f64,
+    /// 策略用于比较的有效 EV。
     effective_ev: f64,
+    /// `place` 或 `skip`。
     action: &'static str,
+    /// Skip 时的稳定原因代码，Place 时为 `None`。
     reason: Option<&'static str>,
+    /// 生成报价时使用的当前本金。
     bankroll: f64,
+    /// 原始完整凯利比例；没有报价时为 `None`。
     kelly_fraction: Option<f64>,
+    /// 所选金额策略的目标比例。
     strategy_fraction: Option<f64>,
+    /// 经过风险上限后的实际比例。
     applied_fraction: Option<f64>,
+    /// 最终建议下注金额；Skip 为 0。
     suggested_amount: f64,
+    /// 最终建议金额对应的理论期望盈利。
     expected_profit: f64,
 }
 

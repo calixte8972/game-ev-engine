@@ -1,3 +1,17 @@
+/*
+ * 浏览器入口只负责“收集输入、调用 WASM、渲染结果”。
+ *
+ * 数据流：
+ *   HTML 表单字符串
+ *       -> strategyConfig()/readNumber() 统一单位与校验
+ *       -> Rust/WASM 的 analyzeBaccaratStrategy 或 analyzeBlackjack
+ *       -> JSON.parse()
+ *       -> renderResults()/renderReplay()/renderBlackjack()
+ *
+ * 概率、EV、凯利比例、真实回放结算和风险指标都由 Rust 计算；这里不复制
+ * 任何业务公式。这样页面的职责是交互和展示，换成 Python 或其他前端时仍然
+ * 可以复用同一份核心结果。
+ */
 import init, { analyzeBaccaratStrategy, analyzeBlackjack } from "./pkg/game_ev_engine.js";
 import { createBankrollChart } from "./bankroll-chart.js";
 
@@ -31,6 +45,9 @@ const replayNextPage = document.querySelector("#replay-next-page");
 const replayLastPage = document.querySelector("#replay-last-page");
 const replayPageStatus = document.querySelector("#replay-page-status");
 const betCountGrid = document.querySelector("#bet-count-grid");
+
+// 图表是独立控制器：app.js 只把完整回放报告交给它，不关心 Canvas 坐标、
+// 抽样或悬停提示的绘制细节。
 const bankrollChartController = createBankrollChart({
   canvas: document.querySelector("#bankroll-chart"),
   plot: document.querySelector("#bankroll-chart-plot"),
@@ -55,6 +72,7 @@ const strategyParameterPrefix = document.querySelector("#strategy-parameter-pref
 const strategyParameterSuffix = document.querySelector("#strategy-parameter-suffix");
 const allowMultipleBets = document.querySelector("#allow-multiple-bets");
 const gameTabs = document.querySelectorAll(".game-tab");
+const baccaratViewTabs = document.querySelectorAll("[data-baccarat-view-tab]");
 const blackjackForm = document.querySelector("#blackjack-form");
 const blackjackAnalyzeButton = document.querySelector("#blackjack-analyze-button");
 const blackjackSampleButton = document.querySelector("#blackjack-sample-button");
@@ -172,6 +190,8 @@ let replayRunning = false;
 let currentCsvFile = null;
 let currentReplayReport = null;
 let currentReplayPage = 1;
+let activeGame = "baccarat";
+let activeBaccaratView = "analysis";
 
 // URL 上的版本标记强制浏览器为当前页面创建同版本 Worker，避免发布后仍复用
 // 旧 Worker，进而把新增配置字段当成 undefined 传给 WASM。
@@ -231,6 +251,14 @@ function readNumber(selector, label, options = {}) {
   return value;
 }
 
+/**
+ * 把表单中的“人类输入”转换成 Rust API 使用的配置对象。
+ *
+ * HTML 数字输入读出来都是字符串；这里统一转成 Number，并在边界层检查
+ * 有限值、正数、范围和整数。页面按百分比显示返水/EV/本金比例，但 Rust
+ * 使用 0.009、0.01 这样的比例小数，因此转换也集中在这里，避免不同调用点
+ * 对同一个字段重复除以 100 或忘记除以 100。
+ */
 function strategyConfig() {
   const selectedStakeStrategy = stakeStrategy.value;
   const parameterDefinition = stakeStrategyParameters[selectedStakeStrategy];
@@ -273,6 +301,13 @@ function strategyConfig() {
   };
 }
 
+/**
+ * 根据当前金额策略切换参数输入框的文案、单位和默认值。
+ *
+ * 完整/半凯利不需要额外参数；固定金额需要货币前缀；本金比例、分数凯利
+ * 和目标波动率使用百分号后缀。这里只改变表单外观，真正的参数解释仍由
+ * Rust 的 StakeSizingStrategy 决定。
+ */
 function updateStakeStrategyFields() {
   const definition = stakeStrategyParameters[stakeStrategy.value];
   strategyParameterField.hidden = !definition;
@@ -288,6 +323,40 @@ function updateStakeStrategyFields() {
   strategyParameterSuffix.hidden = isMoney;
 }
 
+/**
+ * 折叠面板关闭时仍显示关键配置，用户不用反复展开确认当前策略。
+ * 这里只读取表单用于展示，不做业务校验；正式计算仍统一经过 strategyConfig()。
+ */
+function updateConfigSummaries() {
+  const bankrollValue = Number.parseFloat(document.querySelector("#bankroll").value);
+  const rebateValue = Number.parseFloat(document.querySelector("#rebate-rate").value);
+  const maxFractionValue = Number.parseFloat(document.querySelector("#max-fraction").value);
+  const maxRoundStakeValue = Number.parseFloat(document.querySelector("#max-round-stake").value);
+  const sideBetLimitValue = Number.parseFloat(document.querySelector("#side-bet-limit").value);
+  const payoutLabel = payoutRule.value === "standard" ? "标准庄" : "庄免佣";
+  const multiLabel = allowMultipleBets.checked ? "多下注开" : "单一目标";
+
+  setText(
+    "#funding-config-summary",
+    `${payoutLabel} · ${stakeStrategyLabels[stakeStrategy.value]} · 本金 ${Number.isFinite(bankrollValue) ? money(bankrollValue) : "—"} · 返水 ${Number.isFinite(rebateValue) ? rebateValue : "—"}%`,
+  );
+  setText(
+    "#risk-config-summary",
+    `单局 ${Number.isFinite(maxFractionValue) ? maxFractionValue : "—"}% · 上限 ${Number.isFinite(maxRoundStakeValue) ? money(maxRoundStakeValue) : "—"} · 边注 ${Number.isFinite(sideBetLimitValue) ? money(sideBetLimitValue) : "—"} · ${multiLabel}`,
+  );
+
+  const blackjackSummary = document.querySelector("#blackjack-config-summary");
+  if (blackjackSummary) {
+    const decks = document.querySelector("#blackjack-decks").selectedOptions[0]?.textContent ?? "—";
+    const payout = document.querySelector("#blackjack-payout").selectedOptions[0]?.textContent ?? "—";
+    const soft17 = document.querySelector("#dealer-soft-17").value === "stand" ? "S17" : "H17";
+    const surrender = document.querySelector("#late-surrender").value === "yes" ? "允许晚投降" : "不允许投降";
+    const baseStake = Number.parseFloat(document.querySelector("#blackjack-base-stake").value);
+    blackjackSummary.textContent = `${decks} · ${payout} · ${soft17} · ${surrender} · 底注 ${Number.isFinite(baseStake) ? money(baseStake) : "—"}`;
+  }
+}
+
+/** 更新每个边注“最后可下注局数”下方的自然语言提示。 */
 function updateSideBetRoundLimitHints() {
   for (const [key, selector] of Object.entries(sideBetRoundLimitInputs)) {
     const input = document.querySelector(selector);
@@ -308,6 +377,7 @@ function updateSideBetRoundLimitHints() {
   }
 }
 
+/** 根据 consumed/remaining 切换牌面输入的解释，减少输入语义歧义。 */
 function updateModeHelp() {
   const consumed = selectedMode() === "consumed";
   modeHelp.textContent = consumed
@@ -328,15 +398,33 @@ function updateBlackjackModeHelp() {
     : "必须输入当前所有未知剩余牌（不得包含三张可见牌）";
 }
 
+/** 只显示当前百家乐子视图；导航本身没有 data-baccarat-view，因此始终保留。 */
+function syncBaccaratView() {
+  for (const tab of baccaratViewTabs) {
+    const active = tab.dataset.baccaratViewTab === activeBaccaratView;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  }
+  for (const section of document.querySelectorAll(".baccarat-section")) {
+    const view = section.dataset.baccaratView;
+    section.hidden = activeGame !== "baccarat" || Boolean(view && view !== activeBaccaratView);
+  }
+}
+
+function setActiveBaccaratView(view) {
+  activeBaccaratView = view;
+  syncBaccaratView();
+}
+
+/** 切换百家乐、21 点和规则说明页面，并按需触发当前游戏的计算。 */
 function setActiveGame(game) {
+  activeGame = game;
   for (const tab of gameTabs) {
     const active = tab.dataset.game === game;
     tab.classList.toggle("active", active);
     tab.setAttribute("aria-selected", String(active));
   }
-  for (const section of document.querySelectorAll(".baccarat-section")) {
-    section.hidden = game !== "baccarat";
-  }
+  syncBaccaratView();
   for (const section of document.querySelectorAll(".blackjack-section")) {
     section.hidden = game !== "blackjack";
   }
@@ -353,7 +441,33 @@ function metricCell(value, emphasize = false) {
   return cell;
 }
 
+/** 把边注的次要指标折叠在单行“详情”中，默认表格只保留决策所需数据。 */
+function sideBetDetailsCell(metrics) {
+  const cell = document.createElement("td");
+  const details = document.createElement("details");
+  details.className = "side-metric-details";
+  const summary = document.createElement("summary");
+  summary.textContent = "查看";
+  const content = document.createElement("div");
+  const entries = [
+    ["净赔付", String(metrics.payout)],
+    ["基础 EV", percent(metrics.base_ev ?? metrics.ev)],
+    ["返水 EV", percent(metrics.rebate_ev ?? 0)],
+    ["庄家优势", percent(metrics.effective_house_edge ?? metrics.house_edge)],
+  ];
+  for (const [label, value] of entries) {
+    const line = document.createElement("span");
+    line.textContent = `${label}：${value}`;
+    content.append(line);
+  }
+  details.append(summary, content);
+  cell.append(details);
+  return cell;
+}
+
 function renderResults(data, elapsedMilliseconds) {
+  // `data` 是 Rust 返回的稳定 JSON。渲染阶段只做标签映射、格式化和 DOM
+  // 创建，不重新计算概率总和以外的业务指标；总和仅作为页面一致性提示。
   errorMessage.hidden = true;
   setText("#input-card-count", String(data.input_card_count));
   setText("#remaining-card-count", `${data.remaining_card_count} 张`);
@@ -392,18 +506,16 @@ function renderResults(data, elapsedMilliseconds) {
     row.append(
       name,
       metricCell(metrics.probability),
-      detailCell(metrics.payout),
-      metricCell(metrics.base_ev ?? metrics.ev),
-      metricCell(metrics.rebate_ev ?? 0),
       metricCell(metrics.effective_ev ?? metrics.ev, true),
-      metricCell(metrics.effective_house_edge ?? metrics.house_edge),
       metricCell(metrics.effective_rtp ?? metrics.rtp),
+      sideBetDetailsCell(metrics),
     );
     sideResultBody.append(row);
   }
 
   const decision = data.recommendation;
   recommendation.dataset.action = decision.action;
+  setText("#recommendation-label", decision.action === "place" ? "本局下注目标" : "当前最优候选");
   setText("#recommended-bet", allBetLabels[decision.candidate_bet]);
   setText("#recommended-ev", percent(decision.effective_ev));
   applySignedClass(document.querySelector("#recommended-ev"), decision.effective_ev);
@@ -460,6 +572,8 @@ function renderResults(data, elapsedMilliseconds) {
 }
 
 function renderBetCounts(counts = {}) {
+  // Rust 对每个下注目标分别累计笔数。按固定 betCountOrder 渲染可以保证
+  // 页面顺序稳定，即使 JSON 对象属性顺序或某个字段缺失也不会跳动。
   betCountGrid.replaceChildren();
   for (const key of betCountOrder) {
     const item = document.createElement("div");
@@ -482,6 +596,8 @@ function showError(target, error) {
 }
 
 function calculate() {
+  // 这是手工分析的同步入口。WASM 计算直接发生在当前页面线程，适合单个
+  // 牌靴状态；大型 CSV 则走下面的 replay Worker，避免阻塞输入和滚动。
   if (!wasmReady) return;
 
   analyzeButton.disabled = true;
@@ -529,6 +645,8 @@ function blackjackActionCell(action, ev, optimalAction) {
 }
 
 function renderBlackjack(data, elapsedMilliseconds) {
+  // 二十一点的 action EV 已经在 Rust 内部按原始底注口径算好；页面只负责
+  // 标记最优动作，并把加倍/分牌需要追加的底注显示出来。
   blackjackError.hidden = true;
   const totalLabel = `${data.player_total}${data.player_soft ? "（软）" : "（硬）"}`;
   setText("#blackjack-player-total", data.player_blackjack ? "天然 21 点" : totalLabel);
@@ -568,6 +686,7 @@ function renderBlackjack(data, elapsedMilliseconds) {
 }
 
 function calculateBlackjack() {
+  // 21 点表单与百家乐表单独立读取，但复用同一个 WASM 初始化状态。
   if (!wasmReady) return;
   blackjackAnalyzeButton.disabled = true;
   blackjackAnalyzeButton.textContent = "正在枚举…";
@@ -666,6 +785,8 @@ function outcomeDetailCell(bet) {
 }
 
 function renderReplayDetails() {
+  // 回放报告保留全部下注明细；分页只控制当前创建多少个 <tr>，不改变报告
+  // 本身，也不改变图表的完整数据。这样“显示 500 条”不再等于“只有 500 条”。
   if (!currentReplayReport) return;
 
   const { bets, omitted_bet_details: omittedBetDetails, summary } = currentReplayReport;
@@ -739,6 +860,8 @@ function renderReplayDetails() {
 }
 
 function renderReplay(report, elapsedMilliseconds) {
+  // 汇总卡片、下注分类、风险指标和本金图都来自同一份 Rust 回放报告。
+  // 先更新摘要，再交给图表和明细表，避免用户看到新摘要配旧图表。
   replayError.hidden = true;
   replayResults.hidden = false;
   currentReplayReport = report;
@@ -782,6 +905,8 @@ form.addEventListener("submit", (event) => {
   calculate();
 });
 
+// 事件监听只负责把用户动作路由到对应的“读取配置 -> 调用核心 -> 渲染”入口。
+// 业务规则不写在事件回调里，便于后续增加自动刷新或其他输入方式。
 blackjackForm.addEventListener("submit", (event) => {
   event.preventDefault();
   calculateBlackjack();
@@ -792,6 +917,15 @@ blackjackAnalyzeButton.addEventListener("click", calculateBlackjack);
 for (const tab of gameTabs) {
   tab.addEventListener("click", () => setActiveGame(tab.dataset.game));
 }
+
+for (const tab of baccaratViewTabs) {
+  tab.addEventListener("click", () => setActiveBaccaratView(tab.dataset.baccaratViewTab));
+}
+
+form.addEventListener("input", updateConfigSummaries);
+form.addEventListener("change", updateConfigSummaries);
+blackjackForm.addEventListener("input", updateConfigSummaries);
+blackjackForm.addEventListener("change", updateConfigSummaries);
 
 blackjackForm.elements["blackjack-source-mode"].forEach((radio) => {
   radio.addEventListener("change", updateBlackjackModeHelp);
@@ -890,6 +1024,8 @@ replayButton.addEventListener("click", async () => {
     if (currentCsvFile.size > 50 * 1024 * 1024) {
       throw new Error("CSV 超过 50 MB；请先按日期或桌台拆分后再回放。");
     }
+    // 配置在主线程读取一次，再与 CSV 文本一起传给 Worker；Worker 不直接访问
+    // DOM，因此所有页面输入都必须在这里变成可结构化传输的普通数据。
     const config = strategyConfig();
     setReplayRunning(true, "正在读取 CSV…");
     const csvText = await currentCsvFile.text();
@@ -903,6 +1039,8 @@ replayButton.addEventListener("click", async () => {
 });
 
 replayWorker.addEventListener("message", (event) => {
+  // Worker 只回传 ready/complete/error 三种消息。页面根据消息更新状态，
+  // 不在主线程重新运行 CSV 回放。
   const message = event.data;
   if (message.type === "ready") {
     replayWorkerReady = true;
@@ -929,10 +1067,12 @@ replayWorker.addEventListener("error", (event) => {
 });
 
 async function start() {
+  // wasm-bindgen 初始化完成前，所有计算按钮都保持禁用；初始化成功后再做
+  // 一次默认分析，让用户打开页面即可看到完整八副牌基线结果。
   try {
     await init();
     wasmReady = true;
-    wasmStatus.textContent = "WASM 核心已就绪";
+    wasmStatus.textContent = "WASM 已就绪";
     wasmStatus.classList.add("ready");
     analyzeButton.disabled = false;
     blackjackAnalyzeButton.disabled = false;
@@ -947,4 +1087,6 @@ updateModeHelp();
 updateBlackjackModeHelp();
 updateStakeStrategyFields();
 updateSideBetRoundLimitHints();
+updateConfigSummaries();
+syncBaccaratView();
 start();
