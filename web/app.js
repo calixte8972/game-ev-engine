@@ -441,30 +441,6 @@ function metricCell(value, emphasize = false) {
   return cell;
 }
 
-/** 把边注的次要指标折叠在单行“详情”中，默认表格只保留决策所需数据。 */
-function sideBetDetailsCell(metrics) {
-  const cell = document.createElement("td");
-  const details = document.createElement("details");
-  details.className = "side-metric-details";
-  const summary = document.createElement("summary");
-  summary.textContent = "查看";
-  const content = document.createElement("div");
-  const entries = [
-    ["净赔付", String(metrics.payout)],
-    ["基础 EV", percent(metrics.base_ev ?? metrics.ev)],
-    ["返水 EV", percent(metrics.rebate_ev ?? 0)],
-    ["庄家优势", percent(metrics.effective_house_edge ?? metrics.house_edge)],
-  ];
-  for (const [label, value] of entries) {
-    const line = document.createElement("span");
-    line.textContent = `${label}：${value}`;
-    content.append(line);
-  }
-  details.append(summary, content);
-  cell.append(details);
-  return cell;
-}
-
 function renderResults(data, elapsedMilliseconds) {
   // `data` 是 Rust 返回的稳定 JSON。渲染阶段只做标签映射、格式化和 DOM
   // 创建，不重新计算概率总和以外的业务指标；总和仅作为页面一致性提示。
@@ -506,9 +482,10 @@ function renderResults(data, elapsedMilliseconds) {
     row.append(
       name,
       metricCell(metrics.probability),
+      metricCell(metrics.base_ev ?? metrics.ev),
+      metricCell(metrics.rebate_ev ?? 0),
       metricCell(metrics.effective_ev ?? metrics.ev, true),
       metricCell(metrics.effective_rtp ?? metrics.rtp),
-      sideBetDetailsCell(metrics),
     );
     sideResultBody.append(row);
   }

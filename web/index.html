@@ -384,17 +384,28 @@
           <table>
             <thead>
               <tr>
-                <th scope="col">方向</th>
-                <th scope="col">胜率</th>
+                <th scope="col">下注项</th>
+                <th scope="col">命中率</th>
                 <th scope="col">基础 EV</th>
                 <th scope="col">返水 EV</th>
                 <th scope="col">有效 EV</th>
                 <th scope="col">RTP</th>
               </tr>
             </thead>
+            <tbody class="bet-group-title">
+              <tr><th colspan="6" scope="rowgroup">主注 · 庄 / 闲 / 和</th></tr>
+            </tbody>
             <tbody id="result-body">
               <tr class="placeholder-row">
                 <td colspan="6">WASM 核心加载后会自动计算完整牌靴基线。</td>
+              </tr>
+            </tbody>
+            <tbody class="bet-group-title">
+              <tr><th colspan="6" scope="rowgroup">边注</th></tr>
+            </tbody>
+            <tbody id="side-result-body">
+              <tr class="placeholder-row">
+                <td colspan="6">计算牌靴后显示对子、幸运 6/7、龙宝与大/小。</td>
               </tr>
             </tbody>
           </table>
@@ -403,33 +414,6 @@
         <p class="result-note">
           “最优”不等于“下注”：还要通过最低 EV 门槛和金额上限；凯利类策略还要求完整凯利比例为正。
         </p>
-
-      </section>
-
-      <section class="panel side-results-panel baccarat-section" data-baccarat-view="analysis" aria-labelledby="side-result-title">
-        <div class="subsection-heading side-bet-heading">
-          <h3 id="side-result-title">边注概率与有效 EV</h3>
-          <span>按当前剩余牌靴精确计算</span>
-        </div>
-
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th scope="col">边注</th>
-                <th scope="col">命中率</th>
-                <th scope="col">有效 EV</th>
-                <th scope="col">有效 RTP</th>
-                <th scope="col">详情</th>
-              </tr>
-            </thead>
-            <tbody id="side-result-body">
-              <tr class="placeholder-row">
-                <td colspan="5">计算牌靴后显示对子、幸运 6/7、龙宝与大/小。</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
         <p class="result-note side-bet-note">
           十一种边注会与庄、闲、和共同参与自动选择；“小”表示全局只发 4 张，净赔 1.5:1；“大”表示发 5 或 6 张，净赔 0.5:1。龙宝的 Natural 胜出按退回本金处理。大小及所有边注均按实际下注额计算返水，并受单独金额上限保护。
         </p>

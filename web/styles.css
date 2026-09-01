@@ -263,8 +263,7 @@ h1 {
 
 .input-panel,
 .result-panel,
-.replay-panel,
-.side-results-panel {
+.replay-panel {
   padding: clamp(22px, 2.6vw, 32px);
 }
 
@@ -729,10 +728,6 @@ details[open] > summary .config-summary-action::after {
   margin: 10px 0 0;
 }
 
-.side-bet-heading {
-  margin-top: 0;
-}
-
 .side-bet-note {
   margin-bottom: 0;
 }
@@ -1070,56 +1065,6 @@ button:disabled {
   box-shadow: 0 4px 14px rgba(28, 48, 39, 0.025);
 }
 
-.side-results-panel {
-  grid-column: 1 / -1;
-}
-
-.side-results-panel table {
-  min-width: 620px;
-}
-
-.side-metric-details {
-  position: relative;
-}
-
-.side-metric-details summary {
-  display: inline-flex;
-  align-items: center;
-  min-height: 30px;
-  padding: 0 10px;
-  border: 1px solid #b9d5ca;
-  border-radius: 999px;
-  color: var(--felt-dark);
-  background: #f4faf7;
-  cursor: pointer;
-  font-size: 0.72rem;
-  font-weight: 800;
-  list-style: none;
-}
-
-.side-metric-details summary::-webkit-details-marker {
-  display: none;
-}
-
-.side-metric-details[open] summary {
-  color: white;
-  background: var(--felt);
-}
-
-.side-metric-details div {
-  display: grid;
-  gap: 5px;
-  margin-top: 8px;
-  padding: 9px 11px;
-  border: 1px solid var(--line);
-  border-radius: 9px;
-  color: var(--muted);
-  background: #fffdf8;
-  font-size: 0.72rem;
-  line-height: 1.35;
-  text-align: left;
-}
-
 table {
   width: 100%;
   min-width: 650px;
@@ -1146,6 +1091,23 @@ th {
   font-size: 0.72rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
+}
+
+.bet-group-title th {
+  padding: 9px 14px;
+  border-top: 1px solid #dfe8e2;
+  border-bottom: 1px solid #dfe8e2;
+  color: var(--felt-dark);
+  background: #eaf5ef;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+  text-align: left;
+  text-transform: none;
+}
+
+.bet-group-title:first-of-type th {
+  border-top: 0;
 }
 
 td {
