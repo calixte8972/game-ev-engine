@@ -2067,6 +2067,234 @@ footer {
   font-size: 0.73rem;
 }
 
+/*
+ * 桌面端“单屏工作台”密度：常见 1080p 屏幕要同时容纳输入、决策摘要和
+ * 14 个下注项。这里只压缩百家乐即时分析；回放、规则、21 点和手机触控
+ * 尺寸继续使用上面的舒适间距。
+ */
+@media (min-width: 1051px) {
+  .app-header,
+  .workspace,
+  footer {
+    width: min(1560px, calc(100% - 36px));
+  }
+
+  .app-header {
+    padding-block: 9px;
+  }
+
+  .workspace {
+    grid-template-columns: minmax(350px, 0.72fr) minmax(0, 1.28fr);
+    gap: 14px;
+  }
+
+  .baccarat-subnav {
+    padding: 3px;
+    border-radius: 11px;
+  }
+
+  .baccarat-view-tab {
+    min-height: 32px;
+    padding-inline: 15px;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"],
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] {
+    padding: 16px 18px;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .section-heading,
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .section-heading {
+    margin-bottom: 10px;
+  }
+
+  .baccarat-section[data-baccarat-view="analysis"] .section-number {
+    display: none;
+  }
+
+  .baccarat-section[data-baccarat-view="analysis"] .section-heading h2 {
+    font-size: 1.2rem;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .quick-action-bar {
+    margin-bottom: 10px;
+    padding: 7px 7px 7px 11px;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .quick-action-bar .primary-button {
+    min-height: 34px;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .strategy-config-stack {
+    gap: 7px;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .advanced-config summary,
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .side-limit-config summary {
+    min-height: 42px;
+    padding-inline: 11px;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .side-limit-config {
+    margin-top: 8px;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .policy-help {
+    display: none;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .shoe-heading {
+    margin-top: 13px;
+    padding-top: 11px;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .subsection-heading {
+    margin-bottom: 7px;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .mode-switch {
+    gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .mode-option span {
+    min-height: 62px;
+    padding: 9px 11px;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .mode-option strong {
+    margin-bottom: 2px;
+    font-size: 0.8rem;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .mode-option small {
+    font-size: 0.68rem;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .deck-field {
+    margin-bottom: 9px;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] select,
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] input {
+    min-height: 36px;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] textarea {
+    min-height: 82px;
+    padding: 9px 11px;
+    line-height: 1.4;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .field > span:first-child,
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] legend {
+    margin-bottom: 6px;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .field-help {
+    margin-block: 5px 2px;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .card-format {
+    margin: 4px 0 8px;
+    font-size: 0.69rem;
+  }
+
+  .input-panel.baccarat-section[data-baccarat-view="analysis"] .form-actions button {
+    min-height: 34px;
+  }
+
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .calculation-time {
+    min-height: 28px;
+    padding: 4px 8px;
+    font-size: 0.68rem;
+  }
+
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .shoe-summary {
+    gap: 7px;
+    margin-bottom: 8px;
+  }
+
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .shoe-summary > div {
+    padding: 8px 10px;
+    border-radius: 10px;
+  }
+
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .shoe-summary span,
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .recommendation span {
+    margin-bottom: 2px;
+    font-size: 0.66rem;
+  }
+
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .shoe-summary strong {
+    font-size: 0.98rem;
+  }
+
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .recommendation {
+    gap: 16px;
+    margin-bottom: 8px;
+    padding: 9px 13px;
+    border-radius: 11px;
+  }
+
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .recommendation strong {
+    font-size: 1.12rem;
+  }
+
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .action-pill {
+    min-width: 60px;
+    padding: 5px 9px;
+    font-size: 0.66rem !important;
+  }
+
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .decision-grid {
+    gap: 7px;
+    margin-bottom: 5px;
+  }
+
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .decision-grid > div {
+    padding: 7px 9px;
+    border-radius: 9px;
+  }
+
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .decision-grid span {
+    margin-bottom: 2px;
+    font-size: 0.62rem;
+  }
+
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .decision-grid strong {
+    font-size: 0.78rem;
+  }
+
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .decision-reason {
+    margin: 0 2px 7px;
+    font-size: 0.68rem;
+    line-height: 1.3;
+  }
+
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .table-wrap {
+    border-radius: 11px;
+  }
+
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] th,
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] td {
+    padding: 5px 9px;
+    font-size: 0.7rem;
+    line-height: 1.25;
+  }
+
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .bet-group-title th {
+    padding-block: 4px;
+    font-size: 0.66rem;
+  }
+
+  .result-panel.baccarat-section[data-baccarat-view="analysis"] .result-note {
+    margin-top: 5px;
+    font-size: 0.65rem;
+    line-height: 1.3;
+  }
+}
+
 @media (max-width: 1050px) {
   /* 中等屏幕改为单列，避免输入面板和结果面板各自过窄。 */
   .workspace {
@@ -2169,12 +2397,56 @@ footer {
   .advanced-config-grid,
   .blackjack-visible-grid,
   .blackjack-facts,
-  .shoe-summary,
-  .decision-grid,
   .replay-input-grid,
   .replay-summary,
   .quality-panel {
     grid-template-columns: 1fr;
+  }
+
+  /* H5 结果概要保持两列，避免四项概要和五项资金指标拉成长页面。 */
+  .result-panel.baccarat-section .shoe-summary,
+  .result-panel.baccarat-section .decision-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .result-panel.baccarat-section .shoe-summary > div,
+  .result-panel.baccarat-section .decision-grid > div {
+    padding: 11px 12px;
+    border-radius: 11px;
+  }
+
+  .result-panel.baccarat-section .decision-grid > div:last-child {
+    grid-column: 1 / -1;
+  }
+
+  .result-panel.baccarat-section .recommendation {
+    margin-bottom: 12px;
+    padding: 14px 15px;
+  }
+
+  .result-panel.baccarat-section .decision-reason {
+    margin-bottom: 12px;
+  }
+
+  /* 宽表横向滑动时保留下注项名称，用户始终知道当前一行属于哪个玩法。 */
+  .result-panel.baccarat-section #result-body td:first-child,
+  .result-panel.baccarat-section #side-result-body td:first-child,
+  .result-panel.baccarat-section thead th:first-child {
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    background: var(--surface-strong);
+    box-shadow: 1px 0 0 #e2e8e4;
+  }
+
+  .result-panel.baccarat-section thead th:first-child {
+    z-index: 2;
+    background: #f3f7f3;
+  }
+
+  .result-panel.baccarat-section .optimal-row td:first-child {
+    background: var(--felt-soft);
   }
 
   .bet-count-grid {
@@ -2245,8 +2517,17 @@ footer {
 
   .game-tab {
     flex: 1 1 auto;
+    min-height: 40px;
     padding-inline: 10px;
     font-size: 0.8rem;
+  }
+
+  .baccarat-view-tab {
+    min-height: 42px;
+  }
+
+  .quick-action-bar .primary-button {
+    min-height: 44px;
   }
 
   .recommendation {
