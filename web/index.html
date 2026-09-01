@@ -489,6 +489,139 @@
               <span id="bankroll-tooltip-round">—</span>
             </div>
           </div>
+
+          <section id="bet-contribution-charts" class="contribution-charts" aria-label="下注类别盈利与亏损贡献" hidden>
+            <article class="contribution-chart-card" data-kind="profit">
+              <header>
+                <div>
+                  <p class="eyebrow">收益来源</p>
+                  <h4>盈利下注类别贡献</h4>
+                </div>
+                <span>只累计正收益下注</span>
+              </header>
+              <div class="contribution-chart-body">
+                <div class="contribution-donut-plot">
+                  <svg viewBox="0 0 220 220" role="img" aria-label="暂无盈利贡献数据">
+                    <circle class="contribution-track" cx="110" cy="110" r="78"></circle>
+                    <g class="contribution-segments"></g>
+                  </svg>
+                  <div class="contribution-center" aria-hidden="true">
+                    <span>累计毛盈利</span>
+                    <strong class="contribution-total">—</strong>
+                  </div>
+                  <div class="contribution-tooltip" role="status" hidden>
+                    <strong>—</strong>
+                    <span>—</span>
+                  </div>
+                </div>
+                <ol class="contribution-legend" aria-label="盈利贡献图例"></ol>
+              </div>
+            </article>
+
+            <article class="contribution-chart-card" data-kind="loss">
+              <header>
+                <div>
+                  <p class="eyebrow">风险来源</p>
+                  <h4>亏损下注类别贡献</h4>
+                </div>
+                <span>按亏损绝对金额统计</span>
+              </header>
+              <div class="contribution-chart-body">
+                <div class="contribution-donut-plot">
+                  <svg viewBox="0 0 220 220" role="img" aria-label="暂无亏损贡献数据">
+                    <circle class="contribution-track" cx="110" cy="110" r="78"></circle>
+                    <g class="contribution-segments"></g>
+                  </svg>
+                  <div class="contribution-center" aria-hidden="true">
+                    <span>累计毛亏损</span>
+                    <strong class="contribution-total">—</strong>
+                  </div>
+                  <div class="contribution-tooltip" role="status" hidden>
+                    <strong>—</strong>
+                    <span>—</span>
+                  </div>
+                </div>
+                <ol class="contribution-legend" aria-label="亏损贡献图例"></ol>
+              </div>
+            </article>
+
+            <p class="contribution-note">
+              同一玩法的盈利与亏损分别进入两张图，不先按净额抵消；圆环显示金额最高的五类，其余合并为“其他”。
+            </p>
+          </section>
+
+          <section id="replay-analysis-charts" class="replay-analysis-charts" aria-label="回放收益与风险诊断图" hidden>
+            <article class="analysis-chart-card roi-chart-card" data-chart="roi">
+              <header class="analysis-chart-heading">
+                <div>
+                  <p class="eyebrow">资金效率</p>
+                  <h4>各投注类别 ROI</h4>
+                  <p>含返水净盈亏 ÷ 累计下注额；横条以 0% 为中心。</p>
+                </div>
+                <span class="analysis-chart-summary">暂无实际下注</span>
+              </header>
+              <p class="analysis-chart-empty">完成一次有真实下注的回放后显示。</p>
+              <ol class="roi-chart-list" aria-label="各投注类别 ROI 排名" hidden></ol>
+            </article>
+
+            <article class="analysis-chart-card waterfall-chart-card" data-chart="waterfall">
+              <header class="analysis-chart-heading">
+                <div>
+                  <p class="eyebrow">盈亏对账</p>
+                  <h4>毛盈利、返水与毛亏损</h4>
+                  <p>基础毛盈利 + 返水 − 基础毛亏损 = 最终净盈亏。</p>
+                </div>
+                <span class="analysis-chart-summary">等待回放对账</span>
+              </header>
+              <p class="analysis-chart-empty">完成一次有真实下注的回放后显示。</p>
+              <div class="analysis-svg-wrap">
+                <svg viewBox="0 0 700 300" role="img" aria-label="盈亏瀑布图" hidden></svg>
+              </div>
+            </article>
+
+            <article class="analysis-chart-card drawdown-chart-card" data-chart="drawdown">
+              <header class="analysis-chart-heading">
+                <div>
+                  <p class="eyebrow">资金风险</p>
+                  <h4>回撤水下图</h4>
+                  <p>每个资金点相对此前历史最高本金的下降金额与持续局数。</p>
+                </div>
+                <span class="analysis-chart-summary">暂无资金变化点</span>
+              </header>
+              <p class="analysis-chart-empty">完成一次有真实下注的回放后显示。</p>
+              <div class="drawdown-chart-plot" hidden>
+                <canvas tabindex="0"></canvas>
+                <div class="analysis-chart-tooltip" role="status" hidden>
+                  <strong>—</strong>
+                  <span>—</span>
+                </div>
+              </div>
+            </article>
+
+            <article class="analysis-chart-card scatter-chart-card" data-chart="risk-return">
+              <header class="analysis-chart-heading">
+                <div>
+                  <p class="eyebrow">风险 / 收益</p>
+                  <h4>玩法风险收益分布</h4>
+                  <p>横轴为亏损笔数占比，纵轴为含返水净 ROI，气泡面积表示下注额。</p>
+                </div>
+                <span class="analysis-chart-summary">暂无实际下注</span>
+              </header>
+              <div class="scatter-chart-legend" aria-label="玩法类型图例">
+                <span><i class="is-main" aria-hidden="true"></i>主注</span>
+                <span><i class="is-side" aria-hidden="true"></i>边注</span>
+              </div>
+              <p class="analysis-chart-empty">完成一次有真实下注的回放后显示。</p>
+              <div class="analysis-svg-wrap scatter-chart-wrap">
+                <svg viewBox="0 0 700 330" role="img" aria-label="风险收益散点图" hidden></svg>
+                <div class="analysis-chart-tooltip" role="status" hidden>
+                  <strong>—</strong>
+                  <span>—</span>
+                </div>
+              </div>
+              <p class="scatter-sample-note" hidden></p>
+            </article>
+          </section>
         </section>
 
         <!-- 回放结果区默认隐藏，直到 Worker 返回完整报告。分页只影响 DOM 行数，

@@ -475,16 +475,30 @@ impl CsvBetCounts {
 
 /// 单个下注方向在整次回放中的资金表现。
 ///
-/// 这三个字段必须在真实结算发生时一起累计，不能由浏览器根据当前页明细推算。
+/// 这些字段必须在真实结算发生时一起累计，不能由浏览器根据当前页明细推算。
 /// 回放明细可以分页，但这里始终覆盖整份 CSV，因此适合做总额和盈亏对账。
 #[derive(Debug, Default, Serialize)]
 pub struct CsvBetPerformance {
     /// 该方向真正执行的下注笔数。
     pub count: u64,
+    /// 该方向基础赔率结算为赢的笔数；不把返水当成游戏命中。
+    pub win_count: u64,
+    /// 该方向基础赔率结算为输的笔数，用于计算分类亏损率。
+    pub loss_count: u64,
+    /// 该方向基础赔率结算为 Push 的笔数。
+    pub push_count: u64,
     /// 该方向所有实际下注金额之和。
     pub total_stake: f64,
     /// 该方向累计净盈亏，已经包含实际获得的返水。
     pub total_profit: f64,
+    /// 该方向所有正收益下注的金额之和；亏损下注不会先与它抵消。
+    pub gross_profit: f64,
+    /// 该方向所有负收益下注的绝对金额之和，始终使用非负数表示。
+    pub gross_loss: f64,
+    /// 不含返水的基础游戏正收益之和，供“毛盈利 + 返水 - 毛亏损”瀑布图使用。
+    pub base_gross_profit: f64,
+    /// 不含返水的基础游戏负收益绝对值之和。
+    pub base_gross_loss: f64,
 }
 
 /// 按下注方向拆分的笔数、下注额和净盈亏。
@@ -508,7 +522,7 @@ pub struct CsvBetBreakdown {
 
 impl CsvBetBreakdown {
     /// 在唯一的真实结算点记录一笔下注，确保数量、金额和盈亏使用同一口径。
-    fn record(&mut self, bet: BetTarget, amount: f64, actual_profit: f64) {
+    fn record(&mut self, bet: BetTarget, amount: f64, base_game_profit: f64, rebate_income: f64) {
         let performance = match bet {
             BetTarget::Main(MainBet::Player) => &mut self.player,
             BetTarget::Main(MainBet::Banker) => &mut self.banker,
@@ -526,9 +540,28 @@ impl CsvBetBreakdown {
             BetTarget::Side(SideBet::PlayerDragonBonus) => &mut self.player_dragon_bonus,
         };
 
+        let actual_profit = base_game_profit + rebate_income;
         performance.count += 1;
         performance.total_stake += amount;
         performance.total_profit += actual_profit;
+
+        if base_game_profit > 0.0 {
+            performance.win_count += 1;
+            performance.base_gross_profit += base_game_profit;
+        } else if base_game_profit < 0.0 {
+            performance.loss_count += 1;
+            performance.base_gross_loss += -base_game_profit;
+        } else {
+            performance.push_count += 1;
+        }
+
+        // 实际毛盈利/毛亏损包含返水，回答“最终资金变化由哪些玩法贡献”；
+        // 基础毛盈利/毛亏损则把返水拆开，专门用于严格对账的瀑布图。
+        if actual_profit > 0.0 {
+            performance.gross_profit += actual_profit;
+        } else if actual_profit < 0.0 {
+            performance.gross_loss += -actual_profit;
+        }
     }
 
     /// 汇总所有方向，用于测试和调试时验证分类数据能与总报告完全对账。
@@ -556,6 +589,55 @@ impl CsvBetBreakdown {
                 stake + item.total_stake,
                 profit + item.total_profit,
             )
+        })
+    }
+
+    /// 分别汇总正收益和负收益绝对值。二者不能先做净额抵消，因为贡献图需要回答
+    /// “哪些玩法带来盈利”和“哪些玩法造成亏损”两个不同问题。
+    fn gross_totals(&self) -> (f64, f64) {
+        [
+            &self.player,
+            &self.banker,
+            &self.tie,
+            &self.any_pair,
+            &self.banker_pair,
+            &self.player_pair,
+            &self.perfect_pair,
+            &self.big,
+            &self.small,
+            &self.lucky_seven,
+            &self.super_lucky_seven,
+            &self.lucky_six,
+            &self.banker_dragon_bonus,
+            &self.player_dragon_bonus,
+        ]
+        .into_iter()
+        .fold((0.0, 0.0), |(profit, loss), item| {
+            (profit + item.gross_profit, loss + item.gross_loss)
+        })
+    }
+
+    /// 汇总不含返水的游戏毛盈利和毛亏损，二者之差必须等于基础游戏净输赢。
+    fn base_gross_totals(&self) -> (f64, f64) {
+        [
+            &self.player,
+            &self.banker,
+            &self.tie,
+            &self.any_pair,
+            &self.banker_pair,
+            &self.player_pair,
+            &self.perfect_pair,
+            &self.big,
+            &self.small,
+            &self.lucky_seven,
+            &self.super_lucky_seven,
+            &self.lucky_six,
+            &self.banker_dragon_bonus,
+            &self.player_dragon_bonus,
+        ]
+        .into_iter()
+        .fold((0.0, 0.0), |(profit, loss), item| {
+            (profit + item.base_gross_profit, loss + item.base_gross_loss)
         })
     }
 }
@@ -1181,7 +1263,9 @@ fn replay_rounds(
                     round_profit += actual_profit;
 
                     summary.placed_bets.increment(bet);
-                    summary.bet_breakdown.record(bet, amount, actual_profit);
+                    summary
+                        .bet_breakdown
+                        .record(bet, amount, base_game_profit, rebate_income);
                     summary.placed_bet_count += 1;
                     summary.total_stake += amount;
                     summary.total_expected_profit += quote.expected_profit();
@@ -1311,6 +1395,14 @@ fn replay_rounds(
     debug_assert_eq!(breakdown_count, summary.placed_bet_count);
     debug_assert!((breakdown_stake - summary.total_stake).abs() < 1e-7);
     debug_assert!((breakdown_profit - summary.total_profit).abs() < 1e-7);
+    let (gross_profit, gross_loss) = summary.bet_breakdown.gross_totals();
+    debug_assert!((gross_profit - gross_loss - summary.total_profit).abs() < 1e-7);
+    let (base_gross_profit, base_gross_loss) = summary.bet_breakdown.base_gross_totals();
+    debug_assert!((base_gross_profit - base_gross_loss - summary.base_game_profit).abs() < 1e-7);
+    debug_assert!(
+        (base_gross_profit + summary.rebate_income - base_gross_loss - summary.total_profit).abs()
+            < 1e-7
+    );
 
     Ok((summary, details))
 }
@@ -1706,12 +1798,34 @@ mod tests {
             &breakdown.player_dragon_bonus,
         ] {
             assert_eq!(performance.count, 1);
+            assert_eq!(
+                performance.win_count + performance.loss_count + performance.push_count,
+                performance.count
+            );
             assert!((performance.total_stake - 1.0).abs() < 1e-12);
+            assert!(
+                (performance.gross_profit - performance.gross_loss - performance.total_profit)
+                    .abs()
+                    < 1e-12
+            );
         }
         let (breakdown_count, breakdown_stake, breakdown_profit) = breakdown.totals();
         assert_eq!(breakdown_count, report.summary.placed_bet_count);
         assert!((breakdown_stake - report.summary.total_stake).abs() < 1e-12);
         assert!((breakdown_profit - report.summary.total_profit).abs() < 1e-12);
+        let (gross_profit, gross_loss) = breakdown.gross_totals();
+        assert!((gross_profit - gross_loss - report.summary.total_profit).abs() < 1e-12);
+        let (base_gross_profit, base_gross_loss) = breakdown.base_gross_totals();
+        assert!(
+            (base_gross_profit - base_gross_loss - report.summary.base_game_profit).abs() < 1e-12
+        );
+        assert!(
+            (base_gross_profit + report.summary.rebate_income
+                - base_gross_loss
+                - report.summary.total_profit)
+                .abs()
+                < 1e-12
+        );
 
         let side_bets = report
             .bets

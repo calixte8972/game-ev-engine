@@ -14,6 +14,8 @@
  */
 import init, { analyzeBaccaratStrategy, analyzeBlackjack } from "./pkg/game_ev_engine.js";
 import { createBankrollChart } from "./bankroll-chart.js";
+import { createBetContributionCharts } from "./bet-contribution-charts.js";
+import { createReplayAnalysisCharts } from "./replay-analysis-charts.js";
 
 const form = document.querySelector("#analysis-form");
 const analyzeButton = document.querySelector("#analyze-button");
@@ -105,6 +107,14 @@ const sideBetLabels = {
 
 const allBetLabels = { ...betLabels, ...sideBetLabels };
 const betCountOrder = [...Object.keys(betLabels), ...Object.keys(sideBetLabels)];
+const contributionChartController = createBetContributionCharts({
+  section: document.querySelector("#bet-contribution-charts"),
+  labels: allBetLabels,
+});
+const replayAnalysisChartController = createReplayAnalysisCharts({
+  section: document.querySelector("#replay-analysis-charts"),
+  labels: allBetLabels,
+});
 const sideBetRoundLimitInputs = {
   any_pair: "#limit-any-pair",
   banker_pair: "#limit-banker-pair",
@@ -912,6 +922,8 @@ function renderReplay(report, elapsedMilliseconds) {
   setText("#replay-time", `${(elapsedMilliseconds / 1000).toFixed(2)} 秒`);
 
   bankrollChartController.render(report);
+  contributionChartController.render(report);
+  replayAnalysisChartController.render(report);
   renderReplayDetails();
 }
 
@@ -991,6 +1003,8 @@ csvFileInput.addEventListener("change", () => {
   currentReplayReport = null;
   replayPagination.hidden = true;
   bankrollChartController.reset();
+  contributionChartController.reset();
+  replayAnalysisChartController.reset();
 
   if (!currentCsvFile) {
     selectedFile.textContent = "尚未选择文件";
@@ -1034,6 +1048,8 @@ replayButton.addEventListener("click", async () => {
   replayError.hidden = true;
   replayResults.hidden = true;
   bankrollChartController.reset("正在回放，完成后显示新的本金变化曲线…");
+  contributionChartController.reset();
+  replayAnalysisChartController.reset();
 
   try {
     if (currentCsvFile.size > 50 * 1024 * 1024) {
@@ -1049,6 +1065,8 @@ replayButton.addEventListener("click", async () => {
   } catch (error) {
     setReplayRunning(false, "回放失败");
     bankrollChartController.reset("回放失败；修正文件或配置后重新运行即可生成本金变化曲线。");
+    contributionChartController.reset();
+    replayAnalysisChartController.reset();
     showError(replayError, error);
   }
 });
@@ -1072,12 +1090,18 @@ replayWorker.addEventListener("message", (event) => {
 
   if (message.type === "error") {
     setReplayRunning(false, "回放失败");
+    bankrollChartController.reset("回放失败；修正文件或配置后重新运行即可生成本金变化曲线。");
+    contributionChartController.reset();
+    replayAnalysisChartController.reset();
     showError(replayError, message.message);
   }
 });
 
 replayWorker.addEventListener("error", (event) => {
   setReplayRunning(false, "回放核心加载失败");
+  bankrollChartController.reset("回放核心加载失败；重新载入页面后再试。");
+  contributionChartController.reset();
+  replayAnalysisChartController.reset();
   showError(replayError, event.message || "CSV 回放 Worker 无法启动");
 });
 

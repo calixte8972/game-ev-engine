@@ -86,11 +86,15 @@ export function buildBankrollSeries(report) {
   // 第 0 个点表示模拟开始，不是一次下注结算；它让图表能显示初始本金基线，
   // 也使第一局的回撤有明确的比较起点。
   let runningPeak = initialBankroll;
+  let drawdownDuration = 0;
   const points = [{
     index: 0,
     bankroll: initialBankroll,
     cumulativeProfit: 0,
     drawdown: 0,
+    drawdownRate: 0,
+    drawdownDuration: 0,
+    peakBankroll: initialBankroll,
     roundStake: 0,
     roundProfit: 0,
     betCount: 0,
@@ -103,11 +107,16 @@ export function buildBankrollSeries(report) {
   let offset = 0;
   for (const settlement of settlementsByRound.values()) {
     runningPeak = Math.max(runningPeak, settlement.bankroll);
+    const drawdown = Math.max(0, runningPeak - settlement.bankroll);
+    drawdownDuration = drawdown > 0 ? drawdownDuration + 1 : 0;
     points.push({
       ...settlement,
       index: offset + 1,
       cumulativeProfit: settlement.bankroll - initialBankroll,
-      drawdown: Math.max(0, runningPeak - settlement.bankroll),
+      drawdown,
+      drawdownRate: runningPeak > 0 ? drawdown / runningPeak : 0,
+      drawdownDuration,
+      peakBankroll: runningPeak,
     });
     offset += 1;
   }

@@ -9,6 +9,13 @@ import {
   replayBaccaratCsvWithSideBetLimits,
 } from "../pkg/game_ev_engine.js";
 import { buildBankrollSeries, sampleBankrollSeries } from "../bankroll-chart.js";
+import { buildContributionSeries } from "../bet-contribution-charts.js";
+import {
+  buildDrawdownSeries,
+  buildRiskReturnSeries,
+  buildRoiSeries,
+  buildWaterfallSeries,
+} from "../replay-analysis-charts.js";
 
 const deployDirectory = dirname(fileURLToPath(import.meta.url));
 const webDirectory = resolve(deployDirectory, "..");
@@ -39,6 +46,20 @@ for (const id of [
 if (!/id="bankroll-chart"/.test(pageHtml)
     || !/id="bankroll-chart-tooltip"/.test(pageHtml)) {
   throw new Error("回放结果缺少本金变化折线图或逐点提示");
+}
+
+if (!/id="bet-contribution-charts"/.test(pageHtml)
+    || !/data-kind="profit"/.test(pageHtml)
+    || !/data-kind="loss"/.test(pageHtml)) {
+  throw new Error("资金图表区缺少盈利或亏损下注类别贡献圆环");
+}
+
+if (!/id="replay-analysis-charts"/.test(pageHtml)
+    || !/data-chart="roi"/.test(pageHtml)
+    || !/data-chart="waterfall"/.test(pageHtml)
+    || !/data-chart="drawdown"/.test(pageHtml)
+    || !/data-chart="risk-return"/.test(pageHtml)) {
+  throw new Error("资金分析区缺少 ROI、瀑布、回撤或风险收益图");
 }
 
 if (!/id="bet-count-grid"/.test(pageHtml)) {
@@ -80,6 +101,12 @@ if (!/suitSymbols/.test(appSource) || !/appendCardLine/.test(appSource)) {
 }
 if (!/createBankrollChart/.test(appSource)) {
   throw new Error("页面没有把回放报告交给本金变化折线图");
+}
+if (!/contributionChartController\.render\(report\)/.test(appSource)) {
+  throw new Error("页面没有把 Rust 回放报告交给下注贡献圆环");
+}
+if (!/replayAnalysisChartController\.render\(report\)/.test(appSource)) {
+  throw new Error("页面没有把 Rust 回放报告交给四张收益风险诊断图");
 }
 if (!/renderBetBreakdown\(summary\.bet_breakdown, summary\.placed_bets\)/.test(appSource)) {
   throw new Error("页面没有展示 Rust 回放报告中的分类下注金额与盈亏");
@@ -231,10 +258,89 @@ const betBreakdown = Object.values(tinyReplay.summary.bet_breakdown);
 const breakdownCount = betBreakdown.reduce((total, item) => total + item.count, 0);
 const breakdownStake = betBreakdown.reduce((total, item) => total + item.total_stake, 0);
 const breakdownProfit = betBreakdown.reduce((total, item) => total + item.total_profit, 0);
+const grossProfit = betBreakdown.reduce((total, item) => total + item.gross_profit, 0);
+const grossLoss = betBreakdown.reduce((total, item) => total + item.gross_loss, 0);
+const baseGrossProfit = betBreakdown.reduce((total, item) => total + item.base_gross_profit, 0);
+const baseGrossLoss = betBreakdown.reduce((total, item) => total + item.base_gross_loss, 0);
+const classifiedResults = betBreakdown.reduce(
+  (total, item) => total + item.win_count + item.loss_count + item.push_count,
+  0,
+);
 if (breakdownCount !== tinyReplay.summary.placed_bet_count
+    || classifiedResults !== breakdownCount
     || Math.abs(breakdownStake - tinyReplay.summary.total_stake) > 1e-9
-    || Math.abs(breakdownProfit - tinyReplay.summary.total_profit) > 1e-9) {
+    || Math.abs(breakdownProfit - tinyReplay.summary.total_profit) > 1e-9
+    || Math.abs(grossProfit - grossLoss - tinyReplay.summary.total_profit) > 1e-9
+    || Math.abs(baseGrossProfit - baseGrossLoss - tinyReplay.summary.base_game_profit) > 1e-9
+    || Math.abs(
+      baseGrossProfit + tinyReplay.summary.rebate_income
+        - baseGrossLoss - tinyReplay.summary.total_profit,
+    ) > 1e-9) {
   throw new Error("各下注类型的笔数、下注额或盈亏没有与回放总指标对账");
+}
+
+const replayLabels = { player: "闲", banker: "庄", tie: "和" };
+const roiSeries = buildRoiSeries(tinyReplay.summary.bet_breakdown, replayLabels);
+const waterfallSeries = buildWaterfallSeries(
+  tinyReplay.summary,
+  tinyReplay.summary.bet_breakdown,
+);
+const riskReturnSeries = buildRiskReturnSeries(tinyReplay.summary.bet_breakdown, replayLabels);
+if (roiSeries.length === 0
+    || riskReturnSeries.length !== roiSeries.length
+    || riskReturnSeries.some((item) => item.lossRate < 0 || item.lossRate > 1)
+    || Math.abs(waterfallSeries.reconciliationDifference) > 1e-9
+    || Math.abs(waterfallSeries.net - tinyReplay.summary.total_profit) > 1e-9) {
+  throw new Error("ROI、瀑布或风险收益图的数据模型没有与 Rust 回放汇总对账");
+}
+
+// 同一个玩法的正收益和负收益必须进入两张不同的图，不能先算成净亏 100。
+const contributionFixture = {
+  banker: { gross_profit: 500, gross_loss: 600 },
+  player: { gross_profit: 300, gross_loss: 100 },
+  tie: { gross_profit: 200, gross_loss: 0 },
+};
+const profitContribution = buildContributionSeries(
+  contributionFixture,
+  "gross_profit",
+  { banker: "庄", player: "闲", tie: "和" },
+);
+const lossContribution = buildContributionSeries(
+  contributionFixture,
+  "gross_loss",
+  { banker: "庄", player: "闲", tie: "和" },
+);
+if (profitContribution.total !== 1_000
+    || lossContribution.total !== 700
+    || profitContribution.items[0].label !== "庄"
+    || profitContribution.items[0].share !== 0.5
+    || lossContribution.items[0].value !== 600) {
+  throw new Error("盈利与亏损贡献没有分开统计，或圆环百分比计算错误");
+}
+
+const longTailContribution = buildContributionSeries({
+  player: { gross_profit: 600 },
+  banker: { gross_profit: 500 },
+  tie: { gross_profit: 400 },
+  big: { gross_profit: 300 },
+  small: { gross_profit: 200 },
+  any_pair: { gross_profit: 90 },
+  perfect_pair: { gross_profit: 10 },
+}, "gross_profit", {
+  player: "闲",
+  banker: "庄",
+  tie: "和",
+  big: "大",
+  small: "小",
+  any_pair: "任意对子",
+  perfect_pair: "完美对子",
+});
+const longTailShares = longTailContribution.items.reduce((sum, item) => sum + item.share, 0);
+if (longTailContribution.items.length !== 6
+    || longTailContribution.items.at(-1)?.key !== "other"
+    || longTailContribution.items.at(-1)?.value !== 100
+    || Math.abs(longTailShares - 1) > 1e-12) {
+  throw new Error("下注类别超过五种时，没有正确合并为“其他”或占比之和不为 100%");
 }
 
 for (const field of [
@@ -306,11 +412,15 @@ const syntheticMultipleReplay = {
   ],
 };
 const syntheticSeries = buildBankrollSeries(syntheticMultipleReplay);
+const syntheticDrawdown = buildDrawdownSeries(syntheticMultipleReplay);
 if (syntheticSeries.length !== 3
     || syntheticSeries[1].betCount !== 2
     || syntheticSeries[1].roundStake !== 150
     || syntheticSeries[1].roundProfit !== 50
-    || syntheticSeries[2].drawdown !== 40) {
+    || syntheticSeries[2].drawdown !== 40
+    || syntheticSeries[2].drawdownDuration !== 1
+    || syntheticDrawdown.maximumDrawdown !== 40
+    || syntheticDrawdown.maximumDuration !== 1) {
   throw new Error("本金曲线没有正确合并同局多注或计算逐点回撤");
 }
 
