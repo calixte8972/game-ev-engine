@@ -1691,11 +1691,7 @@ td:first-child {
   gap: 8px;
 }
 
-.bet-count-grid > div {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: end;
-  gap: 2px 5px;
+.bet-count-card {
   min-width: 0;
   padding: 12px;
   border: 1px solid var(--line);
@@ -1703,8 +1699,16 @@ td:first-child {
   background: var(--surface-strong);
 }
 
-.bet-count-grid span {
-  grid-column: 1 / -1;
+.bet-count-card header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.bet-count-label {
   overflow: hidden;
   color: var(--muted);
   font-size: 0.7rem;
@@ -1713,16 +1717,65 @@ td:first-child {
   white-space: nowrap;
 }
 
-.bet-count-grid strong {
+.bet-count-value {
+  display: inline-flex;
+  flex: none;
+  align-items: baseline;
+  gap: 3px;
+}
+
+.bet-count-value strong {
   color: var(--felt-dark);
   font-size: 1.08rem;
   font-variant-numeric: tabular-nums;
 }
 
-.bet-count-grid small {
-  padding-bottom: 2px;
+.bet-count-value small {
   color: var(--muted);
   font-size: 0.66rem;
+}
+
+.bet-count-card dl {
+  display: grid;
+  gap: 5px;
+  margin: 8px 0 0;
+}
+
+.bet-count-card dl > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+
+.bet-count-card dt,
+.bet-count-card dd {
+  margin: 0;
+  font-size: 0.7rem;
+  line-height: 1.25;
+}
+
+.bet-count-card dt {
+  flex: none;
+  color: var(--muted);
+}
+
+.bet-count-card dd {
+  overflow: hidden;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  font-weight: 750;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bet-count-card dd.value-positive {
+  color: var(--positive);
+}
+
+.bet-count-card dd.value-negative {
+  color: var(--negative);
 }
 
 .quality-panel {

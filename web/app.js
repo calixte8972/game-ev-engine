@@ -219,6 +219,16 @@ function money(value) {
   return value == null ? "—" : `¥${moneyFormatter.format(value)}`;
 }
 
+function signedMoney(value) {
+  if (value == null) return "—";
+  const numericValue = Number(value);
+  if (!Number.isFinite(numericValue)) return "—";
+  const absoluteValue = money(Math.abs(numericValue));
+  if (numericValue > 0) return `+${absoluteValue}`;
+  if (numericValue < 0) return `-${absoluteValue}`;
+  return absoluteValue;
+}
+
 function evClass(value) {
   if (value > 0) return "value-positive";
   if (value < 0) return "value-negative";
@@ -548,20 +558,48 @@ function renderResults(data, elapsedMilliseconds) {
   setText("#decision-reason", reason);
 }
 
-function renderBetCounts(counts = {}) {
-  // Rust 对每个下注目标分别累计笔数。按固定 betCountOrder 渲染可以保证
-  // 页面顺序稳定，即使 JSON 对象属性顺序或某个字段缺失也不会跳动。
+function renderBetBreakdown(breakdown = {}, legacyCounts = {}) {
+  // Rust 在真实结算点为每个方向同时累计笔数、下注额和含返水净盈亏。
+  // 浏览器不扫描分页明细重新计算，只按固定顺序展示权威汇总；legacyCounts
+  // 让旧版回放结果在页面升级后仍能至少显示原有下注笔数。
   betCountGrid.replaceChildren();
   for (const key of betCountOrder) {
-    const item = document.createElement("div");
+    const metrics = breakdown[key] ?? {};
+    const item = document.createElement("article");
+    item.className = "bet-count-card";
+    const header = document.createElement("header");
     const label = document.createElement("span");
+    label.className = "bet-count-label";
+    const countGroup = document.createElement("span");
+    countGroup.className = "bet-count-value";
     const value = document.createElement("strong");
     const unit = document.createElement("small");
-    const count = Number(counts[key] ?? 0);
+    const count = Number(metrics.count ?? legacyCounts[key] ?? 0);
     label.textContent = allBetLabels[key];
     value.textContent = integerFormatter.format(Number.isFinite(count) ? count : 0);
     unit.textContent = "笔";
-    item.append(label, value, unit);
+    countGroup.append(value, unit);
+    header.append(label, countGroup);
+
+    const details = document.createElement("dl");
+    const stakeRow = document.createElement("div");
+    const stakeLabel = document.createElement("dt");
+    const stakeValue = document.createElement("dd");
+    stakeLabel.textContent = "累计下注";
+    stakeValue.textContent = money(Number(metrics.total_stake ?? 0));
+    stakeRow.append(stakeLabel, stakeValue);
+
+    const profitRow = document.createElement("div");
+    const profitLabel = document.createElement("dt");
+    const profitValue = document.createElement("dd");
+    const profit = Number(metrics.total_profit ?? 0);
+    profitLabel.textContent = "净盈亏";
+    profitValue.textContent = signedMoney(profit);
+    applySignedClass(profitValue, profit);
+    profitRow.append(profitLabel, profitValue);
+
+    details.append(stakeRow, profitRow);
+    item.append(header, details);
     betCountGrid.append(item);
   }
 }
@@ -864,7 +902,7 @@ function renderReplay(report, elapsedMilliseconds) {
   setText("#minimum-bankroll", money(summary.minimum_bankroll));
   setText("#maximum-single-stake", money(summary.maximum_single_stake));
   setText("#maximum-round-stake", money(summary.maximum_round_stake));
-  renderBetCounts(summary.placed_bets);
+  renderBetBreakdown(summary.bet_breakdown, summary.placed_bets);
 
   setText("#dataset-rows", integerFormatter.format(dataset.total_rows));
   setText("#valid-sessions", integerFormatter.format(quality.fully_observable_sessions));

@@ -473,6 +473,93 @@ impl CsvBetCounts {
     }
 }
 
+/// 单个下注方向在整次回放中的资金表现。
+///
+/// 这三个字段必须在真实结算发生时一起累计，不能由浏览器根据当前页明细推算。
+/// 回放明细可以分页，但这里始终覆盖整份 CSV，因此适合做总额和盈亏对账。
+#[derive(Debug, Default, Serialize)]
+pub struct CsvBetPerformance {
+    /// 该方向真正执行的下注笔数。
+    pub count: u64,
+    /// 该方向所有实际下注金额之和。
+    pub total_stake: f64,
+    /// 该方向累计净盈亏，已经包含实际获得的返水。
+    pub total_profit: f64,
+}
+
+/// 按下注方向拆分的笔数、下注额和净盈亏。
+#[derive(Debug, Default, Serialize)]
+pub struct CsvBetBreakdown {
+    pub player: CsvBetPerformance,
+    pub banker: CsvBetPerformance,
+    pub tie: CsvBetPerformance,
+    pub any_pair: CsvBetPerformance,
+    pub banker_pair: CsvBetPerformance,
+    pub player_pair: CsvBetPerformance,
+    pub perfect_pair: CsvBetPerformance,
+    pub big: CsvBetPerformance,
+    pub small: CsvBetPerformance,
+    pub lucky_seven: CsvBetPerformance,
+    pub super_lucky_seven: CsvBetPerformance,
+    pub lucky_six: CsvBetPerformance,
+    pub banker_dragon_bonus: CsvBetPerformance,
+    pub player_dragon_bonus: CsvBetPerformance,
+}
+
+impl CsvBetBreakdown {
+    /// 在唯一的真实结算点记录一笔下注，确保数量、金额和盈亏使用同一口径。
+    fn record(&mut self, bet: BetTarget, amount: f64, actual_profit: f64) {
+        let performance = match bet {
+            BetTarget::Main(MainBet::Player) => &mut self.player,
+            BetTarget::Main(MainBet::Banker) => &mut self.banker,
+            BetTarget::Main(MainBet::Tie) => &mut self.tie,
+            BetTarget::Side(SideBet::AnyPair) => &mut self.any_pair,
+            BetTarget::Side(SideBet::BankerPair) => &mut self.banker_pair,
+            BetTarget::Side(SideBet::PlayerPair) => &mut self.player_pair,
+            BetTarget::Side(SideBet::PerfectPair) => &mut self.perfect_pair,
+            BetTarget::Side(SideBet::Big) => &mut self.big,
+            BetTarget::Side(SideBet::Small) => &mut self.small,
+            BetTarget::Side(SideBet::LuckySeven) => &mut self.lucky_seven,
+            BetTarget::Side(SideBet::SuperLuckySeven) => &mut self.super_lucky_seven,
+            BetTarget::Side(SideBet::LuckySix) => &mut self.lucky_six,
+            BetTarget::Side(SideBet::BankerDragonBonus) => &mut self.banker_dragon_bonus,
+            BetTarget::Side(SideBet::PlayerDragonBonus) => &mut self.player_dragon_bonus,
+        };
+
+        performance.count += 1;
+        performance.total_stake += amount;
+        performance.total_profit += actual_profit;
+    }
+
+    /// 汇总所有方向，用于测试和调试时验证分类数据能与总报告完全对账。
+    fn totals(&self) -> (u64, f64, f64) {
+        [
+            &self.player,
+            &self.banker,
+            &self.tie,
+            &self.any_pair,
+            &self.banker_pair,
+            &self.player_pair,
+            &self.perfect_pair,
+            &self.big,
+            &self.small,
+            &self.lucky_seven,
+            &self.super_lucky_seven,
+            &self.lucky_six,
+            &self.banker_dragon_bonus,
+            &self.player_dragon_bonus,
+        ]
+        .into_iter()
+        .fold((0, 0.0, 0.0), |(count, stake, profit), item| {
+            (
+                count + item.count,
+                stake + item.total_stake,
+                profit + item.total_profit,
+            )
+        })
+    }
+}
+
 /// 全部可回放局的策略和盈亏汇总。
 #[derive(Debug, Default, Serialize)]
 pub struct CsvReplaySummary {
@@ -488,6 +575,8 @@ pub struct CsvReplaySummary {
     pub candidate_bets: CsvBetCounts,
     /// 通过策略和资金检查、真正执行的下注分类计数。
     pub placed_bets: CsvBetCounts,
+    /// 每种真实下注的笔数、累计下注额和包含返水后的累计净盈亏。
+    pub bet_breakdown: CsvBetBreakdown,
     /// 所有真实下注明细的总笔数；同局多注时一局可贡献多笔。
     pub placed_bet_count: u64,
     /// 计划存在但最终没有执行的下注计划数量。
@@ -1092,6 +1181,7 @@ fn replay_rounds(
                     round_profit += actual_profit;
 
                     summary.placed_bets.increment(bet);
+                    summary.bet_breakdown.record(bet, amount, actual_profit);
                     summary.placed_bet_count += 1;
                     summary.total_stake += amount;
                     summary.total_expected_profit += quote.expected_profit();
@@ -1214,6 +1304,13 @@ fn replay_rounds(
     summary.total_profit = current_bankroll - config.initial_bankroll;
     summary.maximum_profit = summary.maximum_bankroll - config.initial_bankroll;
     summary.return_on_initial = summary.total_profit / config.initial_bankroll;
+
+    // 分类指标和顶部汇总来自同一个结算循环。这里保留调试期对账断言，未来新增
+    // 玩法时如果只更新其中一处，测试构建会立刻暴露遗漏，而不会悄悄显示错账。
+    let (breakdown_count, breakdown_stake, breakdown_profit) = summary.bet_breakdown.totals();
+    debug_assert_eq!(breakdown_count, summary.placed_bet_count);
+    debug_assert!((breakdown_stake - summary.total_stake).abs() < 1e-7);
+    debug_assert!((breakdown_profit - summary.total_profit).abs() < 1e-7);
 
     Ok((summary, details))
 }
@@ -1588,6 +1685,33 @@ mod tests {
         assert_eq!(counts.lucky_six, 1);
         assert_eq!(counts.banker_dragon_bonus, 1);
         assert_eq!(counts.player_dragon_bonus, 1);
+
+        // 每种玩法的资金表现必须与旧的分类笔数保持一致；固定 1 元策略下，
+        // 14 种玩法各下一笔，所以分类下注额合计应为 14 元。
+        let breakdown = &report.summary.bet_breakdown;
+        for performance in [
+            &breakdown.player,
+            &breakdown.banker,
+            &breakdown.tie,
+            &breakdown.any_pair,
+            &breakdown.banker_pair,
+            &breakdown.player_pair,
+            &breakdown.perfect_pair,
+            &breakdown.big,
+            &breakdown.small,
+            &breakdown.lucky_seven,
+            &breakdown.super_lucky_seven,
+            &breakdown.lucky_six,
+            &breakdown.banker_dragon_bonus,
+            &breakdown.player_dragon_bonus,
+        ] {
+            assert_eq!(performance.count, 1);
+            assert!((performance.total_stake - 1.0).abs() < 1e-12);
+        }
+        let (breakdown_count, breakdown_stake, breakdown_profit) = breakdown.totals();
+        assert_eq!(breakdown_count, report.summary.placed_bet_count);
+        assert!((breakdown_stake - report.summary.total_stake).abs() < 1e-12);
+        assert!((breakdown_profit - report.summary.total_profit).abs() < 1e-12);
 
         let side_bets = report
             .bets

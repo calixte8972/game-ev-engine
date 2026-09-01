@@ -81,8 +81,8 @@ if (!/suitSymbols/.test(appSource) || !/appendCardLine/.test(appSource)) {
 if (!/createBankrollChart/.test(appSource)) {
   throw new Error("页面没有把回放报告交给本金变化折线图");
 }
-if (!/renderBetCounts\(summary\.placed_bets\)/.test(appSource)) {
-  throw new Error("页面没有展示 Rust 回放报告中的分类下注笔数");
+if (!/renderBetBreakdown\(summary\.bet_breakdown, summary\.placed_bets\)/.test(appSource)) {
+  throw new Error("页面没有展示 Rust 回放报告中的分类下注金额与盈亏");
 }
 
 const manual = JSON.parse(
@@ -225,6 +225,16 @@ const placedBetCountFromCategories = Object.values(tinyReplay.summary.placed_bet
   .reduce((total, count) => total + count, 0);
 if (placedBetCountFromCategories !== tinyReplay.summary.placed_bet_count) {
   throw new Error("各下注类型笔数之和与实际下注总数不一致");
+}
+
+const betBreakdown = Object.values(tinyReplay.summary.bet_breakdown);
+const breakdownCount = betBreakdown.reduce((total, item) => total + item.count, 0);
+const breakdownStake = betBreakdown.reduce((total, item) => total + item.total_stake, 0);
+const breakdownProfit = betBreakdown.reduce((total, item) => total + item.total_profit, 0);
+if (breakdownCount !== tinyReplay.summary.placed_bet_count
+    || Math.abs(breakdownStake - tinyReplay.summary.total_stake) > 1e-9
+    || Math.abs(breakdownProfit - tinyReplay.summary.total_profit) > 1e-9) {
+  throw new Error("各下注类型的笔数、下注额或盈亏没有与回放总指标对账");
 }
 
 for (const field of [
