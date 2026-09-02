@@ -56,7 +56,7 @@
           type="button"
           data-baccarat-view-tab="replay"
           aria-selected="false"
-        >CSV 策略回放</button>
+        >策略回测</button>
       </nav>
 
       <!-- 01：所有手工输入和下注策略配置，表单提交后调用 Rust/WASM。 -->
@@ -424,31 +424,69 @@
         <div class="section-heading replay-heading">
           <div>
             <p class="section-number">03</p>
-            <h2 id="replay-title">游戏 CSV 策略回放</h2>
+            <h2 id="replay-title">牌靴策略回测</h2>
             <p class="section-description">
-              从每個牌靴第 1 局开始还原，下注前计算，开奖后结算，并把真实盈亏滚入下一局本金。
+              上传真实牌面，或按种子随机生成牌靴；两种方式共用同一套下注、结算和资金统计。
             </p>
           </div>
           <span id="replay-status" class="replay-status">等待选择文件</span>
         </div>
 
+        <div class="replay-source-switch" role="tablist" aria-label="回测数据来源">
+          <button class="replay-source-tab active" type="button" role="tab" aria-selected="true" aria-controls="csv-replay-source" data-replay-source="csv">
+            上传 CSV
+            <small>回放真实数据</small>
+          </button>
+          <button class="replay-source-tab" type="button" role="tab" aria-selected="false" aria-controls="simulation-replay-source" data-replay-source="simulation">
+            随机生成
+            <small>无需准备文件</small>
+          </button>
+        </div>
+
         <div class="replay-input-grid">
-          <div class="upload-box">
-            <input id="csv-file" class="file-input" type="file" accept=".csv,text/csv" />
-            <label for="csv-file" class="upload-label">
-              <span class="upload-icon" aria-hidden="true">CSV</span>
-              <strong>选择游戏 CSV</strong>
-              <small>文件仅在本机浏览器读取，支持当前数据库导出格式，最大 50 MB。</small>
-            </label>
-            <div id="selected-file" class="selected-file">尚未选择文件</div>
+          <div class="replay-source-panel">
+            <div id="csv-replay-source" class="upload-box" role="tabpanel">
+              <input id="csv-file" class="file-input" type="file" accept=".csv,text/csv" />
+              <label for="csv-file" class="upload-label">
+                <span class="upload-icon" aria-hidden="true">CSV</span>
+                <strong>选择游戏 CSV</strong>
+                <small>文件仅在本机浏览器读取，支持三列精简格式及数据库完整格式，最大 200 MB。</small>
+              </label>
+              <div id="selected-file" class="selected-file">尚未选择文件</div>
+            </div>
+
+            <div id="simulation-replay-source" class="simulation-box" role="tabpanel" hidden>
+              <div class="simulation-heading">
+                <div>
+                  <strong>生成真实随机牌靴</strong>
+                  <small>相同参数与种子可重复得到同一批牌</small>
+                </div>
+                <span class="simulation-badge">本地 WASM</span>
+              </div>
+              <div class="simulation-fields">
+                <label>
+                  <span>生成牌靴数</span>
+                  <input id="simulation-shoes" type="number" min="1" max="10000" step="1" value="100" />
+                </label>
+                <label>
+                  <span>每靴最大子局数</span>
+                  <input id="simulation-rounds" type="number" min="1" max="69" step="1" value="60" />
+                </label>
+                <label class="simulation-seed-field">
+                  <span>随机种子</span>
+                  <input id="simulation-seed" type="text" inputmode="numeric" value="20260902" maxlength="20" autocomplete="off" />
+                </label>
+              </div>
+              <p id="simulation-estimate" class="simulation-estimate">预计生成 100 靴，共 6,000 局。</p>
+            </div>
           </div>
 
           <div class="replay-rules">
-            <h3>回放前提</h3>
+            <h3 id="replay-rules-title">CSV 回放前提</h3>
             <ul>
-              <li>必需列：<code>__source_pk</code>、<code>table_id</code>、<code>session_id</code>、<code>round_no</code>、时间、牌面和结果。</li>
-              <li>只有从第 1 局开始、局号连续且牌面合法的牌靴会进入策略计算。</li>
-              <li>多个桌台按 <code>started_at</code> 排序，共享上方配置的一份滚动本金。</li>
+              <li id="replay-rule-primary">只需三列：<code>session_id</code>、<code>round_no</code>、<code>raw_cards</code>；也支持中文列名。</li>
+              <li id="replay-rule-secondary">只有从第 1 局开始、局号连续且牌面合法的牌靴会进入策略计算。</li>
+              <li id="replay-rule-order">完整格式按时间排序；精简格式按 CSV 行顺序回放。</li>
             </ul>
             <button id="replay-button" class="primary-button replay-button" type="button" disabled>
               开始策略回放

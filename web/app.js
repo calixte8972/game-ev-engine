@@ -35,6 +35,17 @@ const csvFileInput = document.querySelector("#csv-file");
 const selectedFile = document.querySelector("#selected-file");
 const replayButton = document.querySelector("#replay-button");
 const replayStatus = document.querySelector("#replay-status");
+const replaySourceTabs = document.querySelectorAll("[data-replay-source]");
+const csvReplaySource = document.querySelector("#csv-replay-source");
+const simulationReplaySource = document.querySelector("#simulation-replay-source");
+const simulationShoes = document.querySelector("#simulation-shoes");
+const simulationRounds = document.querySelector("#simulation-rounds");
+const simulationSeed = document.querySelector("#simulation-seed");
+const simulationEstimate = document.querySelector("#simulation-estimate");
+const replayRulesTitle = document.querySelector("#replay-rules-title");
+const replayRulePrimary = document.querySelector("#replay-rule-primary");
+const replayRuleSecondary = document.querySelector("#replay-rule-secondary");
+const replayRuleOrder = document.querySelector("#replay-rule-order");
 const replayError = document.querySelector("#replay-error");
 const replayResults = document.querySelector("#replay-results");
 const replayBody = document.querySelector("#replay-body");
@@ -198,6 +209,7 @@ let wasmReady = false;
 let replayWorkerReady = false;
 let replayRunning = false;
 let currentCsvFile = null;
+let replaySourceMode = "csv";
 let currentReplayReport = null;
 let currentReplayPage = 1;
 let activeGame = "baccarat";
@@ -205,7 +217,7 @@ let activeBaccaratView = "analysis";
 
 // URL 上的版本标记强制浏览器为当前页面创建同版本 Worker，避免发布后仍复用
 // 旧 Worker，进而把新增配置字段当成 undefined 传给 WASM。
-const replayWorker = new Worker(new URL("./replay-worker.js?v=18", import.meta.url), {
+const replayWorker = new Worker(new URL("./replay-worker.js?v=19", import.meta.url), {
   type: "module",
 });
 
@@ -740,15 +752,90 @@ function calculateBlackjack() {
 }
 
 function updateReplayButton() {
-  replayButton.disabled = !currentCsvFile || !replayWorkerReady || replayRunning;
+  const hasInput = replaySourceMode === "simulation" || Boolean(currentCsvFile);
+  replayButton.disabled = !hasInput || !replayWorkerReady || replayRunning;
 }
 
 function setReplayRunning(running, label) {
   replayRunning = running;
   replayStatus.textContent = label;
   replayStatus.classList.toggle("running", running);
-  replayButton.textContent = running ? "正在回放…" : "开始策略回放";
+  replayButton.textContent = running
+    ? "正在回测…"
+    : replaySourceMode === "simulation" ? "生成并开始回测" : "开始 CSV 回放";
+  for (const tab of replaySourceTabs) tab.disabled = running;
   updateReplayButton();
+}
+
+function maximumGuaranteedSimulationRounds() {
+  return Math.floor(Number.parseInt(deckCount.value, 10) * 52 / 6);
+}
+
+function updateSimulationEstimate({ clampRounds = false } = {}) {
+  const maximumRounds = maximumGuaranteedSimulationRounds();
+  simulationRounds.max = String(maximumRounds);
+  if (clampRounds && Number.parseInt(simulationRounds.value, 10) > maximumRounds) {
+    simulationRounds.value = String(maximumRounds);
+  }
+
+  const shoes = Number.parseInt(simulationShoes.value, 10);
+  const rounds = Number.parseInt(simulationRounds.value, 10);
+  if (!Number.isInteger(shoes) || shoes < 1 || !Number.isInteger(rounds) || rounds < 1) {
+    simulationEstimate.textContent = `当前 ${deckCount.value} 副牌最多保证每靴生成 ${maximumRounds} 局。`;
+  } else if (rounds > maximumRounds) {
+    simulationEstimate.textContent = `当前 ${deckCount.value} 副牌最多保证每靴生成 ${maximumRounds} 局，请调小子局数。`;
+  } else {
+    simulationEstimate.textContent = `预计生成 ${integerFormatter.format(shoes)} 靴，共 ${integerFormatter.format(shoes * rounds)} 局。`;
+  }
+  updateReplayButton();
+}
+
+function simulationRequest() {
+  const shoes = readNumber("#simulation-shoes", "生成牌靴数", {
+    min: 1,
+    max: 10_000,
+    integer: true,
+  });
+  const maxRoundsPerShoe = readNumber("#simulation-rounds", "每靴最大子局数", {
+    min: 1,
+    max: maximumGuaranteedSimulationRounds(),
+    integer: true,
+  });
+  const seed = simulationSeed.value.trim();
+  if (!/^\d{1,20}$/.test(seed) || BigInt(seed) > 18_446_744_073_709_551_615n) {
+    throw new Error("随机种子必须是 0 到 18446744073709551615 之间的整数");
+  }
+  return { shoes, maxRoundsPerShoe, seed };
+}
+
+function setReplaySourceMode(mode) {
+  replaySourceMode = mode;
+  const simulation = mode === "simulation";
+  csvReplaySource.hidden = simulation;
+  simulationReplaySource.hidden = !simulation;
+  for (const tab of replaySourceTabs) {
+    const active = tab.dataset.replaySource === mode;
+    tab.classList.toggle("active", active);
+    tab.setAttribute("aria-selected", String(active));
+  }
+
+  if (simulation) {
+    replayRulesTitle.textContent = "随机回测说明";
+    replayRulePrimary.textContent = "Rust 会创建完整牌靴、按种子洗牌，并依照真实补牌规则逐局发牌。";
+    replayRuleSecondary.textContent = "副牌数和全部资金策略沿用页面上方配置，无需准备或上传 CSV。";
+    replayRuleOrder.textContent = "相同牌靴数、子局数和种子会得到完全相同的牌局，适合比较策略。";
+    replayStatus.textContent = replayWorkerReady ? "可以开始随机回测" : "正在准备回测核心…";
+    updateSimulationEstimate();
+  } else {
+    replayRulesTitle.textContent = "CSV 回放前提";
+    replayRulePrimary.textContent = "只需 session_id、round_no、raw_cards 三列，也支持中文列名。";
+    replayRuleSecondary.textContent = "只有从第 1 局开始、局号连续且牌面合法的牌靴会进入策略计算。";
+    replayRuleOrder.textContent = "完整格式按时间排序；精简格式按 CSV 行顺序回放。";
+    replayStatus.textContent = currentCsvFile
+      ? replayWorkerReady ? "可以开始回放" : "正在准备回放核心…"
+      : "等待选择文件";
+  }
+  setReplayRunning(false, replayStatus.textContent);
 }
 
 function detailCell(value, className = "") {
@@ -995,6 +1082,16 @@ clearButton.addEventListener("click", () => {
   cardsInput.focus();
 });
 
+for (const tab of replaySourceTabs) {
+  tab.addEventListener("click", () => setReplaySourceMode(tab.dataset.replaySource));
+}
+
+for (const input of [simulationShoes, simulationRounds, simulationSeed]) {
+  input.addEventListener("input", () => updateSimulationEstimate());
+}
+
+deckCount.addEventListener("change", () => updateSimulationEstimate({ clampRounds: true }));
+
 csvFileInput.addEventListener("change", () => {
   const [file] = csvFileInput.files;
   currentCsvFile = file ?? null;
@@ -1044,7 +1141,7 @@ replayLastPage.addEventListener("click", () => {
 });
 
 replayButton.addEventListener("click", async () => {
-  if (!currentCsvFile || replayRunning) return;
+  if (replayRunning || (replaySourceMode === "csv" && !currentCsvFile)) return;
   replayError.hidden = true;
   replayResults.hidden = true;
   bankrollChartController.reset("正在回放，完成后显示新的本金变化曲线…");
@@ -1052,16 +1149,24 @@ replayButton.addEventListener("click", async () => {
   replayAnalysisChartController.reset();
 
   try {
-    if (currentCsvFile.size > 50 * 1024 * 1024) {
-      throw new Error("CSV 超过 50 MB；请先按日期或桌台拆分后再回放。");
-    }
     // 配置在主线程读取一次，再与 CSV 文本一起传给 Worker；Worker 不直接访问
     // DOM，因此所有页面输入都必须在这里变成可结构化传输的普通数据。
     const config = strategyConfig();
-    setReplayRunning(true, "正在读取 CSV…");
-    const csvText = await currentCsvFile.text();
-    setReplayRunning(true, "正在重建牌靴并计算策略…");
-    replayWorker.postMessage({ type: "replay", csvText, config });
+    if (replaySourceMode === "simulation") {
+      const simulation = simulationRequest();
+      setReplayRunning(true, "正在生成牌靴并回测策略…");
+      replayWorker.postMessage({ type: "simulate", simulation, config });
+    } else {
+      if (currentCsvFile.size > 200 * 1024 * 1024) {
+        throw new Error("CSV 超过 200 MB；请先按牌靴拆分后再回放。");
+      }
+      setReplayRunning(true, "正在读取 CSV…");
+      // ArrayBuffer 可以通过 transferable 直接把所有权交给 Worker，不必像字符串
+      // 那样在主线程与 Worker 之间复制一份；大文件回放时可显著降低峰值内存。
+      const csvBuffer = await currentCsvFile.arrayBuffer();
+      setReplayRunning(true, "正在重建牌靴并计算策略…");
+      replayWorker.postMessage({ type: "replay", csvBuffer, config }, [csvBuffer]);
+    }
   } catch (error) {
     setReplayRunning(false, "回放失败");
     bankrollChartController.reset("回放失败；修正文件或配置后重新运行即可生成本金变化曲线。");
@@ -1077,7 +1182,11 @@ replayWorker.addEventListener("message", (event) => {
   const message = event.data;
   if (message.type === "ready") {
     replayWorkerReady = true;
-    if (currentCsvFile) replayStatus.textContent = "可以开始回放";
+    if (replaySourceMode === "simulation") {
+      replayStatus.textContent = "可以开始随机回测";
+    } else if (currentCsvFile) {
+      replayStatus.textContent = "可以开始回放";
+    }
     updateReplayButton();
     return;
   }
@@ -1127,5 +1236,7 @@ updateBlackjackModeHelp();
 updateStakeStrategyFields();
 updateSideBetRoundLimitHints();
 updateConfigSummaries();
+updateSimulationEstimate();
+setReplaySourceMode("csv");
 syncBaccaratView();
 start();

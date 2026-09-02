@@ -28,7 +28,8 @@ pub mod web_api;
 // 把最常使用的百家乐领域类型提升到 crate 根路径。
 // 这里只改变访问路径，不会复制类型，也不会产生运行时开销。
 pub use baccarat::{
-    ActionSnapshot, BaccaratHand, BankerPayoutRule, BetAction, BetDecision, BetMetrics, BetPlan,
+    ActionSnapshot, BaccaratGenerationSummary, BaccaratHand, BaccaratSimulationConfig,
+    BaccaratSimulationError, BankerPayoutRule, BetAction, BetDecision, BetMetrics, BetPlan,
     BetPlanAction, BetPlanSkipReason, BetSnapshot, BetTarget, BettingPolicy, CombinedBetAction,
     CombinedBetDecision, CombinedBetPlan, CombinedBetPlanAction, CsvBetBreakdown, CsvBetCounts,
     CsvBetDetail, CsvBetPerformance, CsvDatasetReport, CsvQualityReport, CsvReplayConfig,
@@ -40,8 +41,9 @@ pub use baccarat::{
     SideBetRules, SideBetWeights, SkipReason, SnapshotError, StakeSizingStrategy,
     analyze_main_bets, analyze_snapshot, calculate_kelly_fraction,
     calculate_main_and_side_outcomes, calculate_main_outcomes, calculate_side_bet_outcomes,
-    decision_snapshot_from_weights, effective_ev, main_bet_kelly_outcomes, replay_csv_text,
-    resolve_round, side_bet_kelly_outcomes, side_bet_kelly_outcomes_with_rebate,
+    decision_snapshot_from_weights, effective_ev, generate_baccarat_csv_text,
+    main_bet_kelly_outcomes, replay_csv_text, resolve_round, side_bet_kelly_outcomes,
+    side_bet_kelly_outcomes_with_rebate, write_baccarat_csv,
 };
 pub use blackjack::{
     BlackjackAction, BlackjackActionEvs, BlackjackAnalysis, BlackjackError, BlackjackRules,

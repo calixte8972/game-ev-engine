@@ -7,6 +7,7 @@ import {
   initSync,
   replayBaccaratCsv,
   replayBaccaratCsvWithSideBetLimits,
+  simulateBaccaratShoesWithSideBetLimits,
 } from "../pkg/game_ev_engine.js";
 import { buildBankrollSeries, sampleBankrollSeries } from "../bankroll-chart.js";
 import { buildContributionSeries } from "../bet-contribution-charts.js";
@@ -32,6 +33,12 @@ if (!/<input id="bankroll"[^>]*step="0\.01"/.test(pageHtml)) {
 
 if (!/id="allow-multiple-bets"/.test(pageHtml)) {
   throw new Error("页面没有同局多下注开关");
+}
+
+for (const id of ["simulation-shoes", "simulation-rounds", "simulation-seed"]) {
+  if (!new RegExp(`id="${id}"`).test(pageHtml)) {
+    throw new Error(`随机牌靴回测缺少输入：${id}`);
+  }
 }
 
 for (const id of [
@@ -100,6 +107,23 @@ if (!/id="replay-pagination"/.test(pageHtml)
 }
 
 const appSource = readFileSync(resolve(webDirectory, "app.js"), "utf8");
+if (!/data-replay-source="simulation"/.test(pageHtml)
+    || !/type:\s*"simulate"/.test(appSource)
+    || !/simulateBaccaratShoesWithSideBetLimits/.test(replayWorkerSource)) {
+  throw new Error("随机生成入口没有完整连接到 WASM 回测 Worker");
+}
+if (!/200 \* 1024 \* 1024/.test(appSource)
+    || !/最大 200 MB/.test(pageHtml)) {
+  throw new Error("CSV 上传上限没有统一提高到 200 MB");
+}
+if (!/currentCsvFile\.arrayBuffer\(\)/.test(appSource)
+    || !/\[csvBuffer\]/.test(appSource)
+    || !/TextDecoder/.test(replayWorkerSource)) {
+  throw new Error("大型 CSV 没有通过 transferable ArrayBuffer 交给 Worker");
+}
+if (!/session_id.*round_no.*raw_cards/s.test(pageHtml)) {
+  throw new Error("页面没有说明精简 CSV 的三列格式");
+}
 if (/report\.bets\.slice\(0,\s*500\)/.test(appSource)) {
   throw new Error("页面仍然只读取前 500 笔下注明细");
 }
@@ -218,6 +242,19 @@ const tinyReplay = JSON.parse(
   ),
 );
 
+const compactCsv = `session_id,round_no,raw_cards
+9001,1,"b:24,31,45;p:31,42,47"
+9001,2,"b:73,62,;p:53,8,"
+`;
+const compactReplay = JSON.parse(
+  replayBaccaratCsv(
+    compactCsv, 8, 0.02, 0, 10_000, 0.05, 1_000, 1_000,
+    "standard", "fixed", 100, 0, 100,
+    1,
+    false,
+  ),
+);
+
 // 模拟旧页面没有 minimumSideBetEv / sideBetLimit 两个字段时，wasm-bindgen
 // 会收到的 NaN。新核心必须回退到主注门槛和单局限额，而不是拒绝整个回放。
 const legacyReplay = JSON.parse(
@@ -250,9 +287,30 @@ const customLimitReplay = JSON.parse(
     false,
   ),
 );
+const simulatedReplay = JSON.parse(
+  simulateBaccaratShoesWithSideBetLimits(
+    2, 3, "42",
+    8, 0.009, 0, 10_000, 0.05, 500, 500,
+    "standard", "fixed", 100, 0, 100,
+    JSON.stringify(customRoundLimits),
+    false,
+  ),
+);
 
 if (tinyReplay.summary.replayed_rounds !== 2) {
   throw new Error("WASM CSV 回放没有完成两局测试数据");
+}
+if (compactReplay.summary.replayed_rounds !== 2
+    || compactReplay.dataset.table_count !== 1
+    || compactReplay.dataset.business_date_count !== 0
+    || compactReplay.quality.valid_card_rows !== 2) {
+  throw new Error("WASM 没有正确回放仅含牌靴、子局数和牌面的精简 CSV");
+}
+if (simulatedReplay.dataset.session_count !== 2
+    || simulatedReplay.dataset.total_rows !== 6
+    || simulatedReplay.quality.fully_observable_sessions !== 2
+    || simulatedReplay.summary.replayed_rounds !== 6) {
+  throw new Error("WASM 随机牌靴入口没有生成并回测指定的牌靴数与子局数");
 }
 
 const placedBetCountFromCategories = Object.values(tinyReplay.summary.placed_bets)

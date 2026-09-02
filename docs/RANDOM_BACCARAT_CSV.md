@@ -16,6 +16,7 @@ cargo run --release --bin generate_baccarat_csv -- docs/csv/random-baccarat.csv 
 - 每靴 60 局，共 6,000 局；
 - 每靴使用 8 副完整扑克牌；
 - 使用固定种子 `20260902`，以后使用相同参数可重现完全相同的数据；
+- CSV 只包含 `session_id`、`round_no`、`raw_cards` 三列；
 - 输出文件可以直接上传到“CSV 策略回放”。
 
 ## 可配置参数
@@ -26,16 +27,23 @@ cargo run --release --bin generate_baccarat_csv -- docs/csv/random-baccarat.csv 
 | `--decks` | 8 | 每靴使用几副牌，允许 1～8 |
 | `--rounds-per-shoe` | 60 | 每靴生成多少局 |
 | `--seed` | 20260902 | 随机种子；相同种子产生相同 CSV |
-| `--tables` | 10 | 把牌靴轮流分配到多少张桌 |
 | `--start-session-id` | 1000000 | 第一靴的场次编号 |
-| `--round-seconds` | 45 | 同一靴相邻两局的开局时间间隔 |
-| `--start-date` | 2026-09-02 | CSV 中使用的业务日期 |
 
 例如，生成 1,000 靴、每靴 55 局的数据：
 
 ```powershell
-cargo run --release --bin generate_baccarat_csv -- docs/csv/random-55000.csv --shoes=1000 --rounds-per-shoe=55 --seed=42 --tables=50 --start-date=2026-09-02
+cargo run --release --bin generate_baccarat_csv -- docs/csv/random-55000.csv --shoes=1000 --rounds-per-shoe=55 --seed=42
 ```
+
+生成文件的表头固定为：
+
+```csv
+session_id,round_no,raw_cards
+```
+
+其中 `session_id` 是牌靴编号，`round_no` 是该牌靴内从 1 开始的子局数，
+`raw_cards` 是庄闲双方的真实牌面。回放时不需要额外提供开奖结果，Rust 会从
+牌面重新计算结果，避免随机文件同时保存两份可能互相矛盾的信息。
 
 ## 为什么这份数据符合百家乐
 

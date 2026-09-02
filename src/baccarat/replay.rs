@@ -373,7 +373,7 @@ pub struct CsvDatasetReport {
     pub table_count: usize,
     /// `(table_id, session_id)` 牌靴场次数量。
     pub session_count: usize,
-    /// 从 `started_at` 提取到的业务日期数量。
+    /// 从可选的 `started_at` 提取到的业务日期数量。
     pub business_date_count: usize,
     /// 最早业务日期；没有数据时为空字符串。
     pub business_date_min: String,
@@ -387,7 +387,7 @@ pub struct CsvDatasetReport {
     pub settled_at_min: String,
     /// 最晚开奖时间；没有数据时为空字符串。
     pub settled_at_max: String,
-    /// 重复 `__source_pk` 的行数；大于 0 时整个回放拒绝执行。
+    /// 重复 `__source_pk` 的行数；精简格式没有该列时不检查。
     pub duplicate_source_pk_rows: u64,
     /// 重复 `(table_id, session_id, round_no)` 的行数；大于 0 时拒绝执行。
     pub duplicate_round_keys: u64,
@@ -396,7 +396,7 @@ pub struct CsvDatasetReport {
 /// 判断哪些牌靴可以安全回放的数据质量指标。
 #[derive(Debug, Default, Serialize)]
 pub struct CsvQualityReport {
-    /// 牌面合法、发牌顺序正确且结果码一致的行数。
+    /// 牌面合法、发牌顺序正确，且可选结果码一致的行数。
     pub valid_card_rows: u64,
     /// 开奖内容为空、无法判断牌局的行数。
     pub empty_card_rows: u64,
@@ -757,22 +757,33 @@ pub struct CsvBetDetail {
     pub bankroll_after: f64,
 }
 
-/// 数据库导出的原始一局。额外列会被 serde 自动忽略。
+/// CSV 中的一局。额外列会被 serde 自动忽略。
 ///
-/// 这里故意只保留回放必需的列：来源唯一键用于去重，桌台/牌靴/局号用于分组，
-/// 时间用于排序，`raw_cards` 与 `result_code` 用于重建和校验。原始 CSV 的其他
-/// 业务字段不进入核心回放层，避免把供应商表结构耦合到策略算法。
+/// 真正必需的只有牌靴、子局数和牌面。数据库完整格式中的来源键、桌台、时间和
+/// 结果码都保留为可选增强信息：有值时继续去重、排序和交叉校验，没有时则使用
+/// 默认桌台、CSV 原始行顺序以及 Rust 从牌面推导出的结果。
 #[derive(Debug, Deserialize)]
 struct CsvRound {
-    #[serde(rename = "__source_pk")]
-    source_pk: String,
+    #[serde(default, rename = "__source_pk")]
+    source_pk: Option<String>,
+    #[serde(default = "default_table_id")]
     table_id: u64,
+    #[serde(alias = "牌靴")]
     session_id: u64,
+    #[serde(alias = "子局数")]
     round_no: u32,
-    started_at: String,
-    settled_at: String,
+    #[serde(default)]
+    started_at: Option<String>,
+    #[serde(default)]
+    settled_at: Option<String>,
+    #[serde(alias = "牌面")]
     raw_cards: String,
-    result_code: u64,
+    #[serde(default)]
+    result_code: Option<u64>,
+}
+
+const fn default_table_id() -> u64 {
+    1
 }
 
 /// 单局完成格式、发牌规则和结果一致性校验后的状态。
@@ -786,6 +797,10 @@ struct LoadedRound {
     session_id: u64,
     round_no: u32,
     started_at: String,
+    /// CSV 中的原始行顺序；精简格式没有时间列时用它建立全局资金时间线。
+    source_order: usize,
+    /// 区分真实时间和仅供明细展示的“CSV 第 N 行”占位文字。
+    has_started_at: bool,
     cards: Option<Vec<Card>>,
     outcome: Option<RoundOutcome>,
     banker_total: Option<u8>,
@@ -794,8 +809,9 @@ struct LoadedRound {
 
 /// 在内存中读取并回放一个或多个业务日期的 CSV。
 ///
-/// 所有可观测牌靴中的局按 `started_at` 排序，并共享一份滚动本金。因此下一局
-/// 凯利金额使用的是上一笔真实结算后的余额，而不是每局重复使用初始本金。
+/// 所有可观测牌靴共享一份滚动本金。有完整 `started_at` 时按时间排序；精简
+/// CSV 没有时间时按文件行顺序回放。因此下一局凯利金额使用的是上一笔真实
+/// 结算后的余额，而不是每局重复使用初始本金。
 pub fn replay_csv_text(
     csv_text: &str,
     config: CsvReplayConfig,
@@ -827,7 +843,7 @@ pub fn replay_csv_text(
             minimum_effective_ev: config.minimum_effective_ev,
             minimum_side_bet_ev: config.minimum_side_bet_ev,
             initial_bankroll: config.initial_bankroll,
-            bankroll_mode: "shared_running_bankroll_chronological",
+            bankroll_mode: "shared_running_bankroll_timestamp_or_csv_order",
             max_fraction: config.max_fraction,
             max_round_stake: config.max_round_stake,
             table_limit: config.table_limit,
@@ -865,12 +881,18 @@ fn load_rounds(
 
     // 读取阶段同时建立三类集合：来源主键检查重复，局键检查业务重复，
     // 桌台/场次/日期集合用于生成数据集画像。
-    for row in reader.deserialize::<CsvRound>() {
+    for (source_order, row) in reader.deserialize::<CsvRound>().enumerate() {
         let source = row.map_err(|error| CsvReplayError::Csv(error.to_string()))?;
         dataset.total_rows += 1;
 
-        if !source_keys.insert(source.source_pk.clone()) {
-            dataset.duplicate_source_pk_rows += 1;
+        if let Some(source_pk) = source
+            .source_pk
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            if !source_keys.insert(source_pk.to_owned()) {
+                dataset.duplicate_source_pk_rows += 1;
+            }
         }
         if !round_keys.insert((source.table_id, source.session_id, source.round_no)) {
             dataset.duplicate_round_keys += 1;
@@ -878,28 +900,39 @@ fn load_rounds(
         tables.insert(source.table_id);
         sessions.insert((source.table_id, source.session_id));
 
-        update_min_max(
-            &mut dataset.started_at_min,
-            &mut dataset.started_at_max,
-            &source.started_at,
-        );
-        update_min_max(
-            &mut dataset.settled_at_min,
-            &mut dataset.settled_at_max,
-            &source.settled_at,
-        );
-
-        let date = source
+        let started_at = source
             .started_at
-            .get(..10)
-            .ok_or_else(|| CsvReplayError::InvalidTimestamp(source.started_at.clone()))?
-            .to_owned();
-        dates.insert(date.clone());
-        update_min_max(
-            &mut dataset.business_date_min,
-            &mut dataset.business_date_max,
-            &date,
-        );
+            .as_deref()
+            .filter(|value| !value.trim().is_empty());
+        if let Some(value) = started_at {
+            update_min_max(
+                &mut dataset.started_at_min,
+                &mut dataset.started_at_max,
+                value,
+            );
+
+            let date = value
+                .get(..10)
+                .ok_or_else(|| CsvReplayError::InvalidTimestamp(value.to_owned()))?
+                .to_owned();
+            dates.insert(date.clone());
+            update_min_max(
+                &mut dataset.business_date_min,
+                &mut dataset.business_date_max,
+                &date,
+            );
+        }
+        if let Some(value) = source
+            .settled_at
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            update_min_max(
+                &mut dataset.settled_at_min,
+                &mut dataset.settled_at_max,
+                value,
+            );
+        }
 
         // 牌面校验只产生“可用结果或错误说明”，不会在这里扣除任何牌；
         // 只有后面的 replay_rounds 确认整靴可回放后才会改变 Shoe。
@@ -909,7 +942,11 @@ fn load_rounds(
             table_id: source.table_id,
             session_id: source.session_id,
             round_no: source.round_no,
-            started_at: source.started_at,
+            started_at: started_at
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("CSV 第 {} 行", source_order + 2)),
+            source_order,
+            has_started_at: started_at.is_some(),
             cards,
             outcome,
             banker_total,
@@ -978,7 +1015,14 @@ fn validate_source_round(
     let calculated = result.outcome();
     let banker_total = result.banker_hand().total();
 
-    let recorded = match decode_recorded_outcome(source.result_code) {
+    // 三列精简格式没有外部结果码。此时以统一规则引擎计算的结果作为真值；
+    // 完整数据库格式提供了结果码时，仍保留这道交叉校验以发现脏数据。
+    let Some(result_code) = source.result_code else {
+        quality.valid_card_rows += 1;
+        return (Some(parsed), Some(calculated), Some(banker_total), None);
+    };
+
+    let recorded = match decode_recorded_outcome(result_code) {
         Ok(outcome) => outcome,
         Err(error) => {
             quality.invalid_card_rows += 1;
@@ -1007,7 +1051,7 @@ fn validate_source_round(
     (Some(parsed), Some(calculated), Some(banker_total), None)
 }
 
-/// 隔离不完整牌靴，再按真实时间顺序使用共享本金运行策略。
+/// 隔离不完整牌靴，再按时间或 CSV 行顺序使用共享本金运行策略。
 fn replay_rounds(
     rounds: &[LoadedRound],
     config: CsvReplayConfig,
@@ -1066,23 +1110,31 @@ fn replay_rounds(
         eligible_indices.extend(indices);
     }
 
-    // 不同桌台可能同时存在；这里使用开局时间建立单一、可重复的资金时间线。
-    eligible_indices.sort_by(|left, right| {
-        let left_round = &rounds[*left];
-        let right_round = &rounds[*right];
-        (
-            &left_round.started_at,
-            left_round.table_id,
-            left_round.session_id,
-            left_round.round_no,
-        )
-            .cmp(&(
-                &right_round.started_at,
-                right_round.table_id,
-                right_round.session_id,
-                right_round.round_no,
-            ))
-    });
+    // 完整数据库格式用开局时间合并多桌资金线；只要有一行缺少时间，就统一
+    // 退回 CSV 原始行顺序，避免混用两种排序规则造成不稳定或反直觉的顺序。
+    let all_have_started_at = eligible_indices
+        .iter()
+        .all(|index| rounds[*index].has_started_at);
+    if all_have_started_at {
+        eligible_indices.sort_by(|left, right| {
+            let left_round = &rounds[*left];
+            let right_round = &rounds[*right];
+            (
+                &left_round.started_at,
+                left_round.table_id,
+                left_round.session_id,
+                left_round.round_no,
+            )
+                .cmp(&(
+                    &right_round.started_at,
+                    right_round.table_id,
+                    right_round.session_id,
+                    right_round.round_no,
+                ))
+        });
+    } else {
+        eligible_indices.sort_by_key(|index| rounds[*index].source_order);
+    }
 
     // 通过资格筛选后，构造本次回放固定不变的规则对象。真正随每局变化的只有
     // Shoe、当前 bankroll、局号过滤结果和概率缓存键。
@@ -1659,6 +1711,41 @@ mod tests {
             .expect("本局应该有牌");
         let text: Vec<String> = cards.into_iter().map(|card| card.to_string()).collect();
         assert_eq!(text, ["JD", "4D", "2H", "JD", "7H", "5H"]);
+    }
+
+    #[test]
+    fn three_column_csv_is_enough_for_a_complete_replay() {
+        let csv = "session_id,round_no,raw_cards\n\
+                   9001,1,\"b:24,31,45;p:31,42,47\"\n\
+                   9001,2,\"b:73,62,;p:53,8,\"\n";
+
+        let report = replay_csv_text(csv, strategy()).expect("三列 CSV 应该可以直接回放");
+
+        assert_eq!(report.dataset.total_rows, 2);
+        assert_eq!(report.dataset.table_count, 1);
+        assert_eq!(report.dataset.session_count, 1);
+        assert_eq!(report.dataset.business_date_count, 0);
+        assert!(report.dataset.started_at_min.is_empty());
+        assert!(report.dataset.settled_at_min.is_empty());
+        assert_eq!(report.quality.fully_observable_sessions, 1);
+        assert_eq!(report.quality.valid_card_rows, 2);
+        assert_eq!(report.quality.outcome_mismatch_rows, 0);
+        assert_eq!(report.summary.replayed_rounds, 2);
+        assert_eq!(report.bets[0].table_id, 1);
+        assert_eq!(report.bets[0].started_at, "CSV 第 2 行");
+    }
+
+    #[test]
+    fn three_column_csv_accepts_chinese_headers() {
+        let csv = "牌靴,子局数,牌面\n\
+                   9100,1,\"b:24,31,45;p:31,42,47\"\n";
+
+        let report = replay_csv_text(csv, strategy()).expect("中文三列表头应该可以回放");
+
+        assert_eq!(report.dataset.total_rows, 1);
+        assert_eq!(report.dataset.session_count, 1);
+        assert_eq!(report.quality.valid_card_rows, 1);
+        assert_eq!(report.summary.replayed_rounds, 1);
     }
 
     #[test]

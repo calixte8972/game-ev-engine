@@ -6,7 +6,10 @@
  * 可结构化克隆的字符串/数字/普通对象，不直接访问 DOM，因此大 CSV 计算时
  * 页面仍可以滚动、取消或显示进度状态。
  */
-import init, { replayBaccaratCsvWithSideBetLimits } from "./pkg/game_ev_engine.js";
+import init, {
+  replayBaccaratCsvWithSideBetLimits,
+  simulateBaccaratShoesWithSideBetLimits,
+} from "./pkg/game_ev_engine.js";
 
 // 这些默认值必须与 Rust::SideBetRoundLimits::default() 保持一致。
 // Worker 需要一份副本，是为了兼容用户仍打开旧版本页面时缺少新字段的情况。
@@ -67,13 +70,15 @@ ready
   });
 
 self.addEventListener("message", async (event) => {
-  if (event.data?.type !== "replay") return;
+  if (!new Set(["replay", "simulate"]).has(event.data?.type)) return;
 
   try {
     // 同一 Worker 可能在 ready 消息发出前收到请求，所以这里再次 await 是
     // 必要的同步屏障，而不是重复初始化 WASM。
     await ready;
-    const { csvText, config } = event.data;
+    const { config } = event.data;
+    // 新页面传递 ArrayBuffer 以避免复制大型 CSV；保留 csvText 分支，使浏览器
+    // 缓存中的旧页面脚本仍可调用新版 Worker。
     // 旧页面在新 Worker 上运行时可能没有这两个后来新增的边注字段。
     // JavaScript 的 undefined 传给 Rust f64 会变成 NaN。此处沿用旧版语义：
     // 边注门槛跟随主注门槛，边注限额跟随单局金额上限。
@@ -88,8 +93,7 @@ self.addEventListener("message", async (event) => {
     const started = performance.now();
     // Rust 入口只接收简单参数；边注限制对象在这里序列化成稳定 JSON，
     // 再由 Rust 反序列化为强类型 SideBetRoundLimits。
-    const json = replayBaccaratCsvWithSideBetLimits(
-      csvText,
+    const commonArguments = [
       config.decks,
       config.rebateRate,
       config.minimumEffectiveEv,
@@ -104,7 +108,24 @@ self.addEventListener("message", async (event) => {
       sideBetLimit,
       JSON.stringify(sideBetRoundLimits),
       allowMultipleBets,
-    );
+    ];
+    let json;
+    if (event.data.type === "simulate") {
+      const { shoes, maxRoundsPerShoe, seed } = event.data.simulation;
+      json = simulateBaccaratShoesWithSideBetLimits(
+        shoes,
+        maxRoundsPerShoe,
+        seed,
+        ...commonArguments,
+      );
+    } else {
+      // 新页面传递 ArrayBuffer 以避免复制大型 CSV；保留 csvText 分支，使浏览器
+      // 缓存中的旧页面脚本仍可调用新版 Worker。
+      const csvText = typeof event.data.csvText === "string"
+        ? event.data.csvText
+        : new TextDecoder("utf-8").decode(event.data.csvBuffer);
+      json = replayBaccaratCsvWithSideBetLimits(csvText, ...commonArguments);
+    }
     // Rust 返回字符串 JSON，Worker 在边界处解析一次，主线程收到普通对象后
     // 可以直接渲染，不需要了解 wasm-bindgen 的返回类型。
     self.postMessage({

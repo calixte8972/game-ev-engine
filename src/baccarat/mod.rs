@@ -34,6 +34,7 @@ mod risk;
 mod round;
 mod rule;
 mod side_bet;
+mod simulation;
 mod snapshot;
 mod strategy;
 
@@ -64,6 +65,10 @@ pub use round::{RoundError, RoundOutcome, RoundResult, compare_hands, resolve_ro
 pub use rule::{banker_should_draw, player_should_draw};
 pub use side_bet::{
     SideBet, SideBetAnalysis, SideBetMetrics, SideBetRuleError, SideBetRules, SideBetWeights,
+};
+pub use simulation::{
+    BaccaratGenerationSummary, BaccaratSimulationConfig, BaccaratSimulationError,
+    generate_baccarat_csv_text, write_baccarat_csv,
 };
 pub use snapshot::{
     ActionSnapshot, BetSnapshot, DECISION_SNAPSHOT_SCHEMA_VERSION, DecisionSnapshot,

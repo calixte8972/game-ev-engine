@@ -1501,6 +1501,58 @@ td:first-child {
   }
 }
 
+.replay-source-switch {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(150px, 1fr));
+  gap: 4px;
+  margin-bottom: 14px;
+  padding: 4px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--surface-tint);
+}
+
+.replay-source-tab {
+  display: flex;
+  min-height: 48px;
+  align-items: flex-start;
+  justify-content: center;
+  flex-direction: column;
+  padding: 8px 18px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 850;
+  text-align: left;
+}
+
+.replay-source-tab small {
+  margin-top: 1px;
+  font-size: 0.65rem;
+  font-weight: 650;
+  opacity: 0.75;
+}
+
+.replay-source-tab:hover {
+  color: var(--felt-dark);
+  background: #edf7f2;
+}
+
+.replay-source-tab.active {
+  color: white;
+  background: var(--felt);
+  box-shadow: 0 5px 14px rgba(8, 113, 88, 0.18);
+}
+
+.replay-source-tab:focus-visible {
+  outline: 3px solid rgba(8, 113, 88, 0.24);
+  outline-offset: 2px;
+}
+
 .replay-input-grid {
   display: grid;
   grid-template-columns: minmax(320px, 0.85fr) minmax(420px, 1.15fr);
@@ -1508,12 +1560,92 @@ td:first-child {
   margin-bottom: 18px;
 }
 
+.replay-source-panel {
+  min-width: 0;
+}
+
 .upload-box,
+.simulation-box,
 .replay-rules {
   min-height: 210px;
   border: 1px solid var(--line);
   border-radius: 15px;
   background: var(--surface-strong);
+}
+
+.simulation-box {
+  padding: 20px;
+}
+
+.simulation-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.simulation-heading strong,
+.simulation-heading small {
+  display: block;
+}
+
+.simulation-heading small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.69rem;
+}
+
+.simulation-badge {
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: var(--felt);
+  background: var(--felt-soft);
+  font-size: 0.64rem;
+  font-weight: 850;
+}
+
+.simulation-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.simulation-fields label {
+  display: grid;
+  gap: 6px;
+  color: var(--ink);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.simulation-fields input {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 11px;
+  color: var(--ink);
+  background: white;
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.simulation-fields input:focus {
+  border-color: var(--felt);
+  outline: 3px solid rgba(8, 113, 88, 0.12);
+}
+
+.simulation-seed-field {
+  grid-column: 1 / -1;
+}
+
+.simulation-estimate {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.45;
 }
 
 .file-input {
@@ -3162,6 +3294,17 @@ footer {
     padding-inline: 10px;
   }
 
+  .replay-source-switch {
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .replay-source-tab {
+    align-items: center;
+    padding-inline: 10px;
+    text-align: center;
+  }
+
   .mode-switch,
   .field-grid,
   .advanced-config-grid,
@@ -3171,6 +3314,14 @@ footer {
   .replay-summary,
   .quality-panel {
     grid-template-columns: 1fr;
+  }
+
+  .simulation-fields {
+    grid-template-columns: 1fr;
+  }
+
+  .simulation-seed-field {
+    grid-column: auto;
   }
 
   /* H5 结果概要保持两列，避免四项概要和五项资金指标拉成长页面。 */

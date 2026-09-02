@@ -22,11 +22,12 @@
 use serde::Serialize;
 
 use crate::{
-    BetPlanSkipReason, BettingPolicy, BlackjackAnalysis, BlackjackRules, Card, CombinedBetPlan,
-    CombinedBetPlanAction, CsvReplayConfig, EffectiveBetMetrics, KellyPolicy, MainBet,
-    MainBetAnalysis, MainBetRules, RebateRule, Shoe, SideBet, SideBetAnalysis, SideBetMetrics,
-    SideBetRoundLimits, SideBetRules, SkipReason, StakeSizingStrategy, analyze_blackjack_hand,
-    calculate_main_and_side_outcomes, replay_csv_text,
+    BaccaratSimulationConfig, BetPlanSkipReason, BettingPolicy, BlackjackAnalysis, BlackjackRules,
+    Card, CombinedBetPlan, CombinedBetPlanAction, CsvReplayConfig, EffectiveBetMetrics,
+    KellyPolicy, MainBet, MainBetAnalysis, MainBetRules, RebateRule, Shoe, SideBet,
+    SideBetAnalysis, SideBetMetrics, SideBetRoundLimits, SideBetRules, SkipReason,
+    StakeSizingStrategy, analyze_blackjack_hand, calculate_main_and_side_outcomes,
+    generate_baccarat_csv_text, replay_csv_text,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -171,6 +172,53 @@ pub fn replay_baccarat_csv_with_side_bet_limits(
     // 把耗时任务移出 UI 线程，不改变核心计算顺序。
     replay_baccarat_csv_json_with_side_bet_round_limits_and_multiple(
         csv_text,
+        decks,
+        rebate_rate,
+        minimum_effective_ev,
+        initial_bankroll,
+        max_fraction,
+        max_round_stake,
+        table_limit,
+        payout_rule,
+        stake_strategy,
+        strategy_parameter,
+        minimum_side_bet_ev,
+        side_bet_limit,
+        side_bet_round_limits_json,
+        allow_multiple_bets,
+    )
+    .map_err(|message| JsValue::from_str(&message))
+}
+
+/// 不上传 CSV，直接在 Worker 中随机生成真实牌靴并执行同一套策略回放。
+///
+/// `seed_text` 使用字符串是为了完整保留 u64 种子；JavaScript 的 Number 不能
+/// 精确表示所有 64 位整数。页面只传三个样本参数，其余参数与 CSV 回放共用。
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = simulateBaccaratShoesWithSideBetLimits)]
+pub fn simulate_baccarat_shoes_with_side_bet_limits(
+    shoes: u32,
+    max_rounds_per_shoe: u32,
+    seed_text: &str,
+    decks: u8,
+    rebate_rate: f64,
+    minimum_effective_ev: f64,
+    initial_bankroll: f64,
+    max_fraction: f64,
+    max_round_stake: f64,
+    table_limit: f64,
+    payout_rule: &str,
+    stake_strategy: &str,
+    strategy_parameter: f64,
+    minimum_side_bet_ev: f64,
+    side_bet_limit: f64,
+    side_bet_round_limits_json: &str,
+    allow_multiple_bets: bool,
+) -> Result<String, JsValue> {
+    simulate_baccarat_shoes_json_with_side_bet_limits(
+        shoes,
+        max_rounds_per_shoe,
+        seed_text,
         decks,
         rebate_rate,
         minimum_effective_ev,
@@ -819,6 +867,63 @@ pub fn replay_baccarat_csv_json_with_side_bet_round_limits_and_multiple(
     serde_json::to_string(&report).map_err(|error| format!("回放结果序列化失败：{error}"))
 }
 
+/// 随机牌靴回测的可测试 Rust 入口。
+#[allow(clippy::too_many_arguments)]
+pub fn simulate_baccarat_shoes_json_with_side_bet_limits(
+    shoes: u32,
+    max_rounds_per_shoe: u32,
+    seed_text: &str,
+    decks: u8,
+    rebate_rate: f64,
+    minimum_effective_ev: f64,
+    initial_bankroll: f64,
+    max_fraction: f64,
+    max_round_stake: f64,
+    table_limit: f64,
+    payout_rule: &str,
+    stake_strategy: &str,
+    strategy_parameter: f64,
+    minimum_side_bet_ev: f64,
+    side_bet_limit: f64,
+    side_bet_round_limits_json: &str,
+    allow_multiple_bets: bool,
+) -> Result<String, String> {
+    let seed = seed_text
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| "随机种子必须是 0 到 18446744073709551615 之间的整数".to_owned())?;
+    let simulation = BaccaratSimulationConfig::new(
+        u64::from(shoes),
+        decks,
+        max_rounds_per_shoe,
+        seed,
+        1_000_000,
+    )
+    .map_err(|error| format!("随机回测参数不合法：{error}"))?;
+    let csv_text = generate_baccarat_csv_text(simulation)
+        .map_err(|error| format!("随机牌靴生成失败：{error}"))?;
+
+    // 这里故意进入和上传 CSV 完全相同的最终入口，确保资金策略、边注截止局、
+    // 返水和真实结算不会形成一套只供随机模拟使用的旁路实现。
+    replay_baccarat_csv_json_with_side_bet_round_limits_and_multiple(
+        &csv_text,
+        decks,
+        rebate_rate,
+        minimum_effective_ev,
+        initial_bankroll,
+        max_fraction,
+        max_round_stake,
+        table_limit,
+        payout_rule,
+        stake_strategy,
+        strategy_parameter,
+        minimum_side_bet_ev,
+        side_bet_limit,
+        side_bet_round_limits_json,
+        allow_multiple_bets,
+    )
+}
+
 /// 把浏览器稳定字符串转换成核心赔付规则。
 fn parse_payout_rule(input: &str) -> Result<(MainBetRules, &'static str), String> {
     // `trim + to_ascii_lowercase` 只在边界层做宽松输入；核心规则接收的始终是
@@ -1151,6 +1256,7 @@ mod tests {
         replay_baccarat_csv_json, replay_baccarat_csv_json_with_side_bet_round_limits_and_multiple,
         replay_baccarat_csv_json_with_side_bets,
         replay_baccarat_csv_json_with_side_bets_and_lucky_limit_and_multiple,
+        simulate_baccarat_shoes_json_with_side_bet_limits,
     };
 
     #[test]
@@ -1621,5 +1727,24 @@ mod tests {
                 >= 0.0
         );
         assert!(value["bets"].as_array().expect("明细应为数组").len() > 1);
+    }
+
+    #[test]
+    fn random_shoe_simulation_reuses_the_csv_replay_contract() {
+        let limits = serde_json::to_string(&crate::SideBetRoundLimits::default())
+            .expect("默认局数限制应该可以序列化");
+        let value: Value = serde_json::from_str(
+            &simulate_baccarat_shoes_json_with_side_bet_limits(
+                3, 5, "20260902", 8, 0.009, 0.0, 10_000.0, 0.05, 500.0, 500.0, "standard", "fixed",
+                100.0, 0.0, 100.0, &limits, false,
+            )
+            .expect("随机牌靴应该完成回测"),
+        )
+        .expect("随机回测结果应该是合法 JSON");
+
+        assert_eq!(value["dataset"]["session_count"], 3);
+        assert_eq!(value["dataset"]["total_rows"], 15);
+        assert_eq!(value["quality"]["fully_observable_sessions"], 3);
+        assert_eq!(value["summary"]["replayed_rounds"], 15);
     }
 }
