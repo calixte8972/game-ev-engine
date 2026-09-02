@@ -18,7 +18,7 @@ const defaultSideBetRoundLimits = {
   big: 20,
   small: 20,
   lucky_seven: 50,
-  super_lucky_seven: 50,
+  super_lucky_seven: 30,
   lucky_six: 50,
   banker_dragon_bonus: 50,
   player_dragon_bonus: 50,

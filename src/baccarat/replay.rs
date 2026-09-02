@@ -68,7 +68,7 @@ pub struct SideBetRoundLimits {
 impl Default for SideBetRoundLimits {
     fn default() -> Self {
         Self {
-            // 第 51 局起停止所有普通边注，所以默认最后可下注局数为 50。
+            // 第 51 局起停止大多数普通边注，所以默认最后可下注局数为 50。
             any_pair: 50,
             banker_pair: 50,
             player_pair: 50,
@@ -78,7 +78,8 @@ impl Default for SideBetRoundLimits {
             big: 20,
             small: 20,
             lucky_seven: 50,
-            super_lucky_seven: 50,
+            // 超级幸运 7 规则更严格：第 31 局起停止下注。
+            super_lucky_seven: 30,
             lucky_six: 50,
             banker_dragon_bonus: 50,
             player_dragon_bonus: 50,
@@ -1670,11 +1671,13 @@ mod tests {
         }
         assert!(limits.allows(SideBet::PerfectPair, 45));
         assert!(!limits.allows(SideBet::PerfectPair, 46));
+        assert!(limits.allows(SideBet::SuperLuckySeven, 30));
+        assert!(!limits.allows(SideBet::SuperLuckySeven, 31));
 
         for side_bet in SideBet::ALL {
             if matches!(
                 side_bet,
-                SideBet::Big | SideBet::Small | SideBet::PerfectPair
+                SideBet::Big | SideBet::Small | SideBet::PerfectPair | SideBet::SuperLuckySeven
             ) {
                 continue;
             }

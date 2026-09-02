@@ -21,6 +21,7 @@ const deployDirectory = dirname(fileURLToPath(import.meta.url));
 const webDirectory = resolve(deployDirectory, "..");
 const wasmBytes = readFileSync(resolve(webDirectory, "pkg/game_ev_engine_bg.wasm"));
 const pageHtml = readFileSync(resolve(webDirectory, "index.html"), "utf8");
+const replayWorkerSource = readFileSync(resolve(webDirectory, "replay-worker.js"), "utf8");
 initSync({ module: wasmBytes });
 
 // min=0.01 与 step=100 会让 10000 产生 stepMismatch，浏览器会直接阻止
@@ -41,6 +42,12 @@ for (const id of [
   if (!new RegExp(`id="${id}"`).test(pageHtml)) {
     throw new Error(`页面缺少独立边注局数配置：${id}`);
   }
+}
+
+if (!/<input id="limit-super-lucky-seven"[^>]*value="30"/.test(pageHtml)
+    || !/id="status-limit-super-lucky-seven">第 31 局起禁用/.test(pageHtml)
+    || !/super_lucky_seven:\s*30/.test(replayWorkerSource)) {
+  throw new Error("超级幸运 7 默认必须允许到第 30 局，并从第 31 局起禁用");
 }
 
 if (!/id="bankroll-chart"/.test(pageHtml)
