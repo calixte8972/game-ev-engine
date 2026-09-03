@@ -40,6 +40,9 @@ for (const id of ["simulation-shoes", "simulation-rounds", "simulation-seed"]) {
     throw new Error(`随机牌靴回测缺少输入：${id}`);
   }
 }
+if (!/<input id="simulation-shoes"[^>]*max="20000"/.test(pageHtml)) {
+  throw new Error("随机回测的生成牌靴数上限必须是 20,000");
+}
 
 for (const id of [
   "limit-any-pair", "limit-banker-pair", "limit-player-pair", "limit-perfect-pair",
@@ -107,6 +110,9 @@ if (!/id="replay-pagination"/.test(pageHtml)
 }
 
 const appSource = readFileSync(resolve(webDirectory, "app.js"), "utf8");
+if (!/max:\s*20_000/.test(appSource)) {
+  throw new Error("随机回测的 JavaScript 校验上限必须与输入框保持为 20,000");
+}
 if (!/data-replay-source="simulation"/.test(pageHtml)
     || !/type:\s*"simulate"/.test(appSource)
     || !/simulateBaccaratShoesWithSideBetLimits/.test(replayWorkerSource)) {

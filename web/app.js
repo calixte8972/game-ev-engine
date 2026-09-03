@@ -793,7 +793,7 @@ function updateSimulationEstimate({ clampRounds = false } = {}) {
 function simulationRequest() {
   const shoes = readNumber("#simulation-shoes", "生成牌靴数", {
     min: 1,
-    max: 10_000,
+    max: 20_000,
     integer: true,
   });
   const maxRoundsPerShoe = readNumber("#simulation-rounds", "每靴最大子局数", {
