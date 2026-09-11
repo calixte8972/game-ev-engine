@@ -1732,6 +1732,118 @@ td:first-child {
   line-height: 1.7;
 }
 
+.replay-execution-settings {
+  margin: 0 0 18px;
+  padding: 14px;
+  border: 1px solid #d8e5dd;
+  border-radius: 13px;
+  background: #f7fbf8;
+}
+
+.replay-execution-heading,
+.replay-execution-controls,
+.replay-parallel-toggle,
+.replay-execution-heading > div {
+  display: flex;
+}
+
+.replay-execution-heading,
+.replay-execution-controls {
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.replay-execution-heading strong,
+.replay-execution-heading small,
+.replay-parallel-toggle strong,
+.replay-parallel-toggle small {
+  display: block;
+}
+
+.replay-execution-heading strong {
+  color: var(--felt-dark);
+}
+
+.replay-execution-heading small,
+.replay-parallel-toggle small,
+.replay-execution-note {
+  color: var(--muted);
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
+.replay-execution-heading small {
+  margin-top: 3px;
+}
+
+.replay-execution-badge {
+  flex: 0 0 auto;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: var(--felt-dark);
+  background: #e1f2e9;
+  font-size: 0.65rem;
+  font-weight: 850;
+}
+
+.replay-execution-controls {
+  margin-top: 12px;
+}
+
+.replay-parallel-toggle {
+  min-width: 0;
+  align-items: flex-start;
+  gap: 9px;
+  cursor: pointer;
+}
+
+.replay-parallel-toggle input {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: 1px 0 0;
+  accent-color: var(--felt);
+}
+
+.replay-parallel-toggle span {
+  min-width: 0;
+}
+
+.replay-worker-field {
+  display: grid;
+  flex: 0 0 126px;
+  gap: 5px;
+  color: var(--ink);
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.replay-worker-field input {
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  color: var(--ink);
+  background: var(--surface-strong);
+  font: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.replay-worker-field input:focus {
+  border-color: var(--felt);
+  outline: 3px solid rgba(8, 113, 88, 0.12);
+}
+
+.replay-worker-field.is-disabled {
+  opacity: 0.55;
+}
+
+.replay-execution-note {
+  margin: 10px 0 0;
+}
+
 .replay-button {
   width: 100%;
 }
@@ -3205,6 +3317,16 @@ footer {
 
   .replay-input-grid {
     grid-template-columns: 1fr;
+  }
+
+  .replay-execution-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .replay-worker-field {
+    flex-basis: auto;
+    width: 100%;
   }
 
   .replay-summary {

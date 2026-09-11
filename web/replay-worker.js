@@ -7,7 +7,7 @@
  *      ↓ 一次提交配置/CSV
  *   本协调 Worker（任务调度 + 顺序合并）
  *      ↓ 按完整牌靴分片
- *   replay-shard-worker × 2～8（并行概率预计算）
+ *   replay-shard-worker × 2～8（可选的并行概率预计算）
  *      ↓ 概率权重快照
  *   本协调 Worker 按键合并
  *      ↓ 原始 CSV + 预计算权重
@@ -21,6 +21,7 @@
  */
 import init, {
   generateBaccaratCsv,
+  replayBaccaratCsv,
   replayBaccaratCsvWithPreparedWeights,
 } from "./pkg/game_ev_engine.js";
 
@@ -270,17 +271,20 @@ function splitCsvIntoShards(csvText, desiredShardCount) {
 
 /* -------------------------- 子 Worker 调度 -------------------------- */
 
-function workerCountFor(taskCount) {
+function workerCountFor(taskCount, requestedWorkerCount = 4) {
   const hardware = Number(globalThis.navigator?.hardwareConcurrency) || 4;
-  // 给页面主线程和协调 Worker 留出余量；最多八个子 Worker，避免 20,000 靴
-  // 回测在普通笔记本上把浏览器的全部核心和内存同时打满。
-  return Math.max(1, Math.min(8, taskCount, Math.max(1, hardware - 1)));
+  const requested = Number.isInteger(Number(requestedWorkerCount))
+    ? Number(requestedWorkerCount)
+    : 4;
+  // 给页面主线程和协调 Worker 留出余量；最多八个子 Worker，避免大 CSV 回测
+  // 在普通笔记本上把浏览器的全部核心和内存同时打满。
+  return Math.max(1, Math.min(8, requested, taskCount, Math.max(1, hardware - 1)));
 }
 
-function runShardPool(shards, decks, onProgress) {
+function runShardPool(shards, decks, requestedWorkerCount, onProgress) {
   if (shards.length === 0) return Promise.resolve([]);
 
-  const poolSize = workerCountFor(shards.length);
+  const poolSize = workerCountFor(shards.length, requestedWorkerCount);
   const results = new Array(shards.length);
   const workers = [];
   let nextTask = 0;
@@ -323,7 +327,7 @@ function runShardPool(shards, decks, onProgress) {
 
     for (let index = 0; index < poolSize; index += 1) {
       const worker = new Worker(
-        new URL("./replay-shard-worker.js?v=20", import.meta.url),
+        new URL("./replay-shard-worker.js?v=21", import.meta.url),
         { type: "module" },
       );
       worker.busyTaskId = null;
@@ -402,27 +406,60 @@ self.addEventListener("message", async (event) => {
         : new TextDecoder("utf-8").decode(event.data.csvBuffer);
     }
 
+    const requestedWorkerCount = Number(config.parallelWorkerCount ?? 1);
+    const parallel = Boolean(config.parallelReplay) && requestedWorkerCount > 1;
+    if (!parallel) {
+      // 单线程模式不拆 CSV、不复制牌靴分片，也不创建子 Worker；这条路径是
+      // 大文件或浏览器内存紧张时的稳定兜底。资金、倍投和提前停止仍由 Rust
+      // 在同一个顺序回放函数中完成，结果与并行模式保持一致。
+      self.postMessage({
+        type: "progress",
+        phase: "serial",
+        completed: 0,
+        total: 1,
+        parallel: false,
+        workerCount: 1,
+      });
+      const reportJson = replayBaccaratCsv(
+        csvText,
+        ...commonArguments(config),
+      );
+      self.postMessage({
+        type: "complete",
+        report: JSON.parse(reportJson),
+        elapsedMilliseconds: performance.now() - started,
+        workerCount: 1,
+        shardCount: 1,
+        parallel: false,
+      });
+      return;
+    }
+
     const shards = splitCsvIntoShards(
       csvText,
-      workerCountFor(Math.max(1, Number(config.requestedWorkerCount) || 4)),
+      workerCountFor(Number.MAX_SAFE_INTEGER, requestedWorkerCount),
     );
+    const effectiveWorkerCount = workerCountFor(shards.length, requestedWorkerCount);
     self.postMessage({
       type: "progress",
       phase: "probability",
       completed: 0,
       total: shards.length,
-      workerCount: workerCountFor(shards.length),
+      workerCount: effectiveWorkerCount,
+      parallel: true,
     });
 
     const preparedResults = await runShardPool(
       shards,
       config.decks,
+      requestedWorkerCount,
       (completed, total, workerCount) => self.postMessage({
         type: "progress",
         phase: "probability",
         completed,
         total,
         workerCount,
+        parallel: true,
       }),
     );
     const preparedWeightsJson = JSON.stringify(mergePreparedResults(preparedResults));
@@ -438,8 +475,9 @@ self.addEventListener("message", async (event) => {
       type: "complete",
       report: JSON.parse(reportJson),
       elapsedMilliseconds: performance.now() - started,
-      workerCount: workerCountFor(shards.length),
+      workerCount: effectiveWorkerCount,
       shardCount: shards.length,
+      parallel: true,
     });
   } catch (error) {
     self.postMessage({

@@ -133,12 +133,17 @@ if (!/max:\s*20_000/.test(appSource)) {
 }
 if (!/data-replay-source="simulation"/.test(pageHtml)
     || !/type:\s*"simulate"/.test(appSource)
+    || !/id="parallel-replay"/.test(pageHtml)
+    || !/id="parallel-worker-count"/.test(pageHtml)
+    || !/parallelReplay/.test(appSource)
+    || !/parallelWorkerCount/.test(appSource)
+    || !/replayBaccaratCsv/.test(replayWorkerSource)
     || !/generateBaccaratCsv/.test(replayWorkerSource)
     || !/prepareBaccaratCsvWeights/.test(replayShardWorkerSource)
     || !/replayBaccaratCsvWithPreparedWeights/.test(replayWorkerSource)
-    || !/Math\.min\(8, taskCount/.test(replayWorkerSource)
+    || !/Math\.min\(8, requested, taskCount/.test(replayWorkerSource)
     || !/new Worker\(\s*new URL\("\.\/replay-shard-worker\.js/.test(replayWorkerSource)) {
-  throw new Error("随机生成入口没有完整连接到最多 8 个 Worker 的 WASM 回测架构");
+  throw new Error("回放入口没有连接到可切换单线程/并行 Worker 的 WASM 架构");
 }
 if (!/200 \* 1024 \* 1024/.test(appSource)
     || !/最大 200 MB/.test(pageHtml)) {

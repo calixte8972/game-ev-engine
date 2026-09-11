@@ -42,6 +42,8 @@ const simulationShoes = document.querySelector("#simulation-shoes");
 const simulationRounds = document.querySelector("#simulation-rounds");
 const simulationSeed = document.querySelector("#simulation-seed");
 const simulationEstimate = document.querySelector("#simulation-estimate");
+const parallelReplay = document.querySelector("#parallel-replay");
+const parallelWorkerCount = document.querySelector("#parallel-worker-count");
 const replayRulesTitle = document.querySelector("#replay-rules-title");
 const replayRulePrimary = document.querySelector("#replay-rule-primary");
 const replayRuleSecondary = document.querySelector("#replay-rule-secondary");
@@ -237,7 +239,7 @@ let activeBaccaratView = "analysis";
 
 // URL 上的版本标记强制浏览器为当前页面创建同版本 Worker，避免发布后仍复用
 // 旧 Worker，进而把新增配置字段当成 undefined 传给 WASM。
-const replayWorker = new Worker(new URL("./replay-worker.js?v=20", import.meta.url), {
+const replayWorker = new Worker(new URL("./replay-worker.js?v=21", import.meta.url), {
   type: "module",
 });
 
@@ -350,9 +352,12 @@ function strategyConfig() {
     payoutRule: payoutRule.value,
     stakeStrategy: selectedStakeStrategy,
     strategyParameter,
-    // 协调 Worker 会根据硬件并发数自动降到 1～8 个子 Worker；这里保留一个
-    // 明确的上限，避免浏览器在普通电脑上无节制创建线程。
-    requestedWorkerCount: 8,
+    // 默认关闭并行，避免大 CSV 或大量随机牌靴在普通浏览器上瞬间占满内存。
+    // 开启后，Worker 仍会根据硬件并发数和牌靴数量把请求值安全下调。
+    parallelReplay: parallelReplay.checked,
+    parallelWorkerCount: parallelReplay.checked
+      ? readNumber("#parallel-worker-count", "并行数", { min: 1, max: 8, integer: true })
+      : 1,
   };
 }
 
@@ -781,6 +786,15 @@ function updateReplayButton() {
   replayButton.disabled = !hasInput || !replayWorkerReady || replayRunning;
 }
 
+function updateParallelReplayControls() {
+  const enabled = parallelReplay.checked;
+  parallelWorkerCount.disabled = !enabled || replayRunning;
+  parallelWorkerCount.closest("label")?.classList.toggle(
+    "is-disabled",
+    !enabled || replayRunning,
+  );
+}
+
 function setReplayRunning(running, label) {
   replayRunning = running;
   replayStatus.textContent = label;
@@ -789,6 +803,8 @@ function setReplayRunning(running, label) {
     ? "正在回测…"
     : replaySourceMode === "simulation" ? "生成并开始回测" : "开始 CSV 回放";
   for (const tab of replaySourceTabs) tab.disabled = running;
+  parallelReplay.disabled = running;
+  updateParallelReplayControls();
   updateReplayButton();
 }
 
@@ -1130,6 +1146,10 @@ for (const input of [simulationShoes, simulationRounds, simulationSeed]) {
   input.addEventListener("input", () => updateSimulationEstimate());
 }
 
+parallelReplay.addEventListener("change", updateParallelReplayControls);
+parallelWorkerCount.addEventListener("input", updateReplayButton);
+updateParallelReplayControls();
+
 deckCount.addEventListener("change", () => updateSimulationEstimate({ clampRounds: true }));
 
 csvFileInput.addEventListener("change", () => {
@@ -1232,8 +1252,10 @@ replayWorker.addEventListener("message", (event) => {
   }
 
   if (message.type === "complete") {
-    const workerLabel = message.workerCount ? ` · ${message.workerCount} 个 Worker` : "";
-    setReplayRunning(false, `回放完成${workerLabel}`);
+    const executionLabel = message.parallel
+      ? `${message.workerCount ?? 1} 个并行 Worker`
+      : "单线程";
+    setReplayRunning(false, `回放完成 · ${executionLabel}`);
     renderReplay(message.report, message.elapsedMilliseconds);
     return;
   }
@@ -1243,7 +1265,11 @@ replayWorker.addEventListener("message", (event) => {
       replayStatus.textContent = "正在生成可复现牌靴…";
     } else if (message.phase === "probability") {
       const workerLabel = message.workerCount ? ` · ${message.workerCount} 个 Worker` : "";
-      replayStatus.textContent = `并行枚举牌靴概率 ${message.completed ?? 0}/${message.total ?? 0}${workerLabel}…`;
+      replayStatus.textContent = message.parallel
+        ? `并行枚举牌靴概率 ${message.completed ?? 0}/${message.total ?? 0}${workerLabel}…`
+        : "正在单线程枚举牌靴概率…";
+    } else if (message.phase === "serial") {
+      replayStatus.textContent = "正在单线程回放，请勿关闭页面…";
     } else if (message.phase === "settlement") {
       replayStatus.textContent = "正在按时间顺序合并本金与倍投…";
     }

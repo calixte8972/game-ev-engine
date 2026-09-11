@@ -425,8 +425,8 @@
         </p>
       </section>
 
-      <!-- 03：主线程把文件交给协调 Worker；协调 Worker 再按完整牌靴调度多个
-           概率子 Worker，最后用原始时间线统一回放本金、倍投和提前停止。 -->
+      <!-- 03：主线程把文件交给回放 Worker。用户可以选择稳定的单线程模式，
+           或按完整牌靴调度多个概率子 Worker；最终都按原始时间线统一回放本金、倍投和提前停止。 -->
       <section class="panel replay-panel baccarat-section" data-baccarat-view="replay" aria-labelledby="replay-title" hidden>
         <div class="section-heading replay-heading">
           <div>
@@ -495,6 +495,29 @@
               <li id="replay-rule-secondary">只有从第 1 局开始、局号连续且牌面合法的牌靴会进入策略计算。</li>
               <li id="replay-rule-order">完整格式按时间排序；精简格式按 CSV 行顺序回放。</li>
             </ul>
+            <div class="replay-execution-settings" aria-labelledby="replay-execution-title">
+              <div class="replay-execution-heading">
+                <div>
+                  <strong id="replay-execution-title">回放计算方式</strong>
+                  <small>遇到浏览器内存不足时，优先关闭并行。</small>
+                </div>
+                <span class="replay-execution-badge">安全可切换</span>
+              </div>
+              <div class="replay-execution-controls">
+                <label class="replay-parallel-toggle" for="parallel-replay">
+                  <input id="parallel-replay" type="checkbox" />
+                  <span>
+                    <strong>启用并行计算</strong>
+                    <small>多个 Worker 同时枚举不同牌靴，速度更快但占用更多内存。</small>
+                  </span>
+                </label>
+                <label class="replay-worker-field" for="parallel-worker-count">
+                  <span>并行数（1～8）</span>
+                  <input id="parallel-worker-count" type="number" min="1" max="8" step="1" value="4" disabled />
+                </label>
+              </div>
+              <p class="replay-execution-note">关闭时使用单线程回放，不创建额外子 Worker；开启后实际数量还会按设备核心数和牌靴数量自动下调。</p>
+            </div>
             <button id="replay-button" class="primary-button replay-button" type="button" disabled>
               开始策略回放
             </button>
