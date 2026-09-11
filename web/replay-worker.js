@@ -21,7 +21,7 @@
  */
 import init, {
   generateBaccaratCsv,
-  replayBaccaratCsv,
+  replayBaccaratCsvWithSideBetLimits,
   replayBaccaratCsvWithPreparedWeights,
 } from "./pkg/game_ev_engine.js";
 
@@ -247,7 +247,7 @@ function splitCsvIntoShards(csvText, desiredShardCount) {
     if (bucketIndex < shardCount - 1
         && bucket.rows.length > 0
         && bucket.weight >= targetWeight
-        && remainingGroups >= remainingBuckets) {
+        && remainingGroups >= remainingBuckets - 1) {
       bucketIndex += 1;
     }
     buckets[bucketIndex].rows.push(...groupsArray[groupIndex].rows);
@@ -278,7 +278,26 @@ function workerCountFor(taskCount, requestedWorkerCount = 4) {
     : 4;
   // 给页面主线程和协调 Worker 留出余量；最多八个子 Worker，避免大 CSV 回测
   // 在普通笔记本上把浏览器的全部核心和内存同时打满。
-  return Math.max(1, Math.min(8, requested, taskCount, Math.max(1, hardware - 1)));
+  const memory = Number(globalThis.navigator?.deviceMemory);
+  const memoryLimit = memory > 0 && memory <= 2 ? 1 : memory > 0 && memory <= 4 ? 2 : 8;
+  return Math.max(1, Math.min(8, requested, taskCount, memoryLimit, Math.max(1, hardware - 1)));
+}
+
+// 当前 Rust 预计算 API 会一次返回所有局的权重；在有增量结算 API 前，必须
+// 在创建对象/子 Worker 之前限制这条路径。大输入仍完整回放，不截断数据。
+const MAX_PARALLEL_ROWS = 12_000;
+const MAX_PARALLEL_CSV_CHARS = 4 * 1024 * 1024;
+const MAX_PREPARED_BYTES = 32 * 1024 * 1024;
+
+function parallelFallbackReason(csvText, requestedWorkerCount) {
+  if (workerCountFor(8, requestedWorkerCount) < 2) return "设备资源不足以启动多个计算任务";
+  if (csvText.length > MAX_PARALLEL_CSV_CHARS) return "文件较大，已避免并行复制数据";
+  // 只做有上限的字符扫描，不为每一行创建字符串。引号内换行保守计数即可。
+  let lines = 0;
+  for (let i = 0; i < csvText.length; i += 1) {
+    if (csvText[i] === "\n" && ++lines > MAX_PARALLEL_ROWS + 1) return "牌局较多，已避免一次性保存全部并行概率";
+  }
+  return "";
 }
 
 function runShardPool(shards, decks, requestedWorkerCount, onProgress) {
@@ -290,6 +309,7 @@ function runShardPool(shards, decks, requestedWorkerCount, onProgress) {
   let nextTask = 0;
   let completed = 0;
   let settled = false;
+  let preparedBytes = 0;
 
   return new Promise((resolve, reject) => {
     const cleanup = () => {
@@ -300,6 +320,8 @@ function runShardPool(shards, decks, requestedWorkerCount, onProgress) {
       if (settled) return;
       settled = true;
       cleanup();
+      results.length = 0;
+      shards.length = 0;
       reject(error instanceof Error ? error : new Error(String(error)));
     };
 
@@ -317,24 +339,38 @@ function runShardPool(shards, decks, requestedWorkerCount, onProgress) {
       const taskId = nextTask;
       nextTask += 1;
       worker.busyTaskId = taskId;
-      worker.postMessage({
+      try {
+        worker.postMessage({
         type: "prepare",
         taskId,
         decks,
         csvText: shards[taskId],
-      });
+        });
+        shards[taskId] = "";
+      } catch (error) { fail(error); }
     };
 
+    try {
     for (let index = 0; index < poolSize; index += 1) {
       const worker = new Worker(
-        new URL("./replay-shard-worker.js?v=21", import.meta.url),
+        new URL("./replay-shard-worker.js?v=22", import.meta.url),
         { type: "module" },
       );
       worker.busyTaskId = null;
       worker.addEventListener("message", (event) => {
+        if (settled) return;
         const message = event.data;
         if (message.type === "complete") {
-          results[message.taskId] = message.prepared;
+          if (message.taskId !== worker.busyTaskId || !(message.preparedBuffer instanceof ArrayBuffer)) {
+            fail(new Error("并行任务返回了无效结果"));
+            return;
+          }
+          preparedBytes += message.preparedBuffer.byteLength;
+          if (preparedBytes > MAX_PREPARED_BYTES) {
+            fail(new Error("并行概率数据超过内存预算"));
+            return;
+          }
+          results[message.taskId] = message.preparedBuffer;
           completed += 1;
           onProgress(completed, shards.length, poolSize);
           worker.busyTaskId = null;
@@ -344,34 +380,32 @@ function runShardPool(shards, decks, requestedWorkerCount, onProgress) {
         }
       });
       worker.addEventListener("error", (event) => {
+        event.preventDefault?.();
         fail(new Error(event.message || "牌靴概率子 Worker 无法启动"));
       });
+      worker.addEventListener("messageerror", () => fail(new Error("并行结果传输失败")));
       workers.push(worker);
     }
 
     for (const worker of workers) dispatch(worker);
+    } catch (error) { fail(error); }
   });
 }
 
 function mergePreparedResults(results) {
-  const merged = [];
-  const keys = new Set();
-  for (const result of results) {
-    for (const item of result.rounds ?? []) {
-      const key = `${item.table_id}\u0000${item.session_id}\u0000${item.round_no}`;
-      if (keys.has(key)) throw new Error(`并行结果重复：${item.session_id} 牌靴第 ${item.round_no} 局`);
-      keys.add(key);
-      merged.push(item);
-    }
+  // 保留 Rust 原始 JSON 数字：u64 权重可能大于 JS 安全整数。直接合并数组
+  // 文本既避免对象树复制，也避免 JSON.parse → stringify 损失整数精度。
+  const parts = [];
+  for (let i = 0; i < results.length; i += 1) {
+    const json = new TextDecoder().decode(results[i]);
+    results[i] = null;
+    if (!json.startsWith('{"rounds":[') || !json.endsWith(']}')) throw new Error("并行概率格式无效");
+    const rows = json.slice(11, -2);
+    if (rows) parts.push(rows);
   }
-  // 这里排序只是让结构化数据稳定、便于日志复核；最终资金顺序由原始 CSV
-  // 的 started_at/行顺序决定，绝不使用子 Worker 的完成顺序。
-  merged.sort((left, right) => (
-    Number(left.table_id) - Number(right.table_id)
-      || Number(left.session_id) - Number(right.session_id)
-      || Number(left.round_no) - Number(right.round_no)
-  ));
-  return { rounds: merged };
+  results.length = 0;
+  // Rust 根据原始时间线结算并检查重复键，无需在 JS 再生成键集合或排序。
+  return '{"rounds":[' + parts.join(",") + ']}';
 }
 
 /* ----------------------------- 主流程 ----------------------------- */
@@ -387,8 +421,11 @@ ready
     });
   });
 
+let running = false;
 self.addEventListener("message", async (event) => {
   if (!new Set(["replay", "simulate"]).has(event.data?.type)) return;
+  if (running) return;
+  running = true;
 
   try {
     await ready;
@@ -407,31 +444,24 @@ self.addEventListener("message", async (event) => {
     }
 
     const requestedWorkerCount = Number(config.parallelWorkerCount ?? 1);
-    const parallel = Boolean(config.parallelReplay) && requestedWorkerCount > 1;
+    let fallbackReason = "";
+    const requestedParallel = config.parallelReplay === true && requestedWorkerCount > 1;
+    if (requestedParallel) fallbackReason = parallelFallbackReason(csvText, requestedWorkerCount);
+    const parallel = requestedParallel && !fallbackReason;
+    const runSerial = () => {
+      self.postMessage({ type: "progress", phase: "serial", fallbackReason });
+      const reportJson = replayBaccaratCsvWithSideBetLimits(csvText, ...commonArguments(config));
+      self.postMessage({
+        type: "complete", report: JSON.parse(reportJson),
+        elapsedMilliseconds: performance.now() - started,
+        workerCount: 1, shardCount: 1, parallel: false, fallbackReason,
+      });
+    };
     if (!parallel) {
       // 单线程模式不拆 CSV、不复制牌靴分片，也不创建子 Worker；这条路径是
       // 大文件或浏览器内存紧张时的稳定兜底。资金、倍投和提前停止仍由 Rust
       // 在同一个顺序回放函数中完成，结果与并行模式保持一致。
-      self.postMessage({
-        type: "progress",
-        phase: "serial",
-        completed: 0,
-        total: 1,
-        parallel: false,
-        workerCount: 1,
-      });
-      const reportJson = replayBaccaratCsv(
-        csvText,
-        ...commonArguments(config),
-      );
-      self.postMessage({
-        type: "complete",
-        report: JSON.parse(reportJson),
-        elapsedMilliseconds: performance.now() - started,
-        workerCount: 1,
-        shardCount: 1,
-        parallel: false,
-      });
+      runSerial();
       return;
     }
 
@@ -449,6 +479,8 @@ self.addEventListener("message", async (event) => {
       parallel: true,
     });
 
+    let preparedWeightsJson;
+    try {
     const preparedResults = await runShardPool(
       shards,
       config.decks,
@@ -462,7 +494,14 @@ self.addEventListener("message", async (event) => {
         parallel: true,
       }),
     );
-    const preparedWeightsJson = JSON.stringify(mergePreparedResults(preparedResults));
+    preparedWeightsJson = mergePreparedResults(preparedResults);
+    } catch (error) {
+      // 子 Worker 已由池清理。用原始 CSV 从头顺序计算，避免重复结算；
+      // 页面保留输入和配置，不使用 location.reload() 处理计算失败。
+      fallbackReason = `并行计算中断，已切换单线程：${error?.message ?? String(error)}`;
+      runSerial();
+      return;
+    }
 
     self.postMessage({ type: "progress", phase: "settlement" });
     const reportJson = replayBaccaratCsvWithPreparedWeights(
@@ -484,5 +523,7 @@ self.addEventListener("message", async (event) => {
       type: "error",
       message: error?.message ?? String(error),
     });
+  } finally {
+    running = false;
   }
 });

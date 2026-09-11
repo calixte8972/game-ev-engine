@@ -1742,8 +1742,7 @@ td:first-child {
 
 .replay-execution-heading,
 .replay-execution-controls,
-.replay-parallel-toggle,
-.replay-execution-heading > div {
+.replay-parallel-toggle {
   display: flex;
 }
 

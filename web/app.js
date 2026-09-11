@@ -239,9 +239,18 @@ let activeBaccaratView = "analysis";
 
 // URL 上的版本标记强制浏览器为当前页面创建同版本 Worker，避免发布后仍复用
 // 旧 Worker，进而把新增配置字段当成 undefined 传给 WASM。
-const replayWorker = new Worker(new URL("./replay-worker.js?v=21", import.meta.url), {
-  type: "module",
-});
+let replayWorker;
+function resetReplayWorker() {
+  // WASM 线性内存增长后不会主动缩回。每轮结束销毁旧 Worker，让浏览器
+  // 回收整块计算内存，防止连续回测累计保留大内存。
+  replayWorker?.terminate();
+  replayWorkerReady = false;
+  replayWorker = new Worker(new URL("./replay-worker.js?v=22", import.meta.url), { type: "module" });
+  replayWorker.addEventListener("message", handleReplayMessage);
+  replayWorker.addEventListener("error", handleReplayError);
+  replayWorker.addEventListener("messageerror", handleReplayError);
+  updateReplayButton();
+}
 
 function selectedMode() {
   return form.elements["source-mode"].value;
@@ -352,12 +361,6 @@ function strategyConfig() {
     payoutRule: payoutRule.value,
     stakeStrategy: selectedStakeStrategy,
     strategyParameter,
-    // 默认关闭并行，避免大 CSV 或大量随机牌靴在普通浏览器上瞬间占满内存。
-    // 开启后，Worker 仍会根据硬件并发数和牌靴数量把请求值安全下调。
-    parallelReplay: parallelReplay.checked,
-    parallelWorkerCount: parallelReplay.checked
-      ? readNumber("#parallel-worker-count", "并行数", { min: 1, max: 8, integer: true })
-      : 1,
   };
 }
 
@@ -1204,6 +1207,9 @@ replayButton.addEventListener("click", async () => {
   if (replayRunning || (replaySourceMode === "csv" && !currentCsvFile)) return;
   replayError.hidden = true;
   replayResults.hidden = true;
+  currentReplayReport = null;
+  replayPagination.hidden = true;
+  replayBody.replaceChildren();
   bankrollChartController.reset("正在回放，完成后显示新的本金变化曲线…");
   contributionChartController.reset();
   replayAnalysisChartController.reset();
@@ -1211,7 +1217,13 @@ replayButton.addEventListener("click", async () => {
   try {
     // 配置在主线程读取一次，再与 CSV 文本一起传给 Worker；Worker 不直接访问
     // DOM，因此所有页面输入都必须在这里变成可结构化传输的普通数据。
-    const config = strategyConfig();
+    const config = {
+      ...strategyConfig(),
+      parallelReplay: parallelReplay.checked,
+      parallelWorkerCount: parallelReplay.checked
+        ? readNumber("#parallel-worker-count", "并行数", { min: 1, max: 8, integer: true }) : 1,
+    };
+    if (!replayWorker) resetReplayWorker();
     if (replaySourceMode === "simulation") {
       const simulation = simulationRequest();
       setReplayRunning(true, "正在生成牌靴并回测策略…");
@@ -1236,15 +1248,16 @@ replayButton.addEventListener("click", async () => {
   }
 });
 
-replayWorker.addEventListener("message", (event) => {
+function handleReplayMessage(event) {
+  if (event.target !== replayWorker) return;
   // 协调 Worker 回传 ready/progress/complete/error。页面只展示进度和最终报告，
   // 不在主线程重新运行 CSV 回放。
   const message = event.data;
   if (message.type === "ready") {
     replayWorkerReady = true;
-    if (replaySourceMode === "simulation") {
+    if (replayStatus.textContent === "等待选择文件" && replaySourceMode === "simulation") {
       replayStatus.textContent = "可以开始随机回测";
-    } else if (currentCsvFile) {
+    } else if (replayStatus.textContent === "等待选择文件" && currentCsvFile) {
       replayStatus.textContent = "可以开始回放";
     }
     updateReplayButton();
@@ -1256,7 +1269,9 @@ replayWorker.addEventListener("message", (event) => {
       ? `${message.workerCount ?? 1} 个并行 Worker`
       : "单线程";
     setReplayRunning(false, `回放完成 · ${executionLabel}`);
+    releaseReplayWorker();
     renderReplay(message.report, message.elapsedMilliseconds);
+    if (message.fallbackReason) replayStatus.textContent += ` · ${message.fallbackReason}`;
     return;
   }
 
@@ -1269,7 +1284,9 @@ replayWorker.addEventListener("message", (event) => {
         ? `并行枚举牌靴概率 ${message.completed ?? 0}/${message.total ?? 0}${workerLabel}…`
         : "正在单线程枚举牌靴概率…";
     } else if (message.phase === "serial") {
-      replayStatus.textContent = "正在单线程回放，请勿关闭页面…";
+      replayStatus.textContent = message.fallbackReason
+        ? `${message.fallbackReason}；正在单线程回放…`
+        : "正在单线程回放，请勿关闭页面…";
     } else if (message.phase === "settlement") {
       replayStatus.textContent = "正在按时间顺序合并本金与倍投…";
     }
@@ -1282,16 +1299,30 @@ replayWorker.addEventListener("message", (event) => {
     contributionChartController.reset();
     replayAnalysisChartController.reset();
     showError(replayError, message.message);
+    releaseReplayWorker();
   }
-});
+}
 
-replayWorker.addEventListener("error", (event) => {
-  setReplayRunning(false, "回放核心加载失败");
-  bankrollChartController.reset("回放核心加载失败；重新载入页面后再试。");
+function handleReplayError(event) {
+  if (event.target !== replayWorker) return;
+  event.preventDefault?.();
+  replayWorker.terminate();
+  replayWorkerReady = false;
+  setReplayRunning(false, "回放计算中断，可重新尝试");
+  bankrollChartController.reset("计算中断；可关闭并行或减少数据量后重试。");
   contributionChartController.reset();
   replayAnalysisChartController.reset();
   showError(replayError, event.message || "CSV 回放 Worker 无法启动");
-});
+  releaseReplayWorker();
+}
+
+function releaseReplayWorker() {
+  // 下一次点击才创建新实例；加载失败时也不会进入无限自动重试。
+  replayWorker?.terminate();
+  replayWorkerReady = true;
+  replayWorker = null;
+  updateReplayButton();
+}
 
 async function start() {
   // wasm-bindgen 初始化完成前，所有计算按钮都保持禁用；初始化成功后再做
@@ -1317,5 +1348,6 @@ updateSideBetRoundLimitHints();
 updateConfigSummaries();
 updateSimulationEstimate();
 setReplaySourceMode("csv");
+resetReplayWorker();
 syncBaccaratView();
 start();

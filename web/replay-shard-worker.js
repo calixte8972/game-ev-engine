@@ -20,12 +20,14 @@ self.addEventListener("message", async (event) => {
       event.data.decks,
     );
 
+    // 转移 UTF-8 缓冲区所有权，不再跨线程克隆数万条概率对象。
+    const preparedBuffer = new TextEncoder().encode(preparedJson).buffer;
     self.postMessage({
       type: "complete",
       taskId: event.data.taskId,
-      prepared: JSON.parse(preparedJson),
+      preparedBuffer,
       elapsedMilliseconds: performance.now() - started,
-    });
+    }, [preparedBuffer]);
   } catch (error) {
     self.postMessage({
       type: "error",

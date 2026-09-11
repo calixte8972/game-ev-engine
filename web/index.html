@@ -501,7 +501,7 @@
                   <strong id="replay-execution-title">回放计算方式</strong>
                   <small>遇到浏览器内存不足时，优先关闭并行。</small>
                 </div>
-                <span class="replay-execution-badge">安全可切换</span>
+                <span class="replay-execution-badge">内存保护</span>
               </div>
               <div class="replay-execution-controls">
                 <label class="replay-parallel-toggle" for="parallel-replay">
@@ -516,7 +516,7 @@
                   <input id="parallel-worker-count" type="number" min="1" max="8" step="1" value="4" disabled />
                 </label>
               </div>
-              <p class="replay-execution-note">关闭时使用单线程回放，不创建额外子 Worker；开启后实际数量还会按设备核心数和牌靴数量自动下调。</p>
+              <p class="replay-execution-note">并行数会按设备资源下调；超过约 12,000 局、文件较大或并行出错时，自动改为单线程完整回放，并显示原因。两种方式均按原顺序结算本金。</p>
             </div>
             <button id="replay-button" class="primary-button replay-button" type="button" disabled>
               开始策略回放
