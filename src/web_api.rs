@@ -24,10 +24,11 @@ use serde::Serialize;
 use crate::{
     BaccaratSimulationConfig, BetPlanSkipReason, BettingPolicy, BlackjackAnalysis, BlackjackRules,
     Card, CombinedBetPlan, CombinedBetPlanAction, CsvReplayConfig, EffectiveBetMetrics,
-    KellyPolicy, MainBet, MainBetAnalysis, MainBetRules, RebateRule, Shoe, SideBet,
-    SideBetAnalysis, SideBetMetrics, SideBetRoundLimits, SideBetRules, SkipReason,
+    KellyPolicy, MainBet, MainBetAnalysis, MainBetRules, PreparedReplayWeights, RebateRule, Shoe,
+    SideBet, SideBetAnalysis, SideBetMetrics, SideBetRoundLimits, SideBetRules, SkipReason,
     StakeSizingStrategy, analyze_blackjack_hand, calculate_main_and_side_outcomes,
-    generate_baccarat_csv_text, replay_csv_text,
+    generate_baccarat_csv_text, prepare_csv_weights, replay_csv_text,
+    replay_csv_text_with_prepared_weights,
 };
 
 #[cfg(target_arch = "wasm32")]
@@ -188,6 +189,77 @@ pub fn replay_baccarat_csv_with_side_bet_limits(
         allow_multiple_bets,
     )
     .map_err(|message| JsValue::from_str(&message))
+}
+
+/// 供协调 Worker 调用的概率预计算入口。
+///
+/// 子 Worker 不参与本金或下注结算，只把每一局下注前的主注/边注权重返回给
+/// 协调 Worker。这样多个子 Worker 可以同时枚举不同牌靴，而最终资金时间线
+/// 仍然只由 `replayBaccaratCsvWithPreparedWeights` 顺序执行。
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = prepareBaccaratCsvWeights)]
+pub fn prepare_baccarat_csv_weights(csv_text: &str, decks: u8) -> Result<String, JsValue> {
+    prepare_baccarat_csv_weights_json(csv_text, decks)
+        .map_err(|message| JsValue::from_str(&message))
+}
+
+/// 使用并行 Worker 预计算的概率权重执行最终顺序回放。
+#[cfg(target_arch = "wasm32")]
+#[allow(clippy::too_many_arguments)]
+#[wasm_bindgen(js_name = replayBaccaratCsvWithPreparedWeights)]
+pub fn replay_baccarat_csv_with_prepared_weights(
+    csv_text: &str,
+    decks: u8,
+    rebate_rate: f64,
+    minimum_effective_ev: f64,
+    initial_bankroll: f64,
+    max_fraction: f64,
+    max_round_stake: f64,
+    table_limit: f64,
+    payout_rule: &str,
+    stake_strategy: &str,
+    strategy_parameter: f64,
+    minimum_side_bet_ev: f64,
+    side_bet_limit: f64,
+    side_bet_round_limits_json: &str,
+    allow_multiple_bets: bool,
+    prepared_weights_json: &str,
+) -> Result<String, JsValue> {
+    replay_baccarat_csv_json_with_prepared_weights(
+        csv_text,
+        decks,
+        rebate_rate,
+        minimum_effective_ev,
+        initial_bankroll,
+        max_fraction,
+        max_round_stake,
+        table_limit,
+        payout_rule,
+        stake_strategy,
+        strategy_parameter,
+        minimum_side_bet_ev,
+        side_bet_limit,
+        side_bet_round_limits_json,
+        allow_multiple_bets,
+        prepared_weights_json,
+    )
+    .map_err(|message| JsValue::from_str(&message))
+}
+
+/// 生成随机牌靴 CSV，但暂不进入策略回放。
+///
+/// 协调 Worker 先生成一次完整、可复现的样本，再按完整牌靴拆给子 Worker；
+/// 这样并行化不会改变此前“相同种子得到相同牌局”的行为。
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = generateBaccaratCsv)]
+pub fn generate_baccarat_csv(
+    shoes: u32,
+    max_rounds_per_shoe: u32,
+    seed_text: &str,
+    decks: u8,
+) -> Result<String, JsValue> {
+    generate_baccarat_csv_json(shoes, max_rounds_per_shoe, seed_text, decks)
+        .map_err(|message| JsValue::from_str(&message))
 }
 
 /// 不上传 CSV，直接在 Worker 中随机生成真实牌靴并执行同一套策略回放。
@@ -867,6 +939,91 @@ pub fn replay_baccarat_csv_json_with_side_bet_round_limits_and_multiple(
     serde_json::to_string(&report).map_err(|error| format!("回放结果序列化失败：{error}"))
 }
 
+/// 普通 Rust 测试与并行 Web Worker 共用的概率预计算 JSON 入口。
+pub fn prepare_baccarat_csv_weights_json(csv_text: &str, decks: u8) -> Result<String, String> {
+    let prepared = prepare_csv_weights(csv_text, decks).map_err(|error| error.to_string())?;
+    serde_json::to_string(&prepared).map_err(|error| format!("概率预计算结果序列化失败：{error}"))
+}
+
+/// 使用预计算权重执行最终的共享本金回放。
+#[allow(clippy::too_many_arguments)]
+pub fn replay_baccarat_csv_json_with_prepared_weights(
+    csv_text: &str,
+    decks: u8,
+    rebate_rate: f64,
+    minimum_effective_ev: f64,
+    initial_bankroll: f64,
+    max_fraction: f64,
+    max_round_stake: f64,
+    table_limit: f64,
+    payout_rule: &str,
+    stake_strategy: &str,
+    strategy_parameter: f64,
+    minimum_side_bet_ev: f64,
+    side_bet_limit: f64,
+    side_bet_round_limits_json: &str,
+    allow_multiple_bets: bool,
+    prepared_weights_json: &str,
+) -> Result<String, String> {
+    let legacy_side_fields_missing =
+        !minimum_side_bet_ev.is_finite() && !side_bet_limit.is_finite();
+    let (minimum_side_bet_ev, side_bet_limit) = if legacy_side_fields_missing {
+        (minimum_effective_ev, max_round_stake)
+    } else {
+        (minimum_side_bet_ev, side_bet_limit)
+    };
+    let side_bet_round_limits: SideBetRoundLimits =
+        serde_json::from_str(side_bet_round_limits_json)
+            .map_err(|error| format!("边注最晚下注局数配置无效：{error}"))?;
+    let prepared: PreparedReplayWeights = serde_json::from_str(prepared_weights_json)
+        .map_err(|error| format!("并行概率结果无法读取：{error}"))?;
+    let (rules, _) = parse_payout_rule(payout_rule)?;
+    let stake_strategy = parse_stake_strategy(stake_strategy, strategy_parameter)?;
+    let config = CsvReplayConfig::with_side_bets(
+        decks,
+        rules,
+        stake_strategy,
+        rebate_rate,
+        minimum_effective_ev,
+        minimum_side_bet_ev,
+        initial_bankroll,
+        max_fraction,
+        max_round_stake,
+        table_limit,
+        side_bet_limit,
+    )
+    .map_err(|error| format!("回放配置不合法：{error}"))?
+    .with_side_bet_round_limits(side_bet_round_limits)
+    .with_multiple_bets(allow_multiple_bets);
+    let report = replay_csv_text_with_prepared_weights(csv_text, config, prepared)
+        .map_err(|error| error.to_string())?;
+
+    serde_json::to_string(&report).map_err(|error| format!("回放结果序列化失败：{error}"))
+}
+
+/// 生成随机牌靴 CSV 的普通 Rust 入口，供 WASM 和测试共用。
+pub fn generate_baccarat_csv_json(
+    shoes: u32,
+    max_rounds_per_shoe: u32,
+    seed_text: &str,
+    decks: u8,
+) -> Result<String, String> {
+    let seed = seed_text
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| "随机种子必须是 0 到 18446744073709551615 之间的整数".to_owned())?;
+    let simulation = BaccaratSimulationConfig::new(
+        u64::from(shoes),
+        decks,
+        max_rounds_per_shoe,
+        seed,
+        1_000_000,
+    )
+    .map_err(|error| format!("随机回测参数不合法：{error}"))?;
+
+    generate_baccarat_csv_text(simulation).map_err(|error| format!("随机牌靴生成失败：{error}"))
+}
+
 /// 随机牌靴回测的可测试 Rust 入口。
 #[allow(clippy::too_many_arguments)]
 pub fn simulate_baccarat_shoes_json_with_side_bet_limits(
@@ -961,8 +1118,19 @@ fn parse_stake_strategy(
         "target_volatility" => Ok(StakeSizingStrategy::TargetVolatility {
             fraction: strategy_parameter,
         }),
+        // 这三种是“有状态的递进策略”。strategy_parameter 表示第一笔基础金额；
+        // 连续输赢的级数只在 CSV/随机回放中由 Rust 根据真实结算推进。
+        "martingale" => Ok(StakeSizingStrategy::Martingale {
+            amount: strategy_parameter,
+        }),
+        "reverse_martingale" => Ok(StakeSizingStrategy::ReverseMartingale {
+            amount: strategy_parameter,
+        }),
+        "dalembert" => Ok(StakeSizingStrategy::Dalembert {
+            amount: strategy_parameter,
+        }),
         _ => Err(
-            "金额策略必须是 full_kelly、half_kelly、quarter_kelly、custom_kelly、fixed、bankroll_fraction、target_expected_profit 或 target_volatility"
+            "金额策略必须是 full_kelly、half_kelly、quarter_kelly、custom_kelly、fixed、bankroll_fraction、target_expected_profit、target_volatility、martingale、reverse_martingale 或 dalembert"
                 .to_owned(),
         ),
     }

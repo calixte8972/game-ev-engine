@@ -16,6 +16,7 @@ const assetDefinitions = [
   ["/bet-contribution-charts.js", "bet-contribution-charts.js", "text/javascript; charset=utf-8"],
   ["/replay-analysis-charts.js", "replay-analysis-charts.js", "text/javascript; charset=utf-8"],
   ["/replay-worker.js", "replay-worker.js", "text/javascript; charset=utf-8"],
+  ["/replay-shard-worker.js", "replay-shard-worker.js", "text/javascript; charset=utf-8"],
   ["/pkg/game_ev_engine.js", "pkg/game_ev_engine.js", "text/javascript; charset=utf-8"],
   ["/pkg/game_ev_engine_bg.wasm", "pkg/game_ev_engine_bg.wasm", "application/wasm"],
 ];

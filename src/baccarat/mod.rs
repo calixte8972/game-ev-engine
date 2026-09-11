@@ -53,12 +53,14 @@ pub use rebate::RebateRule;
 pub use replay::{
     CsvBetBreakdown, CsvBetCounts, CsvBetDetail, CsvBetPerformance, CsvDatasetReport,
     CsvQualityReport, CsvReplayConfig, CsvReplayConfigSnapshot, CsvReplayError, CsvReplayReport,
-    CsvReplaySummary, SideBetRoundLimits, replay_csv_text,
+    CsvReplaySummary, PreparedReplayWeight, PreparedReplayWeights, SideBetRoundLimits,
+    prepare_csv_weights, replay_csv_text, replay_csv_text_with_prepared_weights,
 };
 pub use risk::{
     BetPlan, BetPlanAction, BetPlanSkipReason, CombinedBetPlan, CombinedBetPlanAction, KellyError,
-    KellyOutcome, KellyPolicy, KellyQuote, StakeSizingStrategy, calculate_kelly_fraction,
-    main_bet_kelly_outcomes, side_bet_kelly_outcomes, side_bet_kelly_outcomes_with_rebate,
+    KellyOutcome, KellyPolicy, KellyQuote, ProgressionOutcome, StakeProgression,
+    StakeSizingStrategy, calculate_kelly_fraction, main_bet_kelly_outcomes,
+    side_bet_kelly_outcomes, side_bet_kelly_outcomes_with_rebate,
 };
 pub(crate) use round::resolve_point_round;
 pub use round::{RoundError, RoundOutcome, RoundResult, compare_hands, resolve_round};

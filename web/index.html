@@ -108,7 +108,13 @@
                     <option value="bankroll_fraction">固定本金比例</option>
                     <option value="target_expected_profit">固定期望盈利</option>
                     <option value="target_volatility">目标波动率</option>
+                    <option value="martingale">倍投（输后翻倍）</option>
+                    <option value="reverse_martingale">反倍投（赢后翻倍）</option>
+                    <option value="dalembert">达朗贝尔（输加赢减）</option>
                   </select>
+                  <small id="stake-strategy-help" class="field-help">
+                    凯利类策略按当前概率计算下注比例；递进策略会在回放时读取上一笔真实结果。
+                  </small>
                 </label>
 
                 <label id="strategy-parameter-field" class="field" hidden>
@@ -419,7 +425,8 @@
         </p>
       </section>
 
-      <!-- 03：CSV 由主线程读取后交给 Web Worker，回放完成再展示摘要/图表/明细。 -->
+      <!-- 03：主线程把文件交给协调 Worker；协调 Worker 再按完整牌靴调度多个
+           概率子 Worker，最后用原始时间线统一回放本金、倍投和提前停止。 -->
       <section class="panel replay-panel baccarat-section" data-baccarat-view="replay" aria-labelledby="replay-title" hidden>
         <div class="section-heading replay-heading">
           <div>
@@ -719,6 +726,8 @@
               <strong id="maximum-round-stake">—</strong>
             </div>
           </div>
+
+          <p id="replay-stop-notice" class="replay-stop-notice" hidden role="status"></p>
 
           <p class="result-note replay-metrics-note">
             模拟最大盈利 = 回放期间最高本金 − 初始本金；最高/最低本金按每局结算后统计。最大单局下注是同一局多笔下注金额的合计，用来观察同局多下注时的最大资金暴露。

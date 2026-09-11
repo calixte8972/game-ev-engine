@@ -172,6 +172,9 @@ const stakeStrategyLabels = {
   bankroll_fraction: "固定本金比例",
   target_expected_profit: "固定期望盈利",
   target_volatility: "目标波动率",
+  martingale: "倍投（输后翻倍）",
+  reverse_martingale: "反倍投（赢后翻倍）",
+  dalembert: "达朗贝尔（输加赢减）",
 };
 
 const stakeStrategyParameters = {
@@ -180,6 +183,23 @@ const stakeStrategyParameters = {
   bankroll_fraction: { label: "每局本金比例", unit: "percent", defaultValue: 1, step: 0.1 },
   target_expected_profit: { label: "单笔目标期望盈利", unit: "money", defaultValue: 10, step: 1 },
   target_volatility: { label: "单笔目标波动率", unit: "percent", defaultValue: 1, step: 0.1 },
+  martingale: { label: "倍投基础金额（输后翻倍）", unit: "money", defaultValue: 100, step: 10 },
+  reverse_martingale: { label: "反倍投基础金额（赢后翻倍）", unit: "money", defaultValue: 100, step: 10 },
+  dalembert: { label: "达朗贝尔基础单位", unit: "money", defaultValue: 100, step: 10 },
+};
+
+const stakeStrategyHelp = {
+  full_kelly: "按完整凯利比例下注；只有有效 EV 为正时才会投入。",
+  half_kelly: "使用完整凯利的一半，降低波动和模型误差影响。",
+  quarter_kelly: "使用完整凯利的四分之一，更保守地控制回撤。",
+  custom_kelly: "用输入百分比缩放完整凯利比例。",
+  fixed: "每次通过 EV 门槛后使用固定金额，不随凯利比例变化。",
+  bankroll_fraction: "每次使用当前本金的固定百分比。",
+  target_expected_profit: "根据当前有效 EV 反推达到目标期望盈利所需的金额。",
+  target_volatility: "根据收益分布的标准差反推目标波动率对应的金额。",
+  martingale: "回放中每个下注目标独立记录级数：输后下一笔翻倍，赢或和局复位。",
+  reverse_martingale: "回放中赢后下一笔翻倍，输或和局复位；第一笔使用基础金额。",
+  dalembert: "回放中输一笔增加一个基础单位，赢一笔减少一个单位，和局保持。",
 };
 
 const skipReasonLabels = {
@@ -217,7 +237,7 @@ let activeBaccaratView = "analysis";
 
 // URL 上的版本标记强制浏览器为当前页面创建同版本 Worker，避免发布后仍复用
 // 旧 Worker，进而把新增配置字段当成 undefined 传给 WASM。
-const replayWorker = new Worker(new URL("./replay-worker.js?v=19", import.meta.url), {
+const replayWorker = new Worker(new URL("./replay-worker.js?v=20", import.meta.url), {
   type: "module",
 });
 
@@ -330,6 +350,9 @@ function strategyConfig() {
     payoutRule: payoutRule.value,
     stakeStrategy: selectedStakeStrategy,
     strategyParameter,
+    // 协调 Worker 会根据硬件并发数自动降到 1～8 个子 Worker；这里保留一个
+    // 明确的上限，避免浏览器在普通电脑上无节制创建线程。
+    requestedWorkerCount: 8,
   };
 }
 
@@ -342,6 +365,8 @@ function strategyConfig() {
  */
 function updateStakeStrategyFields() {
   const definition = stakeStrategyParameters[stakeStrategy.value];
+  const help = document.querySelector("#stake-strategy-help");
+  if (help) help.textContent = stakeStrategyHelp[stakeStrategy.value] ?? "";
   strategyParameterField.hidden = !definition;
   if (!definition) return;
 
@@ -999,6 +1024,21 @@ function renderReplay(report, elapsedMilliseconds) {
   setText("#minimum-bankroll", money(summary.minimum_bankroll));
   setText("#maximum-single-stake", money(summary.maximum_single_stake));
   setText("#maximum-round-stake", money(summary.maximum_round_stake));
+
+  const stopNotice = document.querySelector("#replay-stop-notice");
+  if (stopNotice) {
+    const stoppedEarly = Boolean(summary.stopped_early);
+    stopNotice.hidden = !stoppedEarly;
+    if (stoppedEarly) {
+      const location = [summary.stop_table_id, summary.stop_session_id, summary.stop_round_no]
+        .every((value) => Number.isFinite(Number(value)))
+        ? `桌台 ${summary.stop_table_id} · 牌靴 ${summary.stop_session_id} · 第 ${summary.stop_round_no} 局`
+        : `第 ${summary.replayed_rounds + 1} 个待处理局`;
+      stopNotice.textContent = `回放已提前结束：本金已耗尽，停止位置为${location}；已完成 ${integerFormatter.format(summary.replayed_rounds)} 局，期末本金 ${money(summary.final_bankroll)}。`;
+    } else {
+      stopNotice.textContent = "";
+    }
+  }
   renderBetBreakdown(summary.bet_breakdown, summary.placed_bets);
 
   setText("#dataset-rows", integerFormatter.format(dataset.total_rows));
@@ -1177,7 +1217,7 @@ replayButton.addEventListener("click", async () => {
 });
 
 replayWorker.addEventListener("message", (event) => {
-  // Worker 只回传 ready/complete/error 三种消息。页面根据消息更新状态，
+  // 协调 Worker 回传 ready/progress/complete/error。页面只展示进度和最终报告，
   // 不在主线程重新运行 CSV 回放。
   const message = event.data;
   if (message.type === "ready") {
@@ -1192,8 +1232,21 @@ replayWorker.addEventListener("message", (event) => {
   }
 
   if (message.type === "complete") {
-    setReplayRunning(false, "回放完成");
+    const workerLabel = message.workerCount ? ` · ${message.workerCount} 个 Worker` : "";
+    setReplayRunning(false, `回放完成${workerLabel}`);
     renderReplay(message.report, message.elapsedMilliseconds);
+    return;
+  }
+
+  if (message.type === "progress") {
+    if (message.phase === "generate") {
+      replayStatus.textContent = "正在生成可复现牌靴…";
+    } else if (message.phase === "probability") {
+      const workerLabel = message.workerCount ? ` · ${message.workerCount} 个 Worker` : "";
+      replayStatus.textContent = `并行枚举牌靴概率 ${message.completed ?? 0}/${message.total ?? 0}${workerLabel}…`;
+    } else if (message.phase === "settlement") {
+      replayStatus.textContent = "正在按时间顺序合并本金与倍投…";
+    }
     return;
   }
 

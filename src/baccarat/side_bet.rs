@@ -26,6 +26,8 @@
 
 use std::{error::Error, fmt};
 
+use serde::{Deserialize, Serialize};
+
 use super::{RoundOutcome, RoundResult};
 
 /// 当前支持的十一种边注。
@@ -311,7 +313,7 @@ impl Default for SideBetRules {
 }
 
 /// 精确枚举得到的边注整数权重，所有字段共用 `(N)₆` 分母。
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Deserialize, Serialize)]
 pub struct SideBetWeights {
     /// 所有六张有序物理发牌序列的共同分母。
     total: u64,

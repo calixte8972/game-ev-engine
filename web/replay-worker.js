@@ -1,18 +1,29 @@
 /*
- * CSV 回放专用 Web Worker。
+ * 牌靴回放的协调 Worker。
  *
- * 主线程负责读取文件、读取表单和更新 UI；本线程负责等待 WASM 初始化，
- * 再执行“牌靴重建 -> 概率枚举 -> 策略回放”。Worker 与主线程之间只传递
- * 可结构化克隆的字符串/数字/普通对象，不直接访问 DOM，因此大 CSV 计算时
- * 页面仍可以滚动、取消或显示进度状态。
+ * 数据流：
+ *
+ *   页面主线程
+ *      ↓ 一次提交配置/CSV
+ *   本协调 Worker（任务调度 + 顺序合并）
+ *      ↓ 按完整牌靴分片
+ *   replay-shard-worker × 2～8（并行概率预计算）
+ *      ↓ 概率权重快照
+ *   本协调 Worker 按键合并
+ *      ↓ 原始 CSV + 预计算权重
+ *   Rust 顺序回放器（本金、倍投、结算、提前停止）
+ *      ↓ 完整报告
+ *   页面主线程
+ *
+ * 重要边界：不同牌靴的概率枚举可以并行；共享滚动本金和递进策略不能并行。
+ * 因此子 Worker 绝不直接跑最终下注结算，避免“每个 Worker 都拿一份初始本金”
+ * 导致回测结果被错误放大。
  */
 import init, {
-  replayBaccaratCsvWithSideBetLimits,
-  simulateBaccaratShoesWithSideBetLimits,
+  generateBaccaratCsv,
+  replayBaccaratCsvWithPreparedWeights,
 } from "./pkg/game_ev_engine.js";
 
-// 这些默认值必须与 Rust::SideBetRoundLimits::default() 保持一致。
-// Worker 需要一份副本，是为了兼容用户仍打开旧版本页面时缺少新字段的情况。
 const defaultSideBetRoundLimits = {
   any_pair: 50,
   banker_pair: 50,
@@ -32,12 +43,7 @@ function finiteNumberOr(value, fallback) {
   return Number.isFinite(number) ? number : fallback;
 }
 
-/**
- * 规范化从主线程传来的独立边注局数限制。
- *
- * 边界层不能假设旧页面一定已经提供所有字段：缺失/非法值回退到当前
- * 默认值；只有旧版整体缺失时，才把 legacy luckyBetMaxRound 覆盖三种幸运玩法。
- */
+/** 兼容旧版页面，补齐独立边注局数限制。 */
 function normalizedSideBetRoundLimits(config) {
   const source = config.sideBetRoundLimits ?? {};
   const result = {};
@@ -46,7 +52,6 @@ function normalizedSideBetRoundLimits(config) {
     result[key] = Number.isInteger(value) && value >= 0 ? value : defaultValue;
   }
 
-  // 兼容只有旧“幸运 6/7 共用上限”字段的页面。
   if (!config.sideBetRoundLimits && Number.isInteger(Number(config.luckyBetMaxRound))) {
     const legacyLimit = Math.max(0, Number(config.luckyBetMaxRound));
     result.lucky_six = legacyLimit;
@@ -56,8 +61,317 @@ function normalizedSideBetRoundLimits(config) {
   return result;
 }
 
-// 模块加载时先初始化 WASM。初始化成功后通知主线程可以启用“开始回放”按钮；
-// 如果失败，后续回放请求也会通过统一 error 消息返回。
+function commonArguments(config) {
+  const minimumSideBetEv = finiteNumberOr(
+    config.minimumSideBetEv,
+    config.minimumEffectiveEv,
+  );
+  const sideBetLimit = finiteNumberOr(config.sideBetLimit, config.maxRoundStake);
+
+  return [
+    config.decks,
+    config.rebateRate,
+    config.minimumEffectiveEv,
+    config.bankroll,
+    config.maxFraction,
+    config.maxRoundStake,
+    config.tableLimit,
+    config.payoutRule,
+    config.stakeStrategy,
+    config.strategyParameter,
+    minimumSideBetEv,
+    sideBetLimit,
+    JSON.stringify(normalizedSideBetRoundLimits(config)),
+    Boolean(config.allowMultipleBets),
+  ];
+}
+
+/* ----------------------------- CSV 分片 ----------------------------- */
+
+// 不能简单使用 split(",")：生成器的 raw_cards 字段本身包含逗号，并且数据库
+// 导出可能使用双引号包裹字段。这里是一个小型 RFC4180 读取器，只用于边界分片；
+// 最终的字段校验仍由 Rust csv crate 完成。
+function parseCsvRecord(record) {
+  const fields = [];
+  let field = "";
+  let quoted = false;
+
+  for (let index = 0; index < record.length; index += 1) {
+    const character = record[index];
+    if (character === '"') {
+      if (quoted && record[index + 1] === '"') {
+        field += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (character === "," && !quoted) {
+      fields.push(field);
+      field = "";
+    } else {
+      field += character;
+    }
+  }
+
+  if (quoted) throw new Error("CSV 存在未闭合的双引号，无法安全拆分牌靴");
+  fields.push(field);
+  return fields;
+}
+
+function readCsvRecords(csvText) {
+  const records = [];
+  let start = 0;
+  let quoted = false;
+
+  for (let index = 0; index < csvText.length; index += 1) {
+    const character = csvText[index];
+    if (character === '"') {
+      if (quoted && csvText[index + 1] === '"') {
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (character === "\n" && !quoted) {
+      const record = csvText.slice(start, index).replace(/\r$/, "");
+      if (record.trim()) records.push(record);
+      start = index + 1;
+    }
+  }
+
+  if (quoted) throw new Error("CSV 存在未闭合的双引号，无法安全拆分牌靴");
+  const tail = csvText.slice(start).replace(/\r$/, "");
+  if (tail.trim()) records.push(tail);
+  return records;
+}
+
+function normalizedHeader(value) {
+  return value.replace(/^\uFEFF/, "").trim().toLowerCase();
+}
+
+function findColumn(header, aliases) {
+  const wanted = new Set(aliases.map(normalizedHeader));
+  return header.findIndex((value) => wanted.has(normalizedHeader(value)));
+}
+
+function valueAt(fields, index, fallback = "") {
+  return index >= 0 ? fields[index]?.trim() ?? fallback : fallback;
+}
+
+function csvField(value) {
+  const text = String(value ?? "");
+  return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+/**
+ * 把完整 CSV 变成“每个元素都是完整牌靴”的若干分片。
+ *
+ * 子 Worker 不能从第 37 局开始猜前面已经扣过什么牌，所以分片单位必须是
+ * `(table_id, session_id)`，不能按任意行号切断牌靴。这里把字段归一化成 Rust
+ * 支持的标准列名，最终回放仍使用原始 CSV，因此不会改变数据库报告口径。
+ */
+function splitCsvIntoShards(csvText, desiredShardCount) {
+  const records = readCsvRecords(csvText.replace(/^\uFEFF/, ""));
+  if (records.length < 2) throw new Error("CSV 没有可拆分的数据行");
+
+  const header = parseCsvRecord(records[0]);
+  const tableIndex = findColumn(header, ["table_id", "table", "桌台", "桌号", "gi011"]);
+  const sessionIndex = findColumn(header, ["session_id", "shoe", "牌靴", "gi002"]);
+  const roundIndex = findColumn(header, ["round_no", "round", "局号", "子局数", "gi003"]);
+  const startedIndex = findColumn(header, ["started_at", "开局时间", "gi004"]);
+  const settledIndex = findColumn(header, ["settled_at", "开奖时间", "gi006"]);
+  const cardsIndex = findColumn(header, ["raw_cards", "cards", "牌面", "开奖内容", "gi007"]);
+  const resultIndex = findColumn(header, ["result_code", "result", "结果", "gi012"]);
+
+  if (sessionIndex < 0 || roundIndex < 0 || cardsIndex < 0) {
+    throw new Error("CSV 必须包含牌靴、子局数和牌面三列");
+  }
+
+  const groups = new Map();
+  for (let rowIndex = 1; rowIndex < records.length; rowIndex += 1) {
+    const fields = parseCsvRecord(records[rowIndex]);
+    const tableId = valueAt(fields, tableIndex, "1") || "1";
+    const sessionId = valueAt(fields, sessionIndex);
+    const roundNo = valueAt(fields, roundIndex);
+    const rawCards = valueAt(fields, cardsIndex);
+    if (!sessionId || !roundNo || !rawCards) {
+      // 保留这类行给最终 Rust 质量报告处理，而不是在 JS 预分片阶段静默丢掉。
+      // 没有牌靴键的行无法分配到任何完整牌靴，使用稳定隔离键让最终回放明确
+      // 报告它，而不是把它混入一张合法牌靴。
+      const invalidKey = `__invalid__${rowIndex}`;
+      groups.set(invalidKey, {
+        rows: [[
+          tableId,
+          sessionId || String(900_000_000_000_000 + rowIndex),
+          roundNo || "1",
+          "",
+          "",
+          rawCards,
+          "",
+        ]],
+      });
+      continue;
+    }
+
+    const key = `${tableId}\u0000${sessionId}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { rows: [] };
+      groups.set(key, group);
+    }
+    group.rows.push([
+      tableId,
+      sessionId,
+      roundNo,
+      valueAt(fields, startedIndex),
+      valueAt(fields, settledIndex),
+      rawCards,
+      valueAt(fields, resultIndex),
+    ]);
+  }
+
+  const groupsArray = [...groups.values()];
+  const shardCount = Math.max(1, Math.min(desiredShardCount, groupsArray.length));
+  const buckets = Array.from({ length: shardCount }, () => ({ rows: [], weight: 0 }));
+
+  // 保持输入中的牌靴顺序，按连续区间切分：例如 400 靴/4 个 Worker 会得到
+  // 1～100、101～200、201～300、301～400。这样结果日志更容易审计，也不让
+  // 相邻牌靴被无意义地打散；若各靴长度不同，目标仍按行数近似均衡。
+  const targetWeight = groupsArray.reduce((total, group) => total + group.rows.length, 0)
+    / shardCount;
+  let bucketIndex = 0;
+  for (let groupIndex = 0; groupIndex < groupsArray.length; groupIndex += 1) {
+    const remainingGroups = groupsArray.length - groupIndex;
+    const remainingBuckets = shardCount - bucketIndex;
+    const bucket = buckets[bucketIndex];
+    if (bucketIndex < shardCount - 1
+        && bucket.rows.length > 0
+        && bucket.weight >= targetWeight
+        && remainingGroups >= remainingBuckets) {
+      bucketIndex += 1;
+    }
+    buckets[bucketIndex].rows.push(...groupsArray[groupIndex].rows);
+    buckets[bucketIndex].weight += groupsArray[groupIndex].rows.length;
+  }
+
+  const shardHeader = [
+    "table_id",
+    "session_id",
+    "round_no",
+    "started_at",
+    "settled_at",
+    "raw_cards",
+    "result_code",
+  ].join(",");
+  return buckets.map((bucket) => [
+    shardHeader,
+    ...bucket.rows.map((row) => row.map(csvField).join(",")),
+  ].join("\n"));
+}
+
+/* -------------------------- 子 Worker 调度 -------------------------- */
+
+function workerCountFor(taskCount) {
+  const hardware = Number(globalThis.navigator?.hardwareConcurrency) || 4;
+  // 给页面主线程和协调 Worker 留出余量；最多八个子 Worker，避免 20,000 靴
+  // 回测在普通笔记本上把浏览器的全部核心和内存同时打满。
+  return Math.max(1, Math.min(8, taskCount, Math.max(1, hardware - 1)));
+}
+
+function runShardPool(shards, decks, onProgress) {
+  if (shards.length === 0) return Promise.resolve([]);
+
+  const poolSize = workerCountFor(shards.length);
+  const results = new Array(shards.length);
+  const workers = [];
+  let nextTask = 0;
+  let completed = 0;
+  let settled = false;
+
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      for (const worker of workers) worker.terminate();
+    };
+
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
+    const dispatch = (worker) => {
+      if (settled) return;
+      if (nextTask >= shards.length) {
+        if (completed === shards.length) {
+          settled = true;
+          cleanup();
+          resolve(results);
+        }
+        return;
+      }
+
+      const taskId = nextTask;
+      nextTask += 1;
+      worker.busyTaskId = taskId;
+      worker.postMessage({
+        type: "prepare",
+        taskId,
+        decks,
+        csvText: shards[taskId],
+      });
+    };
+
+    for (let index = 0; index < poolSize; index += 1) {
+      const worker = new Worker(
+        new URL("./replay-shard-worker.js?v=20", import.meta.url),
+        { type: "module" },
+      );
+      worker.busyTaskId = null;
+      worker.addEventListener("message", (event) => {
+        const message = event.data;
+        if (message.type === "complete") {
+          results[message.taskId] = message.prepared;
+          completed += 1;
+          onProgress(completed, shards.length, poolSize);
+          worker.busyTaskId = null;
+          dispatch(worker);
+        } else if (message.type === "error") {
+          fail(new Error(message.message));
+        }
+      });
+      worker.addEventListener("error", (event) => {
+        fail(new Error(event.message || "牌靴概率子 Worker 无法启动"));
+      });
+      workers.push(worker);
+    }
+
+    for (const worker of workers) dispatch(worker);
+  });
+}
+
+function mergePreparedResults(results) {
+  const merged = [];
+  const keys = new Set();
+  for (const result of results) {
+    for (const item of result.rounds ?? []) {
+      const key = `${item.table_id}\u0000${item.session_id}\u0000${item.round_no}`;
+      if (keys.has(key)) throw new Error(`并行结果重复：${item.session_id} 牌靴第 ${item.round_no} 局`);
+      keys.add(key);
+      merged.push(item);
+    }
+  }
+  // 这里排序只是让结构化数据稳定、便于日志复核；最终资金顺序由原始 CSV
+  // 的 started_at/行顺序决定，绝不使用子 Worker 的完成顺序。
+  merged.sort((left, right) => (
+    Number(left.table_id) - Number(right.table_id)
+      || Number(left.session_id) - Number(right.session_id)
+      || Number(left.round_no) - Number(right.round_no)
+  ));
+  return { rounds: merged };
+}
+
+/* ----------------------------- 主流程 ----------------------------- */
+
 const ready = init();
 
 ready
@@ -73,65 +387,59 @@ self.addEventListener("message", async (event) => {
   if (!new Set(["replay", "simulate"]).has(event.data?.type)) return;
 
   try {
-    // 同一 Worker 可能在 ready 消息发出前收到请求，所以这里再次 await 是
-    // 必要的同步屏障，而不是重复初始化 WASM。
     await ready;
     const { config } = event.data;
-    // 新页面传递 ArrayBuffer 以避免复制大型 CSV；保留 csvText 分支，使浏览器
-    // 缓存中的旧页面脚本仍可调用新版 Worker。
-    // 旧页面在新 Worker 上运行时可能没有这两个后来新增的边注字段。
-    // JavaScript 的 undefined 传给 Rust f64 会变成 NaN。此处沿用旧版语义：
-    // 边注门槛跟随主注门槛，边注限额跟随单局金额上限。
-    const minimumSideBetEv = finiteNumberOr(
-      config.minimumSideBetEv,
-      config.minimumEffectiveEv,
-    );
-    const sideBetLimit = finiteNumberOr(config.sideBetLimit, config.maxRoundStake);
-    const sideBetRoundLimits = normalizedSideBetRoundLimits(config);
-    // 新字段缺失时关闭多注，保证旧页面仍然只选择一个最优目标。
-    const allowMultipleBets = Boolean(config.allowMultipleBets);
     const started = performance.now();
-    // Rust 入口只接收简单参数；边注限制对象在这里序列化成稳定 JSON，
-    // 再由 Rust 反序列化为强类型 SideBetRoundLimits。
-    const commonArguments = [
-      config.decks,
-      config.rebateRate,
-      config.minimumEffectiveEv,
-      config.bankroll,
-      config.maxFraction,
-      config.maxRoundStake,
-      config.tableLimit,
-      config.payoutRule,
-      config.stakeStrategy,
-      config.strategyParameter,
-      minimumSideBetEv,
-      sideBetLimit,
-      JSON.stringify(sideBetRoundLimits),
-      allowMultipleBets,
-    ];
-    let json;
+    let csvText;
+
     if (event.data.type === "simulate") {
       const { shoes, maxRoundsPerShoe, seed } = event.data.simulation;
-      json = simulateBaccaratShoesWithSideBetLimits(
-        shoes,
-        maxRoundsPerShoe,
-        seed,
-        ...commonArguments,
-      );
+      self.postMessage({ type: "progress", phase: "generate", completed: 0, total: shoes });
+      csvText = generateBaccaratCsv(shoes, maxRoundsPerShoe, seed, config.decks);
     } else {
-      // 新页面传递 ArrayBuffer 以避免复制大型 CSV；保留 csvText 分支，使浏览器
-      // 缓存中的旧页面脚本仍可调用新版 Worker。
-      const csvText = typeof event.data.csvText === "string"
+      csvText = typeof event.data.csvText === "string"
         ? event.data.csvText
         : new TextDecoder("utf-8").decode(event.data.csvBuffer);
-      json = replayBaccaratCsvWithSideBetLimits(csvText, ...commonArguments);
     }
-    // Rust 返回字符串 JSON，Worker 在边界处解析一次，主线程收到普通对象后
-    // 可以直接渲染，不需要了解 wasm-bindgen 的返回类型。
+
+    const shards = splitCsvIntoShards(
+      csvText,
+      workerCountFor(Math.max(1, Number(config.requestedWorkerCount) || 4)),
+    );
+    self.postMessage({
+      type: "progress",
+      phase: "probability",
+      completed: 0,
+      total: shards.length,
+      workerCount: workerCountFor(shards.length),
+    });
+
+    const preparedResults = await runShardPool(
+      shards,
+      config.decks,
+      (completed, total, workerCount) => self.postMessage({
+        type: "progress",
+        phase: "probability",
+        completed,
+        total,
+        workerCount,
+      }),
+    );
+    const preparedWeightsJson = JSON.stringify(mergePreparedResults(preparedResults));
+
+    self.postMessage({ type: "progress", phase: "settlement" });
+    const reportJson = replayBaccaratCsvWithPreparedWeights(
+      csvText,
+      ...commonArguments(config),
+      preparedWeightsJson,
+    );
+
     self.postMessage({
       type: "complete",
-      report: JSON.parse(json),
+      report: JSON.parse(reportJson),
       elapsedMilliseconds: performance.now() - started,
+      workerCount: workerCountFor(shards.length),
+      shardCount: shards.length,
     });
   } catch (error) {
     self.postMessage({

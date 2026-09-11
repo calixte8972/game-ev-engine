@@ -82,6 +82,24 @@ pub enum StakeSizingStrategy {
         /// 希望单笔收益标准差占当前本金的比例。
         fraction: f64,
     },
+    /// 经典倍投：以配置的基础金额开始，上一笔输掉后下一笔乘以 2，赢或和局后复位。
+    ///
+    /// 这个策略不是凯利公式。它只在回放这种“有连续结果”的场景中递进；
+    /// 单局分析没有上一笔结果时，展示第一笔基础金额。
+    Martingale {
+        /// 第一个下注周期使用的基础金额。
+        amount: f64,
+    },
+    /// 反倍投（Paroli）：上一笔赢后下一笔乘以 2，输或和局后复位。
+    ReverseMartingale {
+        /// 第一个下注周期使用的基础金额。
+        amount: f64,
+    },
+    /// 达朗贝尔：输一笔增加一个基础单位，赢一笔减少一个基础单位，和局保持。
+    Dalembert {
+        /// 每一级增加或减少的基础金额单位。
+        amount: f64,
+    },
 }
 
 impl StakeSizingStrategy {
@@ -96,6 +114,9 @@ impl StakeSizingStrategy {
             Self::FixedBankrollFraction { .. } => "bankroll_fraction",
             Self::TargetExpectedProfit { .. } => "target_expected_profit",
             Self::TargetVolatility { .. } => "target_volatility",
+            Self::Martingale { .. } => "martingale",
+            Self::ReverseMartingale { .. } => "reverse_martingale",
+            Self::Dalembert { .. } => "dalembert",
         }
     }
 
@@ -141,6 +162,11 @@ impl StakeSizingStrategy {
                     0.0
                 }
             }
+            // 递进策略的第一笔使用基础金额；回放层会根据上一笔真实结果
+            // 再把这份报价乘以当前级数，并重新应用共同风险上限。
+            Self::Martingale { amount }
+            | Self::ReverseMartingale { amount }
+            | Self::Dalembert { amount } => amount / bankroll,
         }
     }
 
@@ -156,6 +182,9 @@ impl StakeSizingStrategy {
     pub const fn fixed_amount(self) -> Option<f64> {
         match self {
             Self::Fixed { amount } => Some(amount),
+            Self::Martingale { amount }
+            | Self::ReverseMartingale { amount }
+            | Self::Dalembert { amount } => Some(amount),
             _ => None,
         }
     }
@@ -167,7 +196,91 @@ impl StakeSizingStrategy {
             Self::CustomKelly { fraction }
             | Self::FixedBankrollFraction { fraction }
             | Self::TargetVolatility { fraction } => Some(fraction),
-            Self::Fixed { amount } | Self::TargetExpectedProfit { amount } => Some(amount),
+            Self::Fixed { amount }
+            | Self::TargetExpectedProfit { amount }
+            | Self::Martingale { amount }
+            | Self::ReverseMartingale { amount }
+            | Self::Dalembert { amount } => Some(amount),
+        }
+    }
+
+    /// 判断当前策略是否依赖前几笔的真实输赢。
+    pub const fn is_progression(self) -> bool {
+        matches!(
+            self,
+            Self::Martingale { .. } | Self::ReverseMartingale { .. } | Self::Dalembert { .. }
+        )
+    }
+}
+
+/// 递进策略需要的真实结算分类。
+///
+/// 这里故意使用“基础赔率结果”而不是“含返水后的最终金额”：返水可能让一笔
+/// 输注的最终亏损变小，但它仍然是一次输，不能被误判成倍投复位的赢。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressionOutcome {
+    /// 基础赔率产生正收益。
+    Win,
+    /// 基础赔率产生负收益。
+    Loss,
+    /// Push 或和局，按策略规则视为不改变方向的结果。
+    Push,
+}
+
+/// 一个下注目标当前处于递进策略的第几级。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StakeProgression {
+    level: u32,
+}
+
+impl StakeProgression {
+    /// 递进级数从 0 开始，表示基础金额。
+    pub const fn new() -> Self {
+        Self { level: 0 }
+    }
+
+    /// 返回当前级数，便于回放日志和单元测试审计。
+    pub const fn level(self) -> u32 {
+        self.level
+    }
+
+    /// 根据策略和级数返回基础报价的金额倍数。
+    ///
+    /// 倍率设置了一个很高的上限。这样即使连续输很多局，也不会因为 `2^n`
+    /// 溢出成无穷大；随后 KellyPolicy 仍会把实际金额限制在本金、单局和桌台上限内。
+    pub fn multiplier(self, strategy: StakeSizingStrategy) -> f64 {
+        const MAX_MULTIPLIER: f64 = 1_000_000.0;
+        match strategy {
+            StakeSizingStrategy::Martingale { .. }
+            | StakeSizingStrategy::ReverseMartingale { .. } => {
+                if self.level >= 20 {
+                    MAX_MULTIPLIER
+                } else {
+                    (2.0_f64.powi(self.level as i32)).min(MAX_MULTIPLIER)
+                }
+            }
+            StakeSizingStrategy::Dalembert { .. } => (1.0 + self.level as f64).min(MAX_MULTIPLIER),
+            _ => 1.0,
+        }
+    }
+
+    /// 用一笔真实结果推进下一个下注级数。
+    pub fn record(&mut self, strategy: StakeSizingStrategy, outcome: ProgressionOutcome) {
+        match strategy {
+            StakeSizingStrategy::Martingale { .. } => match outcome {
+                ProgressionOutcome::Loss => self.level = self.level.saturating_add(1),
+                ProgressionOutcome::Win | ProgressionOutcome::Push => self.level = 0,
+            },
+            StakeSizingStrategy::ReverseMartingale { .. } => match outcome {
+                ProgressionOutcome::Win => self.level = self.level.saturating_add(1),
+                ProgressionOutcome::Loss | ProgressionOutcome::Push => self.level = 0,
+            },
+            StakeSizingStrategy::Dalembert { .. } => match outcome {
+                ProgressionOutcome::Loss => self.level = self.level.saturating_add(1),
+                ProgressionOutcome::Win => self.level = self.level.saturating_sub(1),
+                ProgressionOutcome::Push => {}
+            },
+            _ => self.level = 0,
         }
     }
 }
@@ -269,7 +382,10 @@ impl KellyPolicy {
         table_limit: f64,
     ) -> Result<Self, KellyError> {
         validate_max_fraction(max_fraction)?;
-        if let StakeSizingStrategy::Fixed { amount } = strategy
+        if let StakeSizingStrategy::Fixed { amount }
+        | StakeSizingStrategy::Martingale { amount }
+        | StakeSizingStrategy::ReverseMartingale { amount }
+        | StakeSizingStrategy::Dalembert { amount } = strategy
             && (!amount.is_finite() || amount < 0.0)
         {
             return Err(KellyError::InvalidFixedStake { value: amount });
@@ -353,6 +469,17 @@ impl KellyPolicy {
     /// 返回边注单笔金额上限。
     pub const fn side_bet_limit(self) -> f64 {
         self.side_bet_limit
+    }
+
+    /// 返回主注/边注共同使用的单局资金上限。
+    ///
+    /// 递进策略在回放中会先根据级数放大基础报价，再调用这个方法重新收紧
+    /// 总风险，确保倍投不会绕过本金比例、单局金额或桌台金额上限。
+    pub(crate) fn combined_risk_limit(self, bankroll: f64) -> f64 {
+        (bankroll * self.max_fraction)
+            .min(self.max_round_stake)
+            .min(self.table_limit)
+            .min(bankroll)
     }
 
     /// 为一个已经确定方向的百家乐主注计算完整凯利报价。
@@ -716,10 +843,7 @@ impl KellyPolicy {
                 CombinedBetPlanAction::Skip { .. } => None,
             })
             .sum();
-        let common_limit = (bankroll * self.max_fraction)
-            .min(self.max_round_stake)
-            .min(self.table_limit)
-            .min(bankroll);
+        let common_limit = self.combined_risk_limit(bankroll);
         // 如果多个目标的独立报价合计超过同局预算，所有 Place 计划按同一比例
         // 缩小。按比例而不是按顺序截断，可以避免候选排列顺序决定谁拿到预算。
         let scale = if requested_total > common_limit && requested_total > 0.0 {
@@ -900,7 +1024,7 @@ impl CombinedBetPlan {
     }
 
     /// 将本计划的实际金额按组合风险比例缩放。
-    fn scale_amount(&mut self, scale: f64) {
+    pub(crate) fn scale_amount(&mut self, scale: f64) {
         let Some(quote) = self.quote else {
             return;
         };
@@ -1379,8 +1503,8 @@ impl Error for KellyError {}
 mod tests {
     use super::{
         BetPlanAction, BetPlanSkipReason, CombinedBetPlanAction, KellyOutcome, KellyPolicy,
-        StakeSizingStrategy, calculate_kelly_fraction, main_bet_kelly_outcomes,
-        side_bet_kelly_outcomes, side_bet_kelly_outcomes_with_rebate,
+        ProgressionOutcome, StakeProgression, StakeSizingStrategy, calculate_kelly_fraction,
+        main_bet_kelly_outcomes, side_bet_kelly_outcomes, side_bet_kelly_outcomes_with_rebate,
     };
     use crate::{
         BetTarget, BettingPolicy, MainBet, MainBetAnalysis, MainBetRules, OutcomeWeights,
@@ -1394,6 +1518,56 @@ mod tests {
 
     fn sample_weights() -> OutcomeWeights {
         OutcomeWeights::from_weights(6, 360, 240, 120).expect("测试权重应该构成完整分布")
+    }
+
+    #[test]
+    fn progression_strategies_follow_their_documented_sequences() {
+        let martingale = StakeSizingStrategy::Martingale { amount: 100.0 };
+        let mut state = StakeProgression::new();
+        assert_close(state.multiplier(martingale), 1.0);
+        state.record(martingale, ProgressionOutcome::Loss);
+        assert_eq!(state.level(), 1);
+        assert_close(state.multiplier(martingale), 2.0);
+        state.record(martingale, ProgressionOutcome::Loss);
+        assert_close(state.multiplier(martingale), 4.0);
+        state.record(martingale, ProgressionOutcome::Win);
+        assert_eq!(state.level(), 0);
+
+        let reverse = StakeSizingStrategy::ReverseMartingale { amount: 100.0 };
+        state.record(reverse, ProgressionOutcome::Win);
+        assert_eq!(state.level(), 1);
+        assert_close(state.multiplier(reverse), 2.0);
+        state.record(reverse, ProgressionOutcome::Push);
+        assert_eq!(state.level(), 0);
+
+        let dalembert = StakeSizingStrategy::Dalembert { amount: 100.0 };
+        state.record(dalembert, ProgressionOutcome::Loss);
+        state.record(dalembert, ProgressionOutcome::Loss);
+        assert_eq!(state.level(), 2);
+        assert_close(state.multiplier(dalembert), 3.0);
+        state.record(dalembert, ProgressionOutcome::Win);
+        assert_eq!(state.level(), 1);
+    }
+
+    #[test]
+    fn progression_quote_starts_from_the_configured_base_amount() {
+        let strategy = StakeSizingStrategy::Martingale { amount: 100.0 };
+        let policy = KellyPolicy::with_strategy(strategy, 1.0, 1_000.0, 1_000.0)
+            .expect("倍投的基础金额应该可以创建策略");
+        let quote = policy
+            .quote(
+                sample_weights(),
+                MainBetRules::standard(),
+                RebateRule::None,
+                MainBet::Banker,
+                1_000.0,
+            )
+            .expect("倍投第一笔应该可以报价");
+
+        assert_eq!(strategy.as_str(), "martingale");
+        assert_eq!(strategy.fixed_amount(), Some(100.0));
+        assert_close(quote.amount(), 100.0);
+        assert_close(quote.strategy_fraction(), 0.1);
     }
 
     #[test]

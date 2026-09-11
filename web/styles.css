@@ -3487,3 +3487,21 @@ footer {
     transition-duration: 0.01ms !important;
   }
 }
+/* 本金耗尽时把“提前停止”作为结果状态突出显示，避免用户误以为剩余局数没有加载。 */
+.replay-stop-notice {
+  margin: 0.8rem 0 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid rgba(176, 74, 66, 0.34);
+  border-radius: 0.85rem;
+  background: rgba(176, 74, 66, 0.08);
+  color: #8f302b;
+  font-weight: 700;
+}
+
+.field-help {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--muted, #64736d);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}

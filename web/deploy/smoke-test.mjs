@@ -4,9 +4,12 @@ import { fileURLToPath } from "node:url";
 
 import {
   analyzeBaccaratStrategy,
+  generateBaccaratCsv,
   initSync,
+  prepareBaccaratCsvWeights,
   replayBaccaratCsv,
   replayBaccaratCsvWithSideBetLimits,
+  replayBaccaratCsvWithPreparedWeights,
   simulateBaccaratShoesWithSideBetLimits,
 } from "../pkg/game_ev_engine.js";
 import { buildBankrollSeries, sampleBankrollSeries } from "../bankroll-chart.js";
@@ -23,6 +26,7 @@ const webDirectory = resolve(deployDirectory, "..");
 const wasmBytes = readFileSync(resolve(webDirectory, "pkg/game_ev_engine_bg.wasm"));
 const pageHtml = readFileSync(resolve(webDirectory, "index.html"), "utf8");
 const replayWorkerSource = readFileSync(resolve(webDirectory, "replay-worker.js"), "utf8");
+const replayShardWorkerSource = readFileSync(resolve(webDirectory, "replay-shard-worker.js"), "utf8");
 initSync({ module: wasmBytes });
 
 // min=0.01 与 step=100 会让 10000 产生 stepMismatch，浏览器会直接阻止
@@ -33,6 +37,12 @@ if (!/<input id="bankroll"[^>]*step="0\.01"/.test(pageHtml)) {
 
 if (!/id="allow-multiple-bets"/.test(pageHtml)) {
   throw new Error("页面没有同局多下注开关");
+}
+
+for (const strategy of ["martingale", "reverse_martingale", "dalembert"]) {
+  if (!new RegExp(`value="${strategy}"`).test(pageHtml)) {
+    throw new Error(`页面没有完整接入递进策略：${strategy}`);
+  }
 }
 
 for (const id of ["simulation-shoes", "simulation-rounds", "simulation-seed"]) {
@@ -82,6 +92,9 @@ if (!/id="replay-analysis-charts"/.test(pageHtml)
 if (!/id="bet-count-grid"/.test(pageHtml)) {
   throw new Error("回放结果缺少各下注类型的下注笔数统计");
 }
+if (!/id="replay-stop-notice"/.test(pageHtml)) {
+  throw new Error("回放结果缺少本金耗尽后的提前停止提示");
+}
 
 // 资金曲线不能放在默认 hidden 的回放结果容器中，否则用户第一次打开
 // 页面时完全看不到这个功能，也不知道上传 CSV 后会生成图表。
@@ -110,13 +123,22 @@ if (!/id="replay-pagination"/.test(pageHtml)
 }
 
 const appSource = readFileSync(resolve(webDirectory, "app.js"), "utf8");
+for (const strategy of ["martingale", "reverse_martingale", "dalembert"]) {
+  if (!new RegExp(`${strategy}:`).test(appSource)) {
+    throw new Error(`前端没有为递进策略提供参数配置：${strategy}`);
+  }
+}
 if (!/max:\s*20_000/.test(appSource)) {
   throw new Error("随机回测的 JavaScript 校验上限必须与输入框保持为 20,000");
 }
 if (!/data-replay-source="simulation"/.test(pageHtml)
     || !/type:\s*"simulate"/.test(appSource)
-    || !/simulateBaccaratShoesWithSideBetLimits/.test(replayWorkerSource)) {
-  throw new Error("随机生成入口没有完整连接到 WASM 回测 Worker");
+    || !/generateBaccaratCsv/.test(replayWorkerSource)
+    || !/prepareBaccaratCsvWeights/.test(replayShardWorkerSource)
+    || !/replayBaccaratCsvWithPreparedWeights/.test(replayWorkerSource)
+    || !/Math\.min\(8, taskCount/.test(replayWorkerSource)
+    || !/new Worker\(\s*new URL\("\.\/replay-shard-worker\.js/.test(replayWorkerSource)) {
+  throw new Error("随机生成入口没有完整连接到最多 8 个 Worker 的 WASM 回测架构");
 }
 if (!/200 \* 1024 \* 1024/.test(appSource)
     || !/最大 200 MB/.test(pageHtml)) {
@@ -302,6 +324,24 @@ const simulatedReplay = JSON.parse(
     false,
   ),
 );
+const generatedCsv = generateBaccaratCsv(2, 3, "42", 8);
+const preparedWeights = JSON.parse(prepareBaccaratCsvWeights(generatedCsv, 8));
+const parallelReplay = JSON.parse(
+  replayBaccaratCsvWithPreparedWeights(
+    generatedCsv, 8, 0.009, 0, 10_000, 0.05, 500, 500,
+    "standard", "fixed", 100, 0, 100,
+    JSON.stringify(customRoundLimits),
+    false,
+    JSON.stringify(preparedWeights),
+  ),
+);
+const martingaleAnalysis = JSON.parse(
+  analyzeBaccaratStrategy(
+    "consumed", 8, "", 0, -1, 1_000, 1, 1_000, 1_000,
+    "standard", "martingale", 100, -1, 100,
+    false,
+  ),
+);
 
 if (tinyReplay.summary.replayed_rounds !== 2) {
   throw new Error("WASM CSV 回放没有完成两局测试数据");
@@ -317,6 +357,17 @@ if (simulatedReplay.dataset.session_count !== 2
     || simulatedReplay.quality.fully_observable_sessions !== 2
     || simulatedReplay.summary.replayed_rounds !== 6) {
   throw new Error("WASM 随机牌靴入口没有生成并回测指定的牌靴数与子局数");
+}
+if (parallelReplay.summary.replayed_rounds !== simulatedReplay.summary.replayed_rounds
+    || parallelReplay.summary.placed_bet_count !== simulatedReplay.summary.placed_bet_count
+    || Math.abs(parallelReplay.summary.final_bankroll - simulatedReplay.summary.final_bankroll) > 1e-9
+    || Math.abs(parallelReplay.summary.total_profit - simulatedReplay.summary.total_profit) > 1e-9
+    || JSON.stringify(parallelReplay.bets) !== JSON.stringify(simulatedReplay.bets)) {
+  throw new Error("并行概率预计算与原顺序回放的本金、下注或明细结果不一致");
+}
+if (martingaleAnalysis.stake_strategy !== "martingale"
+    || martingaleAnalysis.recommendation.suggested_amount !== 100) {
+  throw new Error("倍投策略没有通过 WASM 分析接口返回基础下注金额");
 }
 
 const placedBetCountFromCategories = Object.values(tinyReplay.summary.placed_bets)

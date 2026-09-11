@@ -14,6 +14,8 @@
 
 use std::{error::Error, fmt};
 
+use serde::{Deserialize, Serialize};
+
 /// 一局百家乐最多使用的牌数。
 const MAX_ROUND_CARDS: u8 = 6;
 
@@ -21,7 +23,7 @@ const MAX_ROUND_CARDS: u8 = 6;
 ///
 /// 三种结果共用六张有序抽牌序列的总权重作为分母，只有权重和等于
 /// 共同分母时才能成功构造该类型。
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Deserialize, Serialize)]
 pub struct OutcomeWeights {
     /// 所有闲赢终局对应的六张有序序列数量。
     player: u64,
