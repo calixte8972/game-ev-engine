@@ -30,11 +30,15 @@ mod ev;
 mod probability;
 mod rebate;
 mod replay;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use replay::{StreamingReplay, inspect_stream_shoe, prepare_stream_shoe};
 mod risk;
 mod round;
 mod rule;
 mod side_bet;
 mod simulation;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use simulation::BaccaratShoeGenerator;
 mod snapshot;
 mod strategy;
 

@@ -516,7 +516,7 @@
                   <input id="parallel-worker-count" type="number" min="1" max="8" step="1" value="4" disabled />
                 </label>
               </div>
-              <p class="replay-execution-note">并行数会按设备资源下调；超过约 12,000 局、文件较大或并行出错时，自动改为单线程完整回放，并显示原因。两种方式均按原顺序结算本金。</p>
+              <p class="replay-execution-note">并行数会按设备资源下调；随机牌靴按需生成，精简 CSV 按流读取。回测按整靴分批、限制在途任务，并在同一个资金会话中按原顺序结算。完整下注明细保存在本机浏览器，页面只读取当前页。</p>
             </div>
             <button id="replay-button" class="primary-button replay-button" type="button" disabled>
               开始策略回放

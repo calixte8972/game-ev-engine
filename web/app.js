@@ -16,6 +16,7 @@ import init, { analyzeBaccaratStrategy, analyzeBlackjack } from "./pkg/game_ev_e
 import { createBankrollChart } from "./bankroll-chart.js";
 import { createBetContributionCharts } from "./bet-contribution-charts.js";
 import { createReplayAnalysisCharts } from "./replay-analysis-charts.js";
+import { deleteReplayStore, openReplayStore, readReplayDetailPage } from "./replay-storage.js";
 
 const form = document.querySelector("#analysis-form");
 const analyzeButton = document.querySelector("#analyze-button");
@@ -234,6 +235,11 @@ let currentCsvFile = null;
 let replaySourceMode = "csv";
 let currentReplayReport = null;
 let currentReplayPage = 1;
+let activeReplayRunId = null;
+let replayDetailStore = null;
+let replayDetailSequence = 0;
+let replayDetailWriteTail = Promise.resolve();
+let replayDetailRenderToken = 0;
 let activeGame = "baccarat";
 let activeBaccaratView = "analysis";
 
@@ -245,7 +251,7 @@ function resetReplayWorker() {
   // 回收整块计算内存，防止连续回测累计保留大内存。
   replayWorker?.terminate();
   replayWorkerReady = false;
-  replayWorker = new Worker(new URL("./replay-worker.js?v=22", import.meta.url), { type: "module" });
+  replayWorker = new Worker(new URL("./replay-worker.js?v=23", import.meta.url), { type: "module" });
   replayWorker.addEventListener("message", handleReplayMessage);
   replayWorker.addEventListener("error", handleReplayError);
   replayWorker.addEventListener("messageerror", handleReplayError);
@@ -940,18 +946,33 @@ function outcomeDetailCell(bet) {
   return cell;
 }
 
-function renderReplayDetails() {
-  // 回放报告保留全部下注明细；分页只控制当前创建多少个 <tr>，不改变报告
-  // 本身，也不改变图表的完整数据。这样“显示 500 条”不再等于“只有 500 条”。
+async function renderReplayDetails() {
+  // 大回测的明细已按批写入 IndexedDB；这里一次只读取当前页，避免把百万条
+  // 下注重新装回 JavaScript 堆，也避免表格一次创建百万个 DOM 节点。
   if (!currentReplayReport) return;
-
-  const { bets, omitted_bet_details: omittedBetDetails, summary } = currentReplayReport;
+  const token = ++replayDetailRenderToken;
+  const report = currentReplayReport;
+  const { bets, omitted_bet_details: omittedBetDetails, summary } = report;
+  const sourceBets = Array.isArray(bets) && bets.length > 0 ? bets : null;
+  const detailCount = sourceBets ? sourceBets.length : Number(report.detail_count ?? summary.placed_bet_count ?? 0);
   const pageSize = Number.parseInt(replayPageSize.value, 10);
-  const totalPages = Math.max(1, Math.ceil(bets.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(detailCount / pageSize));
   currentReplayPage = Math.min(Math.max(currentReplayPage, 1), totalPages);
   const startIndex = (currentReplayPage - 1) * pageSize;
-  const endIndex = Math.min(startIndex + pageSize, bets.length);
-  const visibleBets = bets.slice(startIndex, endIndex);
+  const endIndex = Math.min(startIndex + pageSize, detailCount);
+  let visibleBets = sourceBets ? sourceBets.slice(startIndex, endIndex) : [];
+
+  if (!sourceBets && detailCount > 0 && report.run_id) {
+    setText("#detail-note", "正在从浏览器本地存储读取当前页明细…");
+    try {
+      visibleBets = await readReplayDetailPage(report.run_id, startIndex, pageSize);
+    } catch (error) {
+      if (token !== replayDetailRenderToken || currentReplayReport !== report) return;
+      setText("#detail-note", `明细读取失败：${error?.message ?? error}`);
+      visibleBets = [];
+    }
+  }
+  if (token !== replayDetailRenderToken || currentReplayReport !== report) return;
 
   setText("#replayed-rounds", integerFormatter.format(summary.replayed_rounds));
   replayBody.replaceChildren();
@@ -984,12 +1005,14 @@ function renderReplayDetails() {
     cell.colSpan = 10;
     cell.textContent = summary.replayed_rounds === 0
       ? "没有可从第 1 局完整重建的牌靴，请查看隔离局数。"
-      : "没有任何一局同时通过 EV 门槛和所选资金策略检查。";
+      : detailCount === 0
+        ? "没有任何一局同时通过 EV 门槛和所选资金策略检查。"
+        : "当前页没有可读取的明细，请重新运行回测。";
     row.append(cell);
     replayBody.append(row);
   }
 
-  replayPagination.hidden = bets.length === 0;
+  replayPagination.hidden = detailCount === 0;
   replayFirstPage.disabled = currentReplayPage === 1;
   replayPreviousPage.disabled = currentReplayPage === 1;
   replayNextPage.disabled = currentReplayPage === totalPages;
@@ -997,21 +1020,17 @@ function renderReplayDetails() {
   replayPageStatus.textContent = `第 ${integerFormatter.format(currentReplayPage)} / ${integerFormatter.format(totalPages)} 页`;
 
   if (omittedBetDetails > 0) {
-    setText(
-      "#detail-note",
-      `当前报告来自旧版回放核心，仍有 ${integerFormatter.format(omittedBetDetails)} 笔明细未包含；请重新运行回放。`,
-    );
-  } else if (bets.length === 0) {
+    setText("#detail-note", `仍有 ${integerFormatter.format(omittedBetDetails)} 笔明细未包含；请重新运行回放。`);
+  } else if (detailCount === 0) {
     setText("#detail-note", "本次策略没有产生可下注明细。");
   } else if (totalPages === 1) {
-    setText("#detail-note", `共 ${integerFormatter.format(bets.length)} 笔下注，已显示全部明细。`);
+    setText("#detail-note", `共 ${integerFormatter.format(detailCount)} 笔下注，已显示全部明细。`);
   } else {
     setText(
       "#detail-note",
-      `共 ${integerFormatter.format(bets.length)} 笔下注；当前显示第 ${integerFormatter.format(startIndex + 1)}–${integerFormatter.format(endIndex)} 笔，可翻页查看全部明细。`,
+      `共 ${integerFormatter.format(detailCount)} 笔下注；当前显示第 ${integerFormatter.format(startIndex + 1)}–${integerFormatter.format(endIndex)} 笔，可翻页查看全部明细。`,
     );
   }
-
   replayDetailWrap.scrollTop = 0;
 }
 
@@ -1199,7 +1218,8 @@ replayNextPage.addEventListener("click", () => {
 replayLastPage.addEventListener("click", () => {
   if (!currentReplayReport) return;
   const pageSize = Number.parseInt(replayPageSize.value, 10);
-  currentReplayPage = Math.max(1, Math.ceil(currentReplayReport.bets.length / pageSize));
+  const detailCount = Number(currentReplayReport.detail_count ?? currentReplayReport.bets?.length ?? 0);
+  currentReplayPage = Math.max(1, Math.ceil(detailCount / pageSize));
   renderReplayDetails();
 });
 
@@ -1217,8 +1237,19 @@ replayButton.addEventListener("click", async () => {
   try {
     // 配置在主线程读取一次，再与 CSV 文本一起传给 Worker；Worker 不直接访问
     // DOM，因此所有页面输入都必须在这里变成可结构化传输的普通数据。
+    const previousRunId = activeReplayRunId;
+    activeReplayRunId = `run-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    replayDetailStore?.close();
+    replayDetailStore = await openReplayStore(activeReplayRunId);
+    replayDetailSequence = 0;
+    replayDetailWriteTail = Promise.resolve();
+    globalThis.__replayDetailWriteTail = replayDetailWriteTail;
+    // 只清理本应用上一轮生成的回测库；用户的其他 IndexedDB 不会被触碰。
+    if (previousRunId && previousRunId !== activeReplayRunId) await deleteReplayStore(previousRunId);
+
     const config = {
       ...strategyConfig(),
+      runId: activeReplayRunId,
       parallelReplay: parallelReplay.checked,
       parallelWorkerCount: parallelReplay.checked
         ? readNumber("#parallel-worker-count", "并行数", { min: 1, max: 8, integer: true }) : 1,
@@ -1233,11 +1264,10 @@ replayButton.addEventListener("click", async () => {
         throw new Error("CSV 超过 200 MB；请先按牌靴拆分后再回放。");
       }
       setReplayRunning(true, "正在读取 CSV…");
-      // ArrayBuffer 可以通过 transferable 直接把所有权交给 Worker，不必像字符串
-      // 那样在主线程与 Worker 之间复制一份；大文件回放时可显著降低峰值内存。
-      const csvBuffer = await currentCsvFile.arrayBuffer();
       setReplayRunning(true, "正在重建牌靴并计算策略…");
-      replayWorker.postMessage({ type: "replay", csvBuffer, config }, [csvBuffer]);
+      // File 可结构化传给 Worker；并行回放时 Worker 会按 Blob 流逐行拆分精简 CSV，
+      // 不在主线程复制整份文件；带完整来源键的数据库格式仍由 Rust 完整校验。
+      replayWorker.postMessage({ type: "replay", csvFile: currentCsvFile, config });
     }
   } catch (error) {
     setReplayRunning(false, "回放失败");
@@ -1253,6 +1283,16 @@ function handleReplayMessage(event) {
   // 协调 Worker 回传 ready/progress/complete/error。页面只展示进度和最终报告，
   // 不在主线程重新运行 CSV 回放。
   const message = event.data;
+  if (message.type === "detail-batch") {
+    persistReplayDetails(message);
+    return;
+  }
+  if (message.type === "detail-reset") {
+    replayDetailSequence = 0;
+    replayDetailWriteTail = replayDetailStore?.clearTemporary?.() ?? Promise.resolve();
+    globalThis.__replayDetailWriteTail = replayDetailWriteTail;
+    return;
+  }
   if (message.type === "ready") {
     replayWorkerReady = true;
     if (replayStatus.textContent === "等待选择文件" && replaySourceMode === "simulation") {
@@ -1265,13 +1305,24 @@ function handleReplayMessage(event) {
   }
 
   if (message.type === "complete") {
-    const executionLabel = message.parallel
-      ? `${message.workerCount ?? 1} 个并行 Worker`
-      : "单线程";
-    setReplayRunning(false, `回放完成 · ${executionLabel}`);
-    releaseReplayWorker();
-    renderReplay(message.report, message.elapsedMilliseconds);
-    if (message.fallbackReason) replayStatus.textContent += ` · ${message.fallbackReason}`;
+    const renderCompleted = () => {
+      const executionLabel = message.parallel
+        ? `${message.workerCount ?? 1} 个并行 Worker`
+        : "单线程";
+      setReplayRunning(false, `回放完成 · ${executionLabel}`);
+      releaseReplayWorker();
+      renderReplay(message.report, message.elapsedMilliseconds);
+      if (message.fallbackReason) replayStatus.textContent += ` · ${message.fallbackReason}`;
+    };
+    // 有分批明细时先等待 IndexedDB 写入完成；旧报告没有这个 Promise，保持
+    // 原来的同步渲染行为，兼容外部嵌入页面和无明细的快速分析。
+    const pending = globalThis.__replayDetailWriteTail;
+    if (pending) void pending.then(renderCompleted).catch((error) => {
+      setReplayRunning(false, "回放完成但明细保存失败");
+      showError(replayError, `完整明细未能保存：${error?.message ?? error}`);
+      releaseReplayWorker();
+    });
+    else renderCompleted();
     return;
   }
 
@@ -1301,6 +1352,19 @@ function handleReplayMessage(event) {
     showError(replayError, message.message);
     releaseReplayWorker();
   }
+}
+
+/** 将一个小批次明细写入当前回测库；写入链提供完成时的存储屏障。 */
+function persistReplayDetails(message) {
+  if (!replayDetailStore || message.runId !== activeReplayRunId) return;
+  const rows = (message.details ?? []).map((bet) => ({
+    id: replayDetailSequence++,
+    bet,
+  }));
+  if (!rows.length) return;
+  replayDetailWriteTail = replayDetailWriteTail
+    .then(() => replayDetailStore.put("details", rows));
+  globalThis.__replayDetailWriteTail = replayDetailWriteTail;
 }
 
 function handleReplayError(event) {

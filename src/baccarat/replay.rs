@@ -773,7 +773,7 @@ pub struct CsvBetDetail {
 /// 真正必需的只有牌靴、子局数和牌面。数据库完整格式中的来源键、桌台、时间和
 /// 结果码都保留为可选增强信息：有值时继续去重、排序和交叉校验，没有时则使用
 /// 默认桌台、CSV 原始行顺序以及 Rust 从牌面推导出的结果。
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 struct CsvRound {
     #[serde(default, rename = "__source_pk")]
     source_pk: Option<String>,
@@ -791,6 +791,9 @@ struct CsvRound {
     raw_cards: String,
     #[serde(default)]
     result_code: Option<u64>,
+    /// 分批传输时保留原始 CSV 行号；普通 CSV 没有该列时由读取器补齐。
+    #[serde(default)]
+    source_order: Option<usize>,
 }
 
 const fn default_table_id() -> u64 {
@@ -902,6 +905,10 @@ pub fn prepare_csv_weights(
                     message: error.to_string(),
                 }
             })?;
+            // 缓存只服务当前小批次，不能随百万局输入无限增长。
+            if probability_cache.len() >= 512 {
+                probability_cache.clear();
+            }
             probability_cache.insert(card_counts, weights);
             weights
         };
@@ -991,6 +998,183 @@ fn build_replay_report(
     }
 }
 
+/// 单靴校验结果给浏览器做磁盘索引；昂贵枚举在后续有界 Worker 任务中执行。
+#[allow(dead_code)]
+pub(crate) fn inspect_stream_shoe(csv: &str) -> Result<String, String> {
+    let (rounds, dataset, mut quality) = load_rounds(csv).map_err(|e| e.to_string())?;
+    let (indices, _) = collect_eligible_indices(&rounds, &mut quality);
+    serde_json::to_string(&serde_json::json!({
+        "dataset": dataset, "quality": quality,
+        "eligible": !indices.is_empty(),
+        "all_have_time": indices.iter().all(|i| rounds[*i].has_started_at)
+    }))
+    .map_err(|e| e.to_string())
+}
+
+/// 权重保留为 Rust JSON 字符串，不让 JS Number 舍入 u64 枚举权重。
+#[derive(Deserialize, Serialize)]
+#[allow(dead_code)]
+struct StreamPacket {
+    source: CsvRound,
+    prepared: PreparedReplayWeight,
+    last_in_shoe: bool,
+}
+
+#[allow(dead_code)]
+pub(crate) fn prepare_stream_shoe(
+    csv: &str,
+    decks: u8,
+    timestamp_order: bool,
+) -> Result<String, String> {
+    let (rounds, _, mut quality) = load_rounds(csv).map_err(|e| e.to_string())?;
+    let (mut indices, sessions) = collect_eligible_indices(&rounds, &mut quality);
+    if sessions.len() != 1 {
+        return Err("概率任务必须是一副已校验的完整牌靴".into());
+    }
+    // 单靴任务里的记录未必已经按时间排列。主回放在多桌数据中使用的排序键
+    // 是“开局时间 -> 桌台 -> 牌靴 -> 局号”，这里必须使用同一套顺序，才能
+    // 保证某一靴的最后一局不会被错误地提前释放，后续局也不会重新从完整牌靴开始。
+    if timestamp_order {
+        indices.sort_by(|left, right| {
+            let left_round = &rounds[*left];
+            let right_round = &rounds[*right];
+            left_round
+                .started_at
+                .cmp(&right_round.started_at)
+                .then_with(|| left_round.table_id.cmp(&right_round.table_id))
+                .then_with(|| left_round.session_id.cmp(&right_round.session_id))
+                .then_with(|| left_round.round_no.cmp(&right_round.round_no))
+                .then_with(|| left_round.source_order.cmp(&right_round.source_order))
+        });
+    } else {
+        indices.sort_by_key(|i| rounds[*i].source_order);
+    }
+    let mut reader = csv::Reader::from_reader(csv.trim_start_matches('\u{feff}').as_bytes());
+    let sources = reader
+        .deserialize::<CsvRound>()
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let mut sources: Vec<_> = sources.into_iter().map(Some).collect();
+    let mut shoe = Shoe::new(decks).map_err(|e| e.to_string())?;
+    let mut output = Vec::with_capacity(indices.len());
+    for (position, &index) in indices.iter().enumerate() {
+        let round = &rounds[index];
+        let (weights, side_weights) =
+            calculate_main_and_side_outcomes(&shoe).map_err(|e| e.to_string())?;
+        let packet = StreamPacket {
+            source: sources[index].take().expect("每行只生成一次"),
+            prepared: PreparedReplayWeight {
+                table_id: round.table_id,
+                session_id: round.session_id,
+                round_no: round.round_no,
+                weights,
+                side_weights,
+            },
+            last_in_shoe: position + 1 == indices.len(),
+        };
+        output.push(serde_json::json!({
+            "source_order": round.source_order,
+            "payload": serde_json::to_string(&packet).map_err(|e| e.to_string())?
+        }));
+        shoe.remove_many(round.cards.as_deref().expect("已校验牌面"))
+            .map_err(|e| e.to_string())?;
+    }
+    serde_json::to_string(&output).map_err(|e| e.to_string())
+}
+
+/// 持久会话只保存资金状态，push 后由 JS 将这批明细落盘，不累计百万条 Vec。
+#[allow(dead_code)]
+pub(crate) struct StreamingReplay {
+    config: CsvReplayConfig,
+    state: Option<ReplayState>,
+}
+
+#[allow(dead_code)]
+impl StreamingReplay {
+    pub(crate) fn new(config: CsvReplayConfig, sessions: u64) -> Self {
+        Self {
+            config,
+            state: Some(ReplayState::new(config, sessions)),
+        }
+    }
+
+    pub(crate) fn push(&mut self, json: &str) -> Result<String, String> {
+        let packets: Vec<StreamPacket> = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        if packets.len() > 256 {
+            return Err("结算批次不能超过 256 局".into());
+        }
+        let mut rounds = Vec::with_capacity(packets.len());
+        let mut prepared = PreparedReplayWeights::default();
+        for packet in &packets {
+            let source = &packet.source;
+            let mut quality = CsvQualityReport::default();
+            let (cards, outcome, banker_total, error) = validate_source_round(source, &mut quality);
+            if error.is_some() || cards.is_none() {
+                return Err("流式结算收到未通过校验的牌局".into());
+            }
+            if (source.table_id, source.session_id, source.round_no)
+                != (
+                    packet.prepared.table_id,
+                    packet.prepared.session_id,
+                    packet.prepared.round_no,
+                )
+            {
+                return Err("牌局和权重的业务键不一致".into());
+            }
+            let source_order = source.source_order.unwrap_or(0);
+            let started_at = source
+                .started_at
+                .clone()
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| format!("CSV 第 {} 行", source_order + 2));
+            rounds.push(LoadedRound {
+                table_id: source.table_id,
+                session_id: source.session_id,
+                round_no: source.round_no,
+                started_at,
+                source_order,
+                has_started_at: source
+                    .started_at
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty()),
+                cards,
+                outcome,
+                banker_total,
+                validation_error: None,
+            });
+            prepared.rounds.push(packet.prepared.clone());
+        }
+        let map = prepared_weight_map(prepared).map_err(|e| e.to_string())?;
+        // 出错后不允许沿用可能只结算了一半的状态；调用者必须终止本次运行。
+        let state = self.state.take().ok_or("回放会话已经结束或失败")?;
+        let ordered = rounds.iter().collect::<Vec<_>>();
+        let (mut state, bets) = settle_replay_batch(&ordered, self.config, state, Some(&map))
+            .map_err(|e| e.to_string())?;
+        for packet in &packets {
+            if packet.last_in_shoe {
+                state.release_shoe((packet.source.table_id, packet.source.session_id));
+            }
+        }
+        let output =
+            serde_json::to_string(&serde_json::json!({ "summary": state.summary, "bets": bets }))
+                .map_err(|e| e.to_string())?;
+        self.state = Some(state);
+        Ok(output)
+    }
+
+    pub(crate) fn finish(&mut self) -> Result<String, String> {
+        let state = self.state.take().ok_or("回放会话已经结束或失败")?;
+        let report = build_replay_report(
+            self.config,
+            CsvDatasetReport::default(),
+            CsvQualityReport::default(),
+            state.summary,
+            Vec::new(),
+        );
+        serde_json::to_string(&report).map_err(|e| e.to_string())
+    }
+}
+
 fn prepared_weight_map(
     prepared: PreparedReplayWeights,
 ) -> Result<HashMap<ReplayRoundKey, (OutcomeWeights, SideBetWeights)>, CsvReplayError> {
@@ -1040,14 +1224,14 @@ fn load_rounds(
         let source = row.map_err(|error| CsvReplayError::Csv(error.to_string()))?;
         dataset.total_rows += 1;
 
-        if let Some(source_pk) = source
+        let duplicate_source_pk = source
             .source_pk
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-        {
-            if !source_keys.insert(source_pk.to_owned()) {
-                dataset.duplicate_source_pk_rows += 1;
-            }
+            .map(|source_pk| !source_keys.insert(source_pk.to_owned()))
+            .unwrap_or(false);
+        if duplicate_source_pk {
+            dataset.duplicate_source_pk_rows += 1;
         }
         if !round_keys.insert((source.table_id, source.session_id, source.round_no)) {
             dataset.duplicate_round_keys += 1;
@@ -1100,7 +1284,7 @@ fn load_rounds(
             started_at: started_at
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("CSV 第 {} 行", source_order + 2)),
-            source_order,
+            source_order: source.source_order.unwrap_or(source_order),
             has_started_at: started_at.is_some(),
             cards,
             outcome,
@@ -1293,15 +1477,73 @@ fn collect_eligible_indices(
     (eligible_indices, eligible_sessions)
 }
 
-/// 顺序资金回放的唯一实现；`prepared_weights` 为空时兼容旧的单 Worker 路径。
+/// 跨批次持有的唯一资金状态。概率缓存有界，明细由调用者及时排出。
+pub(crate) struct ReplayState {
+    shoes: HashMap<(u64, u64), Shoe>,
+    probability_cache: HashMap<[u8; Card::DISTINCT_COUNT], (OutcomeWeights, SideBetWeights)>,
+    summary: CsvReplaySummary,
+    current_bankroll: f64,
+    peak_bankroll: f64,
+    effective_ev_sum: f64,
+    progression_states: HashMap<(u64, u64, &'static str), StakeProgression>,
+}
+
+impl ReplayState {
+    fn new(config: CsvReplayConfig, sessions: u64) -> Self {
+        Self {
+            shoes: HashMap::new(),
+            probability_cache: HashMap::new(),
+            summary: CsvReplaySummary {
+                replayed_sessions: sessions,
+                initial_bankroll: config.initial_bankroll,
+                final_bankroll: config.initial_bankroll,
+                maximum_bankroll: config.initial_bankroll,
+                minimum_bankroll: config.initial_bankroll,
+                ..Default::default()
+            },
+            current_bankroll: config.initial_bankroll,
+            peak_bankroll: config.initial_bankroll,
+            effective_ev_sum: 0.0,
+            progression_states: HashMap::new(),
+        }
+    }
+
+    /// 完整牌靴最后一局结算后释放牌靴和倍投状态；不重置共享本金。
+    #[allow(dead_code)]
+    fn release_shoe(&mut self, key: (u64, u64)) {
+        self.shoes.remove(&key);
+        self.progression_states
+            .retain(|(table, shoe, _), _| (*table, *shoe) != key);
+    }
+}
+
+/// 旧的一次性入口与新的流式入口共用这个结算函数，避免维护两份金额算法。
 fn replay_rounds_with_prepared_weights(
     rounds: &[LoadedRound],
     config: CsvReplayConfig,
     quality: &mut CsvQualityReport,
     prepared_weights: Option<&HashMap<ReplayRoundKey, (OutcomeWeights, SideBetWeights)>>,
 ) -> Result<(CsvReplaySummary, Vec<CsvBetDetail>), CsvReplayError> {
-    let (eligible_indices, eligible_sessions) = collect_eligible_indices(rounds, quality);
+    let (indices, sessions) = collect_eligible_indices(rounds, quality);
+    let ordered = indices
+        .iter()
+        .map(|index| &rounds[*index])
+        .collect::<Vec<_>>();
+    let (state, details) = settle_replay_batch(
+        &ordered,
+        config,
+        ReplayState::new(config, sessions.len() as u64),
+        prepared_weights,
+    )?;
+    Ok((state.summary, details))
+}
 
+fn settle_replay_batch(
+    rounds: &[&LoadedRound],
+    config: CsvReplayConfig,
+    state: ReplayState,
+    prepared_weights: Option<&HashMap<ReplayRoundKey, (OutcomeWeights, SideBetWeights)>>,
+) -> Result<(ReplayState, Vec<CsvBetDetail>), CsvReplayError> {
     // 通过资格筛选后，构造本次回放固定不变的规则对象。真正随每局变化的只有
     // Shoe、当前 bankroll、局号过滤结果和概率缓存键。
     let rules = config.rules;
@@ -1321,43 +1563,17 @@ fn replay_rounds_with_prepared_weights(
     .and_then(|policy| policy.with_side_bet_limit(config.side_bet_limit))
     .map_err(|error| CsvReplayError::Configuration(error.to_string()))?;
 
-    // 每个桌台/牌靴拥有独立牌靴状态；不能把多个 session 的已发牌混在一起。
-    let mut shoes = HashMap::new();
-    for key in eligible_sessions.iter().copied() {
-        let shoe = Shoe::new(config.decks)
-            .map_err(|error| CsvReplayError::Configuration(error.to_string()))?;
-        shoes.insert(key, shoe);
-    }
-
-    // 完美对子概率必须区分 52 种“Rank + 花色”。如果仍用 13 种 Rank 数量
-    // 作为键，不同花色耗牌状态会错误命中同一个缓存条目。52 类具体牌快照也
-    // 足以推导普通对子和主注点数，因此三类概率可以安全共用同一个缓存。
-    // 缓存键是完整 52 类具体牌数量快照，而不是 session id。不同牌靴如果恰好
-    // 处于同一状态，可以复用数学结果；完美对子又要求保留花色，所以不能降为
-    // 13 类 Rank 或 10 类点数键。
-    let mut probability_cache =
-        HashMap::<[u8; Card::DISTINCT_COUNT], (OutcomeWeights, SideBetWeights)>::new();
-    let mut summary = CsvReplaySummary {
-        replayed_sessions: eligible_sessions.len() as u64,
-        initial_bankroll: config.initial_bankroll,
-        final_bankroll: config.initial_bankroll,
-        maximum_bankroll: config.initial_bankroll,
-        minimum_bankroll: config.initial_bankroll,
-        minimum_candidate_effective_ev: None,
-        maximum_candidate_effective_ev: None,
-        ..CsvReplaySummary::default()
-    };
+    let ReplayState {
+        mut shoes,
+        mut probability_cache,
+        mut summary,
+        mut current_bankroll,
+        mut peak_bankroll,
+        mut effective_ev_sum,
+        mut progression_states,
+    } = state;
     let mut details = Vec::new();
-    let mut current_bankroll = config.initial_bankroll;
-    let mut peak_bankroll = current_bankroll;
-    let mut effective_ev_sum = 0.0;
-    // 递进级数按“桌台 + 牌靴 + 下注目标”隔离。这样同一目标在同一靴中
-    // 可以连续倍投，但不会把另一张桌台或另一靴的输赢带进当前序列。
-    let mut progression_states = HashMap::<(u64, u64, &'static str), StakeProgression>::new();
-
-    for index in eligible_indices {
-        let round = &rounds[index];
-
+    for round in rounds {
         // 下注前检查本金，而不是等下一局算完才发现无法继续。所有可回放局
         // 仍然已经通过数据质量校验，但本金耗尽后再继续计算没有实际意义，
         // 因此报告会保留已完成局数并带上明确的停止位置。
@@ -1371,7 +1587,9 @@ fn replay_rounds_with_prepared_weights(
         }
 
         let key = (round.table_id, round.session_id);
-        let shoe = shoes.get_mut(&key).expect("可回放场次应该已经创建牌靴");
+        let shoe = shoes
+            .entry(key)
+            .or_insert_with(|| Shoe::new(config.decks).expect("已验证副牌数"));
 
         // 时间顺序的关键点：这里的 shoe 仍是本局发牌前状态。先用它计算概率、
         // 策略和金额，随后才允许读取 outcome 进行结算，最后才扣牌。
@@ -1404,6 +1622,9 @@ fn replay_rounds_with_prepared_weights(
                     }
                 })?;
                 summary.probability_cache_misses += 1;
+                if probability_cache.len() >= 512 {
+                    probability_cache.clear();
+                }
                 probability_cache.insert(card_counts, weights);
                 weights
             }
@@ -1690,18 +1911,39 @@ fn replay_rounds_with_prepared_weights(
     // 玩法时如果只更新其中一处，测试构建会立刻暴露遗漏，而不会悄悄显示错账。
     let (breakdown_count, breakdown_stake, breakdown_profit) = summary.bet_breakdown.totals();
     debug_assert_eq!(breakdown_count, summary.placed_bet_count);
-    debug_assert!((breakdown_stake - summary.total_stake).abs() < 1e-7);
-    debug_assert!((breakdown_profit - summary.total_profit).abs() < 1e-7);
+    debug_assert!(
+        (breakdown_stake - summary.total_stake).abs() < 1e-7 * (1.0 + summary.total_stake.abs())
+    );
+    debug_assert!(
+        (breakdown_profit - summary.total_profit).abs() < 1e-7 * (1.0 + summary.total_stake.abs())
+    );
     let (gross_profit, gross_loss) = summary.bet_breakdown.gross_totals();
-    debug_assert!((gross_profit - gross_loss - summary.total_profit).abs() < 1e-7);
+    debug_assert!(
+        (gross_profit - gross_loss - summary.total_profit).abs()
+            < 1e-7 * (1.0 + summary.total_stake.abs())
+    );
     let (base_gross_profit, base_gross_loss) = summary.bet_breakdown.base_gross_totals();
-    debug_assert!((base_gross_profit - base_gross_loss - summary.base_game_profit).abs() < 1e-7);
+    debug_assert!(
+        (base_gross_profit - base_gross_loss - summary.base_game_profit).abs()
+            < 1e-7 * (1.0 + summary.total_stake.abs())
+    );
     debug_assert!(
         (base_gross_profit + summary.rebate_income - base_gross_loss - summary.total_profit).abs()
-            < 1e-7
+            < 1e-7 * (1.0 + summary.total_stake.abs())
     );
 
-    Ok((summary, details))
+    Ok((
+        ReplayState {
+            shoes,
+            probability_cache,
+            summary,
+            current_bankroll,
+            peak_bankroll,
+            effective_ev_sum,
+            progression_states,
+        },
+        details,
+    ))
 }
 
 /// 把一方最终实际使用的两张或三张牌转换成稳定、易读的牌面字符串。
@@ -1935,7 +2177,8 @@ impl Error for CsvReplayError {}
 #[cfg(test)]
 mod tests {
     use super::{
-        CsvReplayConfig, SideBetRoundLimits, parse_raw_cards, provider_card, replay_csv_text,
+        CsvReplayConfig, SideBetRoundLimits, StreamingReplay, parse_raw_cards, prepare_stream_shoe,
+        provider_card, replay_csv_text,
     };
     use crate::{MainBetRules, SideBet, StakeSizingStrategy};
 
@@ -1993,6 +2236,86 @@ mod tests {
         assert_eq!(report.dataset.session_count, 1);
         assert_eq!(report.quality.valid_card_rows, 1);
         assert_eq!(report.summary.replayed_rounds, 1);
+    }
+
+    #[test]
+    fn streaming_session_matches_one_shot_replay_across_batches() {
+        let csv = "session_id,round_no,raw_cards\n\
+                   9150,1,\"b:24,31,45;p:31,42,47\"\n\
+                   9150,2,\"b:73,62,;p:53,8,\"\n";
+        let expected = replay_csv_text(csv, strategy()).expect("一次性回放应该成功");
+        let prepared: Vec<serde_json::Value> = serde_json::from_str(
+            &prepare_stream_shoe(csv, 8, false).expect("单靴概率预计算应该成功"),
+        )
+        .expect("预计算批次 JSON 应该有效");
+        let mut stream = StreamingReplay::new(strategy(), 1);
+        for item in prepared {
+            let payload = item["payload"].as_str().expect("每批应该有牌局 payload");
+            stream
+                .push(&format!("[{payload}]"))
+                .expect("增量结算应该成功");
+        }
+        let actual: serde_json::Value =
+            serde_json::from_str(&stream.finish().expect("流式回放应该可以结束"))
+                .expect("流式报告 JSON 应该有效");
+        assert_eq!(
+            actual["summary"]["replayed_rounds"],
+            expected.summary.replayed_rounds
+        );
+        assert_eq!(
+            actual["summary"]["placed_bet_count"],
+            expected.summary.placed_bet_count
+        );
+        assert_eq!(
+            actual["summary"]["final_bankroll"],
+            expected.summary.final_bankroll
+        );
+        assert_eq!(
+            actual["summary"]["total_profit"],
+            expected.summary.total_profit
+        );
+    }
+
+    #[test]
+    fn streaming_session_uses_the_same_timestamp_order_as_one_shot_replay() {
+        // 文件行顺序故意把第 2 局放在第 1 局前面；完整时间字段存在时，资金线
+        // 应按开局时间处理，且牌靴最后一个时间点之后才允许释放牌靴状态。
+        let csv = "session_id,round_no,started_at,raw_cards\n\
+                   9151,1,2026-08-20 00:00:54,\"b:24,31,45;p:31,42,47\"\n\
+                   9151,2,2026-08-20 00:00:12,\"b:73,62,;p:53,8,\"\n";
+        let expected = replay_csv_text(csv, strategy()).expect("一次性时间排序回放应该成功");
+        let prepared: Vec<serde_json::Value> = serde_json::from_str(
+            &prepare_stream_shoe(csv, 8, true).expect("时间排序预计算应该成功"),
+        )
+        .expect("时间排序批次 JSON 应该有效");
+        let mut stream = StreamingReplay::new(strategy(), 1);
+        for item in prepared {
+            stream
+                .push(&format!(
+                    "[{}]",
+                    item["payload"].as_str().expect("每批应该有牌局 payload")
+                ))
+                .expect("时间排序增量结算应该成功");
+        }
+        let actual: serde_json::Value =
+            serde_json::from_str(&stream.finish().expect("时间排序流式回放应该可以结束"))
+                .expect("时间排序流式报告 JSON 应该有效");
+        assert_eq!(
+            actual["summary"]["replayed_rounds"],
+            expected.summary.replayed_rounds
+        );
+        assert_eq!(
+            actual["summary"]["placed_bet_count"],
+            expected.summary.placed_bet_count
+        );
+        let actual_final = actual["summary"]["final_bankroll"]
+            .as_f64()
+            .expect("时间排序流式最终本金应该是数字");
+        assert!(
+            (actual_final - expected.summary.final_bankroll).abs() < 1e-9,
+            "时间排序流式与一次性回放的最终本金应一致：{actual_final} != {}",
+            expected.summary.final_bankroll
+        );
     }
 
     #[test]

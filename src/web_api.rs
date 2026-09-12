@@ -21,6 +21,112 @@
 
 use serde::Serialize;
 
+/// 浏览器配置只在创建会话时解析一次，之后每批只传概率和本局牌面。
+#[cfg(target_arch = "wasm32")]
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StreamConfig {
+    decks: u8,
+    rebate_rate: f64,
+    minimum_effective_ev: f64,
+    minimum_side_bet_ev: f64,
+    bankroll: f64,
+    max_fraction: f64,
+    max_round_stake: f64,
+    table_limit: f64,
+    side_bet_limit: f64,
+    payout_rule: String,
+    stake_strategy: String,
+    strategy_parameter: f64,
+    side_bet_round_limits: SideBetRoundLimits,
+    allow_multiple_bets: bool,
+    #[serde(default)]
+    session_count: u64,
+}
+
+#[cfg(target_arch = "wasm32")]
+fn stream_config(json: &str) -> Result<(CsvReplayConfig, u64), String> {
+    let c: StreamConfig = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let config = CsvReplayConfig::with_side_bets(
+        c.decks,
+        parse_payout_rule(&c.payout_rule)?.0,
+        parse_stake_strategy(&c.stake_strategy, c.strategy_parameter)?,
+        c.rebate_rate,
+        c.minimum_effective_ev,
+        c.minimum_side_bet_ev,
+        c.bankroll,
+        c.max_fraction,
+        c.max_round_stake,
+        c.table_limit,
+        c.side_bet_limit,
+    )
+    .map_err(|e| e.to_string())?
+    .with_side_bet_round_limits(c.side_bet_round_limits)
+    .with_multiple_bets(c.allow_multiple_bets);
+    Ok((config, c.session_count))
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub struct ReplaySession(crate::baccarat::StreamingReplay);
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+impl ReplaySession {
+    #[wasm_bindgen(constructor)]
+    pub fn new(config: &str) -> Result<ReplaySession, JsValue> {
+        let (parsed, session_count) = stream_config(config).map_err(|e| JsValue::from_str(&e))?;
+        Ok(Self(crate::baccarat::StreamingReplay::new(
+            parsed,
+            session_count,
+        )))
+    }
+    pub fn push(&mut self, batch: &str) -> Result<String, JsValue> {
+        self.0.push(batch).map_err(|e| JsValue::from_str(&e))
+    }
+    pub fn finish(&mut self) -> Result<String, JsValue> {
+        self.0.finish().map_err(|e| JsValue::from_str(&e))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = inspectReplayShoe)]
+pub fn inspect_replay_shoe(csv: &str) -> Result<String, JsValue> {
+    crate::baccarat::inspect_stream_shoe(csv).map_err(|e| JsValue::from_str(&e))
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = prepareReplayShoe)]
+pub fn prepare_replay_shoe(csv: &str, decks: u8, timestamp_order: bool) -> Result<String, JsValue> {
+    crate::baccarat::prepare_stream_shoe(csv, decks, timestamp_order)
+        .map_err(|e| JsValue::from_str(&e))
+}
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+pub struct ShoeGenerator(crate::baccarat::BaccaratShoeGenerator);
+
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+impl ShoeGenerator {
+    #[wasm_bindgen(constructor)]
+    pub fn new(shoes: u32, rounds: u32, seed: &str, decks: u8) -> Result<ShoeGenerator, JsValue> {
+        if shoes > 20_000 {
+            return Err(JsValue::from_str("牌靴数不能超过 20000"));
+        }
+        let seed = seed
+            .parse::<u64>()
+            .map_err(|_| JsValue::from_str("种子必须是 u64 整数"))?;
+        let config =
+            BaccaratSimulationConfig::new(u64::from(shoes), decks, rounds, seed, 1_000_000)
+                .map_err(|e| JsValue::from_str(&e.to_string()))?;
+        Ok(Self(crate::baccarat::BaccaratShoeGenerator::new(config)))
+    }
+    pub fn next(&mut self) -> Result<String, JsValue> {
+        self.0.next_json().map_err(|e| JsValue::from_str(&e))
+    }
+}
+
 use crate::{
     BaccaratSimulationConfig, BetPlanSkipReason, BettingPolicy, BlackjackAnalysis, BlackjackRules,
     Card, CombinedBetPlan, CombinedBetPlanAction, CsvReplayConfig, EffectiveBetMetrics,

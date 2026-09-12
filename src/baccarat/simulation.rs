@@ -6,7 +6,7 @@
 
 use std::{error::Error, fmt, io::Write};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{Card, Rank, RoundOutcome, Suit};
 
@@ -174,11 +174,53 @@ pub fn generate_baccarat_csv_text(
     String::from_utf8(bytes).map_err(BaccaratSimulationError::Utf8)
 }
 
-#[derive(Debug, Serialize)]
-struct GeneratedRound {
+#[derive(Debug, Deserialize, Serialize)]
+pub(crate) struct GeneratedRound {
     session_id: u64,
     round_no: u32,
     raw_cards: String,
+}
+
+/// RNG 留在生成器中，不随批次或 Worker 数改变，且任何时刻只生成一靴。
+#[allow(dead_code)]
+pub(crate) struct BaccaratShoeGenerator {
+    config: BaccaratSimulationConfig,
+    random: DeterministicRng,
+    next_index: u64,
+}
+
+#[allow(dead_code)]
+impl BaccaratShoeGenerator {
+    pub(crate) fn new(config: BaccaratSimulationConfig) -> Self {
+        Self {
+            config,
+            random: DeterministicRng::new(config.seed),
+            next_index: 0,
+        }
+    }
+
+    pub(crate) fn next_json(&mut self) -> Result<String, String> {
+        if self.next_index >= self.config.shoes {
+            return Ok("null".into());
+        }
+        let mut shoe = full_shoe_codes(self.config.decks);
+        self.random.shuffle(&mut shoe);
+        let mut rows = Vec::with_capacity(self.config.max_rounds_per_shoe as usize);
+        for round_no in 1..=self.config.max_rounds_per_shoe {
+            let dealt = deal_round(&mut shoe).map_err(|e| e.to_string())?;
+            rows.push(GeneratedRound {
+                session_id: self.config.start_session_id + self.next_index,
+                round_no,
+                raw_cards: format!(
+                    "b:{};p:{}",
+                    join_codes(&dealt.banker),
+                    join_codes(&dealt.player)
+                ),
+            });
+        }
+        self.next_index += 1;
+        serde_json::to_string(&rows).map_err(|e| e.to_string())
+    }
 }
 
 struct DealtRound {
@@ -321,7 +363,9 @@ impl DeterministicRng {
 
 #[cfg(test)]
 mod tests {
-    use super::{BaccaratSimulationConfig, generate_baccarat_csv_text};
+    use super::{
+        BaccaratShoeGenerator, BaccaratSimulationConfig, GeneratedRound, generate_baccarat_csv_text,
+    };
     use crate::{CsvReplayConfig, replay_csv_text};
 
     fn config(seed: u64) -> BaccaratSimulationConfig {
@@ -349,5 +393,26 @@ mod tests {
         assert_eq!(report.quality.valid_card_rows, 20);
         assert_eq!(report.quality.invalid_card_rows, 0);
         assert_eq!(report.quality.outcome_mismatch_rows, 0);
+    }
+
+    #[test]
+    fn incremental_generator_keeps_the_same_seed_stream_as_csv_writer() {
+        let expected = generate_baccarat_csv_text(config(12345)).expect("整批生成应该成功");
+        let expected_cards: Vec<String> = csv::Reader::from_reader(expected.as_bytes())
+            .records()
+            .map(|record| record.expect("生成的 CSV 应该可读取")[2].to_owned())
+            .collect();
+
+        let mut generator = BaccaratShoeGenerator::new(config(12345));
+        let mut actual_cards = Vec::new();
+        for _ in 0..2 {
+            let rows: Vec<GeneratedRound> =
+                serde_json::from_str(&generator.next_json().expect("增量牌靴应该生成"))
+                    .expect("增量牌靴 JSON 应该有效");
+            assert_eq!(rows.len(), 10);
+            actual_cards.extend(rows.into_iter().map(|row| row.raw_cards));
+        }
+        assert_eq!(actual_cards, expected_cards);
+        assert_eq!(generator.next_json().expect("生成完毕应该正常返回"), "null");
     }
 }

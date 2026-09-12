@@ -140,7 +140,12 @@ if (!/data-replay-source="simulation"/.test(pageHtml)
     || !/replayBaccaratCsv/.test(replayWorkerSource)
     || !/generateBaccaratCsv/.test(replayWorkerSource)
     || !/prepareBaccaratCsvWeights/.test(replayShardWorkerSource)
+    || !/prepareReplayShoe/.test(replayShardWorkerSource)
+    || !/ReplaySession/.test(replayWorkerSource)
     || !/replayBaccaratCsvWithPreparedWeights/.test(replayWorkerSource)
+    || !/readCsvFieldsFromBlob/.test(replayWorkerSource)
+    || !/splitCsvBlobIntoShoeTasks/.test(replayWorkerSource)
+    || !/serializeShoeTask/.test(replayWorkerSource)
     || !/Math\.min\(8, requested, taskCount/.test(replayWorkerSource)
     || !/new Worker\(\s*new URL\("\.\/replay-shard-worker\.js/.test(replayWorkerSource)) {
   throw new Error("回放入口没有连接到可切换单线程/并行 Worker 的 WASM 架构");
@@ -149,10 +154,12 @@ if (!/200 \* 1024 \* 1024/.test(appSource)
     || !/最大 200 MB/.test(pageHtml)) {
   throw new Error("CSV 上传上限没有统一提高到 200 MB");
 }
-if (!/currentCsvFile\.arrayBuffer\(\)/.test(appSource)
-    || !/\[csvBuffer\]/.test(appSource)
-    || !/TextDecoder/.test(replayWorkerSource)) {
-  throw new Error("大型 CSV 没有通过 transferable ArrayBuffer 交给 Worker");
+if (!/csvFile:\s*currentCsvFile/.test(appSource)
+    || !/csvFile\?\.text/.test(replayWorkerSource)
+    || !/TextDecoder/.test(replayWorkerSource)
+    || !/detail-batch/.test(replayWorkerSource)
+    || !/replay-storage/.test(appSource)) {
+  throw new Error("大型 CSV 没有使用 Worker 分批读取并把明细落盘");
 }
 if (!/session_id.*round_no.*raw_cards/s.test(pageHtml)) {
   throw new Error("页面没有说明精简 CSV 的三列格式");

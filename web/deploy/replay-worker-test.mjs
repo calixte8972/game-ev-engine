@@ -36,9 +36,10 @@ if (!isMainThread) {
   const file = new URL(workerData.script, web);
   const source = readFileSync(file, "utf8")
     .replace(/import init,\s*\{[\s\S]*?\}\s*from\s*"\.\/pkg\/game_ev_engine.js";/, "")
+    .replace(/import \* as wasm from "\.\/pkg\/game_ev_engine.js";/, "")
     .replaceAll("import.meta.url", JSON.stringify(file.href));
   const context = vm.createContext({
-    ...wasm, init: async () => {},
+    ...wasm, wasm, init: async () => {},
     ArrayBuffer, TextEncoder, TextDecoder, URL, performance,
     navigator: { hardwareConcurrency: 16, deviceMemory: workerData.memory ?? 8 },
     Worker: BrowserWorker,
@@ -71,17 +72,32 @@ if (!isMainThread) {
         workerData: { script: "replay-worker.js", ...options },
       });
       const timeout = setTimeout(() => { thread.terminate(); reject(new Error("Worker timeout")); }, 30_000);
+      const detailBatches = [];
       thread.on("error", reject);
       thread.on("message", message => {
         if (message.type === "ready") {
-          const csvBuffer = new TextEncoder().encode(csvText).buffer;
-          thread.postMessage({ type: "replay", csvBuffer, config: { ...config, ...settings } }, [csvBuffer]);
+          if (options.useFile) {
+            // 覆盖浏览器实际发送 File/Blob 的路径；Worker 应该按流读取精简 CSV，
+            // 而不是要求主线程先复制整份文本或 ArrayBuffer。
+            thread.postMessage({
+              type: "replay", csvFile: new Blob([csvText]), config: { ...config, ...settings },
+            });
+          } else {
+            const csvBuffer = new TextEncoder().encode(csvText).buffer;
+            thread.postMessage({ type: "replay", csvBuffer, config: { ...config, ...settings } }, [csvBuffer]);
+          }
         }
+        if (message.type === "detail-reset") detailBatches.length = 0;
+        if (message.type === "detail-batch") detailBatches.push(...message.details);
         if (message.type === "complete" || message.type === "error") {
           clearTimeout(timeout);
           thread.terminate();
           if (message.type === "error") reject(new Error(message.message));
-          else resolve(message);
+          else resolve({
+            ...message,
+            report: { ...message.report, bets: message.report.bets?.length
+              ? message.report.bets : detailBatches },
+          });
         }
       });
     });
@@ -92,30 +108,75 @@ if (!isMainThread) {
     csv, 8, 0.009, -1, 10_000, 0.05, 500, 500,
     "standard", "martingale", 10, -1, 100, JSON.stringify(limits), true,
   ));
-  assert.deepEqual(serial.report, expected, "单线程必须保留独立边注截止局数");
+  assert.deepEqual(serial.report.bets, expected.bets, "单线程必须保留独立边注截止局数");
+  assert.equal(serial.report.summary.final_bankroll, expected.summary.final_bankroll);
   for (const count of [2, 4, 8]) {
     const parallel = await run({ parallelReplay: true, parallelWorkerCount: count });
     assert.equal(parallel.parallel, true, parallel.fallbackReason);
-    assert.equal(parallel.created, count);
+    assert.equal(parallel.created, Math.min(count, 8));
     assert.equal(parallel.terminated, count);
     assert.deepEqual(parallel.report.bets, serial.report.bets, `${count} 线程逐笔下注与顺序回放相同`);
     assert.equal(parallel.report.summary.final_bankroll, serial.report.summary.final_bankroll);
   }
-  for (const [input, options] of [
-    [csv, { failCreation: true }],
-    [csv, { memory: 2 }],
-    [csv + "\n".repeat(12_001), {}],
-    [csv + "\n".repeat(4 * 1024 * 1024), {}],
-  ]) {
-    const fallback = await run({ parallelReplay: true, parallelWorkerCount: 8 }, input, options);
-    assert.equal(fallback.parallel, false);
-    assert.ok(fallback.fallbackReason);
-    assert.equal(fallback.created, fallback.terminated, "降级前必须回收所有子线程");
-    assert.deepEqual(fallback.report.bets, serial.report.bets, "降级不截断数据或重复结算");
+  const streamedFile = await run(
+    { parallelReplay: true, parallelWorkerCount: 4 }, csv, { useFile: true },
+  );
+  assert.equal(streamedFile.parallel, true, streamedFile.fallbackReason);
+  assert.deepEqual(streamedFile.report.bets, serial.report.bets, "Blob 流式读取与 ArrayBuffer 回放结果相同");
+  assert.equal(streamedFile.report.summary.final_bankroll, serial.report.summary.final_bankroll);
+  const failedCreation = await run({ parallelReplay: true, parallelWorkerCount: 8 }, csv, { failCreation: true });
+  assert.equal(failedCreation.parallel, false);
+  assert.ok(failedCreation.fallbackReason);
+  assert.equal(failedCreation.created, failedCreation.terminated, "降级前必须回收所有子线程");
+  assert.deepEqual(failedCreation.report.bets, expected.bets, "并行启动失败后从头回放，不重复结算");
+
+  const lowMemory = await run({ parallelReplay: true, parallelWorkerCount: 8 }, csv, { memory: 2 });
+  assert.equal(lowMemory.parallel, true);
+  assert.equal(lowMemory.created, 2, "低内存设备将并行数限制为 2");
+  assert.deepEqual(lowMemory.report.bets, expected.bets);
+
+  for (const input of [csv + "\n".repeat(12_001), csv + "\n".repeat(4 * 1024 * 1024)]) {
+    const padded = await run({ parallelReplay: true, parallelWorkerCount: 8 }, input);
+    assert.equal(padded.parallel, true, "空白行不应触发整批单线程降级");
+    assert.deepEqual(padded.report.bets, serial.report.bets, "空白行不应截断或重复结算");
   }
+  // 多桌带时间的输入按“牌靴分组、全局时间交错”排列；让每副牌靴的第1局
+  // 交错在前、第2/3局交错在后，覆盖等待结果占满背压队列时的优先派发逻辑。
+  const interleavedSource = wasm.generateBaccaratCsv(5, 3, "4242", 8);
+  const interleavedRows = interleavedSource.trim().split(/\r?\n/).slice(1).map((line) => {
+    const match = line.match(/^(\d+),(\d+),(.*)$/);
+    assert.ok(match, "生成的测试牌局格式应稳定");
+    const sessionId = Number(match[1]);
+    const roundNo = Number(match[2]);
+    const shoeIndex = sessionId - 1_000_000;
+    const timestampIndex = (roundNo - 1) * 5 + shoeIndex;
+    return [
+      "1", match[1], match[2],
+      `2026-09-12T00:00:${String(timestampIndex).padStart(2, "0")}`,
+      match[3],
+    ].join(",");
+  });
+  const interleavedCsv = [
+    "table_id,session_id,round_no,started_at,raw_cards",
+    ...interleavedRows,
+  ].join("\n");
+  const interleavedSerial = await run({ parallelReplay: false }, interleavedCsv);
+  const interleavedParallel = await run(
+    { parallelReplay: true, parallelWorkerCount: 2 }, interleavedCsv,
+  );
+  assert.equal(interleavedParallel.parallel, true, interleavedParallel.fallbackReason);
+  assert.deepEqual(
+    interleavedParallel.report.bets,
+    interleavedSerial.report.bets,
+    "时间交错牌靴必须按全局顺序完成并行回放",
+  );
+  assert.equal(
+    interleavedParallel.report.summary.final_bankroll,
+    interleavedSerial.report.summary.final_bankroll,
+  );
   // 不先 parse 大整数；确认合并过程保留每一位权重和牌靴 ID。
   const source = readFileSync(new URL("replay-worker.js", web), "utf8");
-  const merge = source.slice(source.indexOf("function mergePreparedResults"), source.indexOf("/* ----------------------------- 主流程"));
+  const merge = source.slice(source.indexOf("function mergePreparedResults"), source.indexOf("/* ----------------------------- 入口"));
   const context = vm.createContext({ TextDecoder });
   vm.runInContext(merge, context);
   const raw = '{"rounds":[{"session_id":18446744073709551615,"weight":9007199254740993}]}';

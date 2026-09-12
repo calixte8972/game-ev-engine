@@ -5,7 +5,7 @@
  * 它不读取 DOM、不更新本金，也不决定倍投级数。这样主协调 Worker 可以把
  * 不同牌靴分发给多个实例，而所有有资金状态的操作仍由最终顺序回放完成。
  */
-import init, { prepareBaccaratCsvWeights } from "./pkg/game_ev_engine.js";
+import init, { prepareBaccaratCsvWeights, prepareReplayShoe } from "./pkg/game_ev_engine.js";
 
 const ready = init();
 
@@ -15,10 +15,11 @@ self.addEventListener("message", async (event) => {
   try {
     await ready;
     const started = performance.now();
-    const preparedJson = prepareBaccaratCsvWeights(
-      event.data.csvText,
-      event.data.decks,
-    );
+    // 新流水线一次只接收一副牌靴，返回“牌面 + 概率快照”小批次；
+    // 旧 prepare 接口保留给兼容测试与旧调用方。
+    const preparedJson = event.data.stream
+      ? prepareReplayShoe(event.data.csvText, event.data.decks, Boolean(event.data.timestampOrder))
+      : prepareBaccaratCsvWeights(event.data.csvText, event.data.decks);
 
     // 转移 UTF-8 缓冲区所有权，不再跨线程克隆数万条概率对象。
     const preparedBuffer = new TextEncoder().encode(preparedJson).buffer;

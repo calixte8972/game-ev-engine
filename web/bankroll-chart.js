@@ -51,6 +51,11 @@ function roundKey(bet) {
 export function buildBankrollSeries(report) {
   // 同一局可能有多条明细（允许同局多下注）。由于 Rust 已经把该局所有
   // 下注结算后的同一个 bankroll_after 写入每条明细，所以这里只需按局键合并。
+  // 大回测由协调 Worker 预先生成有界 chart_points；优先使用它，不为画图把
+  // IndexedDB 中的百万条明细重新读入内存。旧版报告仍走下面的兼容分支。
+  if (Array.isArray(report?.chart_points) && report.chart_points.length > 0) {
+    return report.chart_points;
+  }
   const initialBankroll = Number(report?.summary?.initial_bankroll);
   if (!Number.isFinite(initialBankroll)) return [];
 
