@@ -20,6 +20,8 @@ const {
   ShoeGenerator,
   inspectReplayShoe,
   prepareReplayShoe,
+  prepareReplayShoeWithSideBetLimits,
+  prepareGeneratedShoe,
 } = wasm;
 
 const defaultSideBetRoundLimits = {
@@ -35,6 +37,11 @@ const defaultSideBetRoundLimits = {
   banker_dragon_bonus: 50,
   player_dragon_bonus: 50,
 };
+
+// Rust 的流式结算接口当前允许最多 256 局一批。统一在这里使用上限，减少
+// `session.push()` 调用次数；如果将来核心上限变化，只需要改这一处。
+const REPLAY_BATCH_SIZE = 256;
+const PROGRESS_THROTTLE_MS = 120;
 
 function finiteNumberOr(value, fallback) {
   const number = Number(value);
@@ -96,6 +103,10 @@ function streamConfigJson(config, sessionCount) {
     allowMultipleBets: Boolean(config.allowMultipleBets),
     sessionCount,
   });
+}
+
+function sideBetRoundLimitsJson(config) {
+  return JSON.stringify(normalizedSideBetRoundLimits(config));
 }
 
 /* ----------------------------- CSV 读取 ----------------------------- */
@@ -502,15 +513,40 @@ function workerCountFor(taskCount, requestedWorkerCount = 4) {
   return Math.max(1, Math.min(8, requested, taskCount, memoryLimit, Math.max(1, hardware - 1)));
 }
 
+/**
+ * 用第一副真实任务做一次轻量预热，再决定是否值得把工作拆给更多 Worker。
+ *
+ * 这里的“自动”不是盲目按 hardwareConcurrency 开满：浏览器、WASM 线性内存
+ * 和当前设备的实际负载都会影响并行收益。预热测的是同一条概率预计算路径，
+ * 因而比只读取 CPU 核心数更接近本次回测的真实成本。用户输入的并行数仍是
+ * 上限，自动选择只会在 1..上限范围内调整。
+ */
+function tunedWorkerCount(taskCount, upperBound, probePrepareMilliseconds) {
+  const upper = Math.max(1, Math.min(upperBound, taskCount));
+  if (upper <= 1 || taskCount < 2) return 1;
+  const prepareMs = Math.max(0, Number(probePrepareMilliseconds) || 0);
+  let recommended = 1;
+  if (prepareMs >= 3) recommended = 2;
+  if (prepareMs >= 10) recommended = 4;
+  if (prepareMs >= 30) recommended = upper;
+  return Math.max(1, Math.min(upper, recommended));
+}
+
 function decodePreparedBuffer(buffer) {
-  const entries = JSON.parse(new TextDecoder().decode(buffer));
-  if (!Array.isArray(entries)) throw new Error("并行牌靴结果格式无效");
-  return entries
-    .map((entry) => {
-      if (!Number.isSafeInteger(Number(entry.source_order)) || typeof entry.payload !== "string") {
-        throw new Error("并行牌靴结果缺少稳定行号");
+  return decodePreparedJson(new TextDecoder().decode(buffer));
+}
+
+/** 直接处理 Rust 返回的 JSON；单线程路径不再为了读取 JSON 重新编码 UTF-8。 */
+function decodePreparedJson(json) {
+  const packets = JSON.parse(json);
+  if (!Array.isArray(packets)) throw new Error("并行牌靴结果格式无效");
+  return packets
+    .map((packet) => {
+      const sourceOrder = Number(packet?.source?.source_order);
+      if (!Number.isSafeInteger(sourceOrder) || !packet?.source || !packet?.prepared) {
+        throw new Error("并行牌靴结果缺少稳定行号或结构化牌局");
       }
-      return { sourceOrder: Number(entry.source_order), payload: entry.payload };
+      return { sourceOrder, packet };
     })
     .sort((left, right) => left.sourceOrder - right.sourceOrder);
 }
@@ -610,31 +646,69 @@ class BoundedCurve {
  */
 async function runStreamPipeline({
   order, taskAt, taskCount, config, sessionCount, timestampOrder,
-  parallel, requestedWorkerCount, runId, taskForSourceOrder,
+  parallel, requestedWorkerCount, runId, taskForSourceOrder, totalRoundCount,
 }) {
   const session = new ReplaySession(streamConfigJson(config, sessionCount));
   const curve = new BoundedCurve(config.bankroll);
   const targetOrder = order;
-  const poolSize = parallel ? workerCountFor(taskCount, requestedWorkerCount) : 1;
-  const localOnly = !parallel || poolSize === 1;
   let detailSequence = 0;
+  let probabilityCompleted = 0;
+  let settledRounds = 0;
+  let lastProgressAt = 0;
+  const timings = {
+    generationMs: 0,
+    prepareMs: 0,
+    decodeMs: 0,
+    settlementMs: 0,
+    curveMs: 0,
+    serializeMs: 0,
+    workerProbeMs: 0,
+    preparedBytes: 0,
+    settlementBatches: 0,
+    selectedWorkerCount: 1,
+  };
   const progressStep = Math.max(1, Math.ceil(taskCount / 100));
+  const progressTotal = Math.max(1, Number(totalRoundCount) || taskCount);
+  const staticPoolSize = parallel ? workerCountFor(taskCount, requestedWorkerCount) : 1;
+  const postPipelineProgress = (phase, completed, total, workerCount, isParallel, force = false) => {
+    const now = performance.now();
+    if (!force && now - lastProgressAt < PROGRESS_THROTTLE_MS
+        && completed !== total) return;
+    lastProgressAt = now;
+    const probabilityRatio = taskCount > 0 ? probabilityCompleted / taskCount : 1;
+    const settlementRatio = progressTotal > 0 ? settledRounds / progressTotal : 0;
+    const overall = Math.min(0.98, 0.05 + probabilityRatio * 0.55 + settlementRatio * 0.38);
+    self.postMessage({
+      type: "progress", phase, completed, total, workerCount, parallel: isParallel,
+      overall, settledRounds, settlementTotal: progressTotal,
+    });
+  };
   const postProbabilityProgress = (completed, workerCount, isParallel, force = false) => {
     if (!force && completed !== 0 && completed !== taskCount && completed % progressStep !== 0) return;
-    self.postMessage({
-      type: "progress", phase: "probability", completed, total: taskCount,
-      workerCount, parallel: isParallel,
-    });
+    probabilityCompleted = completed;
+    postPipelineProgress("probability", completed, taskCount, workerCount, isParallel, force);
   };
 
   const processEntries = (entries) => {
-    for (let offset = 0; offset < entries.length; offset += 128) {
-      const batch = entries.slice(offset, offset + 128);
-      const payload = `[${batch.map((entry) => entry.payload ?? entry).join(",")}]`;
+    for (let offset = 0; offset < entries.length; offset += REPLAY_BATCH_SIZE) {
+      const batch = entries.slice(offset, offset + REPLAY_BATCH_SIZE);
+      const serializeStarted = performance.now();
+      const payload = JSON.stringify(batch.map((entry) => entry.packet ?? entry));
+      timings.serializeMs += performance.now() - serializeStarted;
+      const settleStarted = performance.now();
       const response = JSON.parse(session.push(payload));
+      timings.settlementMs += performance.now() - settleStarted;
+      timings.settlementBatches += 1;
+      settledRounds = Number(response.summary?.replayed_rounds ?? (settledRounds + batch.length));
+      postPipelineProgress(
+        "settlement", settledRounds, progressTotal,
+        localOnly ? 1 : poolSize, !localOnly,
+      );
       const bets = Array.isArray(response.bets) ? response.bets : [];
       if (bets.length) {
+        const curveStarted = performance.now();
         curve.addBets(bets);
+        timings.curveMs += performance.now() - curveStarted;
         self.postMessage({ type: "detail-batch", runId, batchId: detailSequence++, details: bets });
       }
       if (response.summary?.stopped_early) return true;
@@ -642,7 +716,79 @@ async function runStreamPipeline({
     return false;
   };
 
-  postProbabilityProgress(0, localOnly ? 1 : poolSize, !localOnly, true);
+  const limitsJson = sideBetRoundLimitsJson(config);
+  let prefetchedTask = null;
+  let prefetchedPreparedJson = null;
+  let prefetchedEntries = null;
+  const getTask = async (taskId) => {
+    if (taskId === 0 && prefetchedTask) {
+      const task = prefetchedTask;
+      prefetchedTask = null;
+      return task;
+    }
+    const started = performance.now();
+    const task = await taskAt(taskId);
+    timings.generationMs += performance.now() - started;
+    return task;
+  };
+  const prepareTaskJson = (task) => task.generatedRowsJson
+      ? prepareGeneratedShoe(
+        task.generatedRowsJson,
+        config.decks,
+        task.sourceBase ?? 0,
+        limitsJson,
+      )
+      : (typeof prepareReplayShoeWithSideBetLimits === "function"
+        ? prepareReplayShoeWithSideBetLimits(
+          task.csvText, config.decks, timestampOrder, limitsJson,
+        )
+        : prepareReplayShoe(task.csvText, config.decks, timestampOrder));
+  const prepareLocalTask = (taskId, task) => {
+    if (taskId === 0 && prefetchedPreparedJson !== null) {
+      const preparedJson = prefetchedPreparedJson;
+      prefetchedPreparedJson = null;
+      return preparedJson;
+    }
+    const started = performance.now();
+    const preparedJson = prepareTaskJson(task);
+    timings.prepareMs += performance.now() - started;
+    // 这里使用 UTF-16 长度只做相对诊断，避免单线程路径为了统计字节数
+    // 再把整个 JSON 编码一遍；并行路径使用实际 transferable 字节数。
+    timings.preparedBytes += preparedJson.length;
+    return preparedJson;
+  };
+
+  let poolSize = staticPoolSize;
+  if (parallel
+      && config.autoTuneWorkers === true
+      && staticPoolSize > 1
+      && taskCount >= 8) {
+    // 先实际计算一副牌靴。结果会直接复用到后续流水线，不会因为测速再重复
+    // 计算同一副牌靴；因此自动选择只增加一次预热，而不是额外复制整批任务。
+    self.postMessage({
+      type: "progress", phase: "worker-tune", completed: 0, total: 1,
+      overall: 0.03, workerCount: staticPoolSize, parallel: true,
+    });
+    const probeStarted = performance.now();
+    const generationStarted = performance.now();
+    prefetchedTask = await taskAt(0);
+    timings.generationMs += performance.now() - generationStarted;
+    const prepareStarted = performance.now();
+    prefetchedPreparedJson = prepareTaskJson(prefetchedTask);
+    const prepareMilliseconds = performance.now() - prepareStarted;
+    timings.prepareMs += prepareMilliseconds;
+    timings.preparedBytes += prefetchedPreparedJson.length;
+    const decodeStarted = performance.now();
+    prefetchedEntries = decodePreparedJson(prefetchedPreparedJson);
+    timings.decodeMs += performance.now() - decodeStarted;
+    timings.workerProbeMs = performance.now() - probeStarted;
+    poolSize = tunedWorkerCount(taskCount, staticPoolSize, prepareMilliseconds);
+  }
+  const localOnly = !parallel || poolSize === 1;
+  timings.selectedWorkerCount = poolSize;
+
+  postPipelineProgress("input", 0, progressTotal, localOnly ? 1 : poolSize, !localOnly, true);
+  postProbabilityProgress(prefetchedEntries ? 1 : 0, localOnly ? 1 : poolSize, !localOnly, true);
 
   if (localOnly) {
     // 设备资源把有效并行数压到 1 时仍不能改变多桌时间线。这个分支先按牌靴
@@ -651,9 +797,11 @@ async function runStreamPipeline({
     const preparedBySourceOrder = targetOrder ? new Map() : null;
     let stopped = false;
     for (let taskId = 0; taskId < taskCount; taskId += 1) {
-      const task = await taskAt(taskId);
-      const preparedJson = prepareReplayShoe(task.csvText, config.decks, timestampOrder);
-      const entries = decodePreparedBuffer(new TextEncoder().encode(preparedJson).buffer);
+      const task = await getTask(taskId);
+      const preparedJson = prepareLocalTask(taskId, task);
+      const decodeStarted = performance.now();
+      const entries = decodePreparedJson(preparedJson);
+      timings.decodeMs += performance.now() - decodeStarted;
       if (preparedBySourceOrder) {
         for (const entry of entries) {
           if (preparedBySourceOrder.has(entry.sourceOrder)) {
@@ -668,8 +816,8 @@ async function runStreamPipeline({
       if (stopped) break;
     }
     if (preparedBySourceOrder) {
-      for (let offset = 0; offset < targetOrder.length && !stopped; offset += 128) {
-        const entries = targetOrder.slice(offset, offset + 128).map((sourceOrder) => {
+      for (let offset = 0; offset < targetOrder.length && !stopped; offset += REPLAY_BATCH_SIZE) {
+        const entries = targetOrder.slice(offset, offset + REPLAY_BATCH_SIZE).map((sourceOrder) => {
           const entry = preparedBySourceOrder.get(sourceOrder);
           if (!entry) throw new Error("单线程预计算结果缺少原始行");
           return entry;
@@ -712,7 +860,9 @@ async function runStreamPipeline({
       }
       while (!stopped && nextOrder < targetOrder.length) {
         const entries = [];
-        while (nextOrder < targetOrder.length && packetsByOrder.has(targetOrder[nextOrder]) && entries.length < 128) {
+        while (nextOrder < targetOrder.length
+            && packetsByOrder.has(targetOrder[nextOrder])
+            && entries.length < REPLAY_BATCH_SIZE) {
           const packet = packetsByOrder.get(targetOrder[nextOrder]);
           packetsByOrder.delete(targetOrder[nextOrder]);
           entries.push(packet);
@@ -725,6 +875,26 @@ async function runStreamPipeline({
         stopped = processEntries(entries);
       }
     };
+
+    if (prefetchedEntries) {
+      // 自动测速已经完成第 0 副牌靴：把它放回与子 Worker 完全相同的
+      // ready 队列，并标记为已派发，后面的 pump 会从第 1 副继续。
+      assignedTaskIds.add(0);
+      completed = 1;
+      if (!targetOrder) {
+        readyTasks.set(0, prefetchedEntries);
+      } else {
+        readyTasks.set(0, { remaining: prefetchedEntries.length });
+        for (const entry of prefetchedEntries) {
+          if (packetsByOrder.has(entry.sourceOrder)) throw new Error("自动测速结果出现重复原始行");
+          packetsByOrder.set(entry.sourceOrder, { ...entry, taskId: 0 });
+        }
+      }
+      prefetchedEntries = null;
+      prefetchedPreparedJson = null;
+      prefetchedTask = null;
+      postProbabilityProgress(completed, poolSize, true, true);
+    }
 
     const pump = async () => {
       if (pumping || settled || stopped) return;
@@ -755,12 +925,20 @@ async function runStreamPipeline({
             nextTask += 1;
           }
           assignedTaskIds.add(taskId);
-          const task = await taskAt(taskId);
+          const task = await getTask(taskId);
           inFlight.set(worker, taskId);
-          worker.postMessage({
-            type: "prepare", stream: true, taskId, decks: config.decks,
-            timestampOrder, csvText: task.csvText,
-          });
+          worker.postMessage(task.generatedRowsJson
+            ? {
+              type: "prepare-generated", taskId, decks: config.decks,
+              sourceBase: task.sourceBase ?? 0,
+              sideBetRoundLimitsJson: limitsJson,
+              rowsJson: task.generatedRowsJson,
+            }
+            : {
+              type: "prepare", stream: true, taskId, decks: config.decks,
+              timestampOrder, sideBetRoundLimitsJson: limitsJson,
+              csvText: task.csvText,
+            });
         }
       } finally {
         pumping = false;
@@ -789,7 +967,12 @@ async function runStreamPipeline({
           const taskId = inFlight.get(worker);
           inFlight.delete(worker);
           available.push(worker);
+          timings.prepareMs += Number(message.prepareMilliseconds ?? message.elapsedMilliseconds) || 0;
+          timings.serializeMs += Number(message.serializeMilliseconds) || 0;
+          timings.preparedBytes += Number(message.preparedBytes) || 0;
+          const decodeStarted = performance.now();
           const entries = decodePreparedBuffer(message.preparedBuffer);
+          timings.decodeMs += performance.now() - decodeStarted;
           if (!targetOrder) {
             readyTasks.set(taskId, entries);
           } else {
@@ -800,6 +983,7 @@ async function runStreamPipeline({
             }
           }
           completed += 1;
+          probabilityCompleted = completed;
           postProbabilityProgress(completed, poolSize, true);
           await check();
         } catch (error) {
@@ -810,7 +994,7 @@ async function runStreamPipeline({
       for (let index = 0; index < poolSize; index += 1) {
         let worker;
         try {
-          worker = new Worker(new URL("./replay-shard-worker.js?v=24", import.meta.url), { type: "module" });
+          worker = new Worker(new URL("./replay-shard-worker.js?v=26", import.meta.url), { type: "module" });
         } catch (error) {
           reject(error);
           return;
@@ -838,14 +1022,21 @@ async function runStreamPipeline({
     }
   }
 
+  const finishStarted = performance.now();
   const report = JSON.parse(session.finish());
+  timings.settlementMs += performance.now() - finishStarted;
   report.bets = [];
   report.omitted_bet_details = 0;
   report.detail_count = Number(report.summary?.placed_bet_count ?? 0);
   report.run_id = runId;
   report.chart_points = curve.points();
   report.streamed = true;
-  return report;
+  report.performance = timings;
+  postPipelineProgress(
+    "settlement", settledRounds, progressTotal,
+    localOnly ? 1 : poolSize, !localOnly, true,
+  );
+  return { report, timings, workerCount: poolSize };
 }
 
 /** 兼容旧核心回放，并把它的完整明细转成和流式回放相同的页面协议。 */
@@ -853,8 +1044,11 @@ function externalizeLegacyReport(report, runId) {
   const bets = Array.isArray(report.bets) ? report.bets : [];
   const curve = new BoundedCurve(report.summary?.initial_bankroll ?? 0);
   curve.addBets(bets);
-  for (let offset = 0, batchId = 0; offset < bets.length; offset += 128, batchId += 1) {
-    self.postMessage({ type: "detail-batch", runId, batchId, details: bets.slice(offset, offset + 128) });
+  for (let offset = 0, batchId = 0; offset < bets.length; offset += REPLAY_BATCH_SIZE, batchId += 1) {
+    self.postMessage({
+      type: "detail-batch", runId, batchId,
+      details: bets.slice(offset, offset + REPLAY_BATCH_SIZE),
+    });
   }
   report.bets = [];
   report.detail_count = bets.length;
@@ -916,14 +1110,18 @@ self.addEventListener("message", async (event) => {
       taskCount = Number(shoes);
       const generator = new ShoeGenerator(shoes, maxRoundsPerShoe, seed, config.decks);
       taskAt = async (taskId) => {
-        const rows = JSON.parse(generator.next());
-        if (!rows) throw new Error("随机牌靴生成器提前结束");
-        const header = "__source_pk,table_id,session_id,round_no,started_at,settled_at,raw_cards,result_code,source_order";
-        const data = rows.map((row, index) => [
-          "", "1", String(row.session_id), String(row.round_no), "", "",
-          row.raw_cards, "", String(taskId * maxRoundsPerShoe + index),
-        ].map(csvField).join(","));
-        return { csvText: [header, ...data].join("\n") };
+        const rowsJson = generator.next();
+        if (rowsJson === "null") throw new Error("随机牌靴生成器提前结束");
+        // 直接把生成器的结构化 JSON 交给子 Worker；不再先拼 CSV，再由
+        // 子 Worker 重新运行 CSV 读取器。sourceBase 用于恢复全局稳定行号。
+        self.postMessage({
+          type: "progress", phase: "generate", completed: taskId + 1,
+          total: taskCount, overall: Math.min(0.15, 0.05 + (taskId + 1) / taskCount * 0.1),
+        });
+        return {
+          generatedRowsJson: rowsJson,
+          sourceBase: taskId * maxRoundsPerShoe,
+        };
       };
       const totalRows = Number(shoes) * Number(maxRoundsPerShoe);
       dataset = {
@@ -939,7 +1137,10 @@ self.addEventListener("message", async (event) => {
         sessions_with_empty_cards: 0, sessions_with_invalid_rows: 0,
         fully_observable_sessions: sessionCount, quarantined_rounds: 0,
       };
-      self.postMessage({ type: "progress", phase: "generate", completed: 0, total: taskCount });
+      self.postMessage({
+        type: "progress", phase: "generate", completed: 0, total: taskCount,
+        overall: 0.02,
+      });
     } else {
       if (typeof event.data.csvText === "string") {
         csvText = event.data.csvText;
@@ -983,21 +1184,36 @@ self.addEventListener("message", async (event) => {
     }
 
     let report;
+    let performanceTimings = null;
     let pipelineFallbackReason = "";
     if (event.data.type === "replay" && !requestedParallel) {
       // 非并行 CSV 保持 Rust 原有的完整顺序实现，尤其是带时间的多桌交错数据；
       // 用户开启并行后才进入下面的有界概率/结算流水线。
       self.postMessage({ type: "progress", phase: "serial" });
+      const serialStarted = performance.now();
       report = externalizeLegacyReport(
         JSON.parse(replayBaccaratCsvWithSideBetLimits(csvText, ...commonArguments(config))),
         runId,
       );
+      performanceTimings = {
+        generationMs: 0,
+        prepareMs: 0,
+        decodeMs: 0,
+        settlementMs: performance.now() - serialStarted,
+        curveMs: 0,
+        serializeMs: 0,
+        preparedBytes: 0,
+        settlementBatches: 1,
+      };
     } else {
       try {
-        report = await runStreamPipeline({
+        const pipelineResult = await runStreamPipeline({
           order, taskAt, taskCount, config, sessionCount, timestampOrder,
           parallel: requestedParallel, requestedWorkerCount, runId, taskForSourceOrder,
+          totalRoundCount: dataset?.total_rows ?? taskCount,
         });
+        report = pipelineResult.report;
+        performanceTimings = pipelineResult.timings;
       } catch (error) {
         self.postMessage({ type: "detail-reset", runId });
         if (csvText === null && csvFile?.text) csvText = await csvFile.text();
@@ -1006,8 +1222,19 @@ self.addEventListener("message", async (event) => {
         // 完整 Rust 回放会重新校验并生成权威摘要，不能再被旧画像覆盖。
         dataset = undefined;
         quality = undefined;
+        const fallbackStarted = performance.now();
         const legacy = JSON.parse(replayBaccaratCsvWithSideBetLimits(csvText, ...commonArguments(config)));
         report = externalizeLegacyReport(legacy, runId);
+        performanceTimings = {
+          generationMs: 0,
+          prepareMs: 0,
+          decodeMs: 0,
+          settlementMs: performance.now() - fallbackStarted,
+          curveMs: 0,
+          serializeMs: 0,
+          preparedBytes: 0,
+          settlementBatches: 1,
+        };
         self.postMessage({
           type: "progress", phase: "serial",
           fallbackReason: `分批流水线失败，已从头单线程回放：${error?.message ?? String(error)}`,
@@ -1022,8 +1249,11 @@ self.addEventListener("message", async (event) => {
     }
     // “开启并行”不等于“本次实际创建了多个线程”：只有一副牌靴、单核设备
     // 或低内存设备可能把有效 Worker 数压到 1，页面应准确显示实际执行方式。
+    // 自动测速选择的结果优先于静态资源上限，这样页面显示的是本次真正创建
+    // 的子 Worker 数，而不是用户填写的理论上限。
     const effectiveWorkerCount = requestedParallel && taskCount > 0
-      ? workerCountFor(taskCount, requestedWorkerCount) : 1;
+      ? Number(performanceTimings?.selectedWorkerCount)
+        || workerCountFor(taskCount, requestedWorkerCount) : 1;
     const usedParallel = requestedParallel && report.streamed === true && effectiveWorkerCount > 1;
     const fallbackReason = requestedParallel && !usedParallel
       ? pipelineFallbackReason
@@ -1031,9 +1261,19 @@ self.addEventListener("message", async (event) => {
           ? "只有一副可回放牌靴，已使用单线程"
           : "设备资源限制为单线程")
       : "";
+    const totalElapsed = performance.now() - started;
+    performanceTimings ??= {};
+    performanceTimings.totalMs = totalElapsed;
+    performanceTimings.totalRows = Number(report.dataset?.total_rows ?? dataset?.total_rows ?? 0);
+    performanceTimings.replayedRounds = Number(report.summary?.replayed_rounds ?? 0);
+    performanceTimings.roundsPerSecond = performanceTimings.replayedRounds > 0
+      ? performanceTimings.replayedRounds / (totalElapsed / 1000)
+      : 0;
+    report.performance = performanceTimings;
     self.postMessage({
       type: "complete", report,
-      elapsedMilliseconds: performance.now() - started,
+      elapsedMilliseconds: totalElapsed,
+      timings: performanceTimings,
       workerCount: usedParallel ? effectiveWorkerCount : 1,
       shardCount: taskCount,
       parallel: usedParallel,

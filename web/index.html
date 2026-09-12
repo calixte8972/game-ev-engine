@@ -439,6 +439,16 @@
           <span id="replay-status" class="replay-status">等待选择文件</span>
         </div>
 
+        <div id="replay-progress-panel" class="replay-progress-panel" hidden aria-live="polite">
+          <div class="replay-progress-heading">
+            <span id="replay-progress-label">等待开始</span>
+            <strong id="replay-progress-value">0%</strong>
+          </div>
+          <div class="replay-progress-track" role="progressbar" aria-label="回测计算进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="replay-progress-bar" class="replay-progress-bar"></div>
+          </div>
+        </div>
+
         <div class="replay-source-switch" role="tablist" aria-label="回测数据来源">
           <button class="replay-source-tab active" type="button" role="tab" aria-selected="true" aria-controls="csv-replay-source" data-replay-source="csv">
             上传 CSV
@@ -512,11 +522,18 @@
                   </span>
                 </label>
                 <label class="replay-worker-field" for="parallel-worker-count">
-                  <span>并行数（1～8）</span>
+                  <span>并行上限（1～8）</span>
                   <input id="parallel-worker-count" type="number" min="1" max="8" step="1" value="4" disabled />
                 </label>
+                <label class="replay-auto-tune-field" for="parallel-auto-tune">
+                  <input id="parallel-auto-tune" type="checkbox" checked disabled />
+                  <span>
+                    <strong>自动测速</strong>
+                    <small>用首副牌靴实测后选择线程数</small>
+                  </span>
+                </label>
               </div>
-              <p class="replay-execution-note">并行数会按设备资源下调；随机牌靴按需生成，精简 CSV 按流读取。回测按整靴分批、限制在途任务，并在同一个资金会话中按原顺序结算。完整下注明细保存在本机浏览器，页面只读取当前页。</p>
+              <p class="replay-execution-note">并行上限会按设备资源下调；开启自动测速后，系统先用首副牌靴测量实际概率计算耗时，再在上限内选择线程数。随机牌靴按需生成，精简 CSV 按流读取。回测按整靴分批、限制在途任务，并在同一个资金会话中按原顺序结算。完整下注明细保存在本机浏览器，页面只读取当前页。</p>
             </div>
             <button id="replay-button" class="primary-button replay-button" type="button" disabled>
               开始策略回放
@@ -792,6 +809,14 @@
               <span>计算耗时</span>
               <strong id="replay-time">—</strong>
             </div>
+          </div>
+
+          <div class="replay-performance" aria-label="回测阶段耗时">
+            <div><span>数据准备</span><strong id="replay-input-time">—</strong></div>
+            <div><span>概率计算</span><strong id="replay-prepare-time">—</strong></div>
+            <div><span>顺序结算</span><strong id="replay-settlement-time">—</strong></div>
+            <div><span>本地存储</span><strong id="replay-storage-time">—</strong></div>
+            <div><span>处理速度</span><strong id="replay-throughput">—</strong></div>
           </div>
 
           <div class="detail-heading">

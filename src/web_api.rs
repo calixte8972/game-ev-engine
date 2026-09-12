@@ -102,6 +102,42 @@ pub fn prepare_replay_shoe(csv: &str, decks: u8, timestamp_order: bool) -> Resul
         .map_err(|e| JsValue::from_str(&e))
 }
 
+/// 按页面配置的边注截止局数预计算一副牌靴；过期边注不会进入概率枚举。
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = prepareReplayShoeWithSideBetLimits)]
+pub fn prepare_replay_shoe_with_side_bet_limits(
+    csv: &str,
+    decks: u8,
+    timestamp_order: bool,
+    side_bet_round_limits_json: &str,
+) -> Result<String, JsValue> {
+    let limits: SideBetRoundLimits = serde_json::from_str(side_bet_round_limits_json)
+        .map_err(|e| JsValue::from_str(&format!("边注截止局数配置无效：{e}")))?;
+    crate::baccarat::prepare_stream_shoe_with_side_bet_limits(csv, decks, timestamp_order, limits)
+        .map_err(|e| JsValue::from_str(&e))
+}
+
+/// 随机模拟的无 CSV 预计算入口，供子 Worker 直接接收生成器的牌局 JSON。
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen(js_name = prepareGeneratedShoe)]
+pub fn prepare_generated_shoe(
+    rows_json: &str,
+    decks: u8,
+    source_base: u32,
+    side_bet_round_limits_json: &str,
+) -> Result<String, JsValue> {
+    let limits: SideBetRoundLimits = serde_json::from_str(side_bet_round_limits_json)
+        .map_err(|e| JsValue::from_str(&format!("边注截止局数配置无效：{e}")))?;
+    crate::baccarat::prepare_generated_shoe_json(
+        rows_json,
+        decks,
+        usize::try_from(source_base)
+            .map_err(|_| JsValue::from_str("随机牌局来源行号超出浏览器支持范围"))?,
+        limits,
+    )
+    .map_err(|e| JsValue::from_str(&e))
+}
+
 #[cfg(target_arch = "wasm32")]
 #[wasm_bindgen]
 pub struct ShoeGenerator(crate::baccarat::BaccaratShoeGenerator);

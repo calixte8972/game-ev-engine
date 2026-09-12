@@ -12,6 +12,17 @@ use crate::{Card, Rank, RoundOutcome, Suit};
 
 use super::{banker_should_draw, player_should_draw, resolve_round};
 
+#[cfg(target_arch = "wasm32")]
+use crate::Shoe;
+
+#[cfg(target_arch = "wasm32")]
+use super::{SideBetRoundLimits, calculate_main_and_side_outcomes_with_mask};
+
+#[cfg(target_arch = "wasm32")]
+use super::replay::parse_raw_cards;
+#[cfg(target_arch = "wasm32")]
+use super::{PreparedReplayWeight, StreamPacket, StreamSourceRound, outcome_code};
+
 /// 随机回测的样本参数。
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 pub struct BaccaratSimulationConfig {
@@ -221,6 +232,66 @@ impl BaccaratShoeGenerator {
         self.next_index += 1;
         serde_json::to_string(&rows).map_err(|e| e.to_string())
     }
+}
+
+/// 把随机生成器产生的一靴三列数据直接转换为概率预计算包。
+///
+/// 这是随机回测的无 CSV 路径：生成器仍然只负责确定性洗牌和发牌，子 Worker
+/// 收到 JSON 牌局后在 WASM 内重建 `Shoe`、计算概率并返回和 CSV 回放相同的
+/// `StreamPacket`。这样不会再经历“随机数据 -> CSV 文本 -> CSV 解析器”的中间层。
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn prepare_generated_shoe_json(
+    rows_json: &str,
+    decks: u8,
+    source_base: usize,
+    side_bet_round_limits: SideBetRoundLimits,
+) -> Result<String, String> {
+    let rows: Vec<GeneratedRound> = serde_json::from_str(rows_json).map_err(|e| e.to_string())?;
+    let mut shoe = Shoe::new(decks).map_err(|e| e.to_string())?;
+    let mut output = Vec::with_capacity(rows.len());
+
+    for (index, row) in rows.into_iter().enumerate() {
+        let cards = parse_raw_cards(&row.raw_cards)
+            .map_err(|e| e.to_string())?
+            .ok_or("随机牌局不应为空")?;
+        let result = resolve_round(&cards).map_err(|e| e.to_string())?;
+        let mask = side_bet_round_limits.calculation_mask(row.round_no);
+        let (weights, side_weights) =
+            calculate_main_and_side_outcomes_with_mask(&shoe, mask).map_err(|e| e.to_string())?;
+        let source_order = source_base
+            .checked_add(index)
+            .ok_or("随机牌局来源行号溢出")?;
+        let packet = StreamPacket {
+            source: StreamSourceRound {
+                table_id: 1,
+                session_id: row.session_id,
+                round_no: row.round_no,
+                started_at: format!("CSV 第 {} 行", source_order + 2),
+                source_order,
+                has_started_at: false,
+                cards: cards.iter().map(|card| card.index() as u8).collect(),
+                outcome: outcome_code(result.outcome()),
+                banker_total: result.banker_hand().total(),
+            },
+            prepared: PreparedReplayWeight {
+                table_id: 1,
+                session_id: row.session_id,
+                round_no: row.round_no,
+                weights,
+                side_weights,
+            },
+            last_in_shoe: false,
+        };
+        output.push(packet);
+        shoe.remove_many(&cards).map_err(|e| e.to_string())?;
+    }
+
+    // `last_in_shoe` 需要依据本次 rows 的长度设置。先统一生成后再标记，避免
+    // 在生成循环里为了判断末尾重复保存全部牌面或额外传一个结束包。
+    if let Some(last) = output.last_mut() {
+        last.last_in_shoe = true;
+    }
+    serde_json::to_string(&output).map_err(|e| e.to_string())
 }
 
 struct DealtRound {

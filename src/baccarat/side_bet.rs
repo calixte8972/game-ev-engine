@@ -73,6 +73,35 @@ impl SideBet {
         Self::PlayerDragonBonus,
     ];
 
+    /// 在概率计算掩码中的稳定位位置。
+    ///
+    /// 回放可以根据当前局号只计算仍然允许下注的边注。这里使用固定的
+    /// 位掩码，而不是在内层枚举循环里反复比较字符串，既减少开销，也让
+    /// “哪些边注需要计算”成为一个明确的输入。
+    pub const fn index(self) -> u8 {
+        match self {
+            Self::AnyPair => 0,
+            Self::BankerPair => 1,
+            Self::PlayerPair => 2,
+            Self::PerfectPair => 3,
+            Self::Big => 4,
+            Self::Small => 5,
+            Self::LuckySeven => 6,
+            Self::SuperLuckySeven => 7,
+            Self::LuckySix => 8,
+            Self::BankerDragonBonus => 9,
+            Self::PlayerDragonBonus => 10,
+        }
+    }
+
+    /// 返回该边注在计算掩码中对应的一位。
+    pub const fn bit(self) -> u16 {
+        1_u16 << self.index()
+    }
+
+    /// 十一种边注全部参与计算时的掩码。
+    pub const ALL_MASK: u16 = (1_u16 << 11) - 1;
+
     /// 返回供 JSON、日志和前端使用的稳定名称。
     pub const fn as_str(self) -> &'static str {
         match self {

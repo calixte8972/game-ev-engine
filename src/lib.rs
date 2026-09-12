@@ -41,10 +41,10 @@ pub use baccarat::{
     SideBetAnalysis, SideBetMetrics, SideBetRoundLimits, SideBetRuleError, SideBetRules,
     SideBetWeights, SkipReason, SnapshotError, StakeProgression, StakeSizingStrategy,
     analyze_main_bets, analyze_snapshot, calculate_kelly_fraction,
-    calculate_main_and_side_outcomes, calculate_main_outcomes, calculate_side_bet_outcomes,
-    decision_snapshot_from_weights, effective_ev, generate_baccarat_csv_text,
-    main_bet_kelly_outcomes, prepare_csv_weights, replay_csv_text,
-    replay_csv_text_with_prepared_weights, resolve_round, side_bet_kelly_outcomes,
+    calculate_main_and_side_outcomes, calculate_main_and_side_outcomes_with_mask,
+    calculate_main_outcomes, calculate_side_bet_outcomes, decision_snapshot_from_weights,
+    effective_ev, generate_baccarat_csv_text, main_bet_kelly_outcomes, prepare_csv_weights,
+    replay_csv_text, replay_csv_text_with_prepared_weights, resolve_round, side_bet_kelly_outcomes,
     side_bet_kelly_outcomes_with_rebate, write_baccarat_csv,
 };
 pub use blackjack::{

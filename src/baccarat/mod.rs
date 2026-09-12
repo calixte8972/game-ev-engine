@@ -31,14 +31,17 @@ mod probability;
 mod rebate;
 mod replay;
 #[cfg(target_arch = "wasm32")]
-pub(crate) use replay::{StreamingReplay, inspect_stream_shoe, prepare_stream_shoe};
+pub(crate) use replay::{
+    StreamPacket, StreamSourceRound, StreamingReplay, inspect_stream_shoe, outcome_code,
+    prepare_stream_shoe, prepare_stream_shoe_with_side_bet_limits,
+};
 mod risk;
 mod round;
 mod rule;
 mod side_bet;
 mod simulation;
 #[cfg(target_arch = "wasm32")]
-pub(crate) use simulation::BaccaratShoeGenerator;
+pub(crate) use simulation::{BaccaratShoeGenerator, prepare_generated_shoe_json};
 mod snapshot;
 mod strategy;
 
@@ -50,7 +53,8 @@ pub use bet::{BankerPayoutRule, MainBet, MainBetRules};
 pub use ev::MainBetEv;
 pub use hand::BaccaratHand;
 pub use point_enumerate::{
-    calculate_main_and_side_outcomes, calculate_main_outcomes, calculate_side_bet_outcomes,
+    calculate_main_and_side_outcomes, calculate_main_and_side_outcomes_with_mask,
+    calculate_main_outcomes, calculate_side_bet_outcomes,
 };
 pub use probability::{OutcomeWeights, ProbabilityError};
 pub use rebate::RebateRule;

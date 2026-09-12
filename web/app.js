@@ -45,6 +45,11 @@ const simulationSeed = document.querySelector("#simulation-seed");
 const simulationEstimate = document.querySelector("#simulation-estimate");
 const parallelReplay = document.querySelector("#parallel-replay");
 const parallelWorkerCount = document.querySelector("#parallel-worker-count");
+const parallelAutoTune = document.querySelector("#parallel-auto-tune");
+const replayProgressPanel = document.querySelector("#replay-progress-panel");
+const replayProgressBar = document.querySelector("#replay-progress-bar");
+const replayProgressValue = document.querySelector("#replay-progress-value");
+const replayProgressLabel = document.querySelector("#replay-progress-label");
 const replayRulesTitle = document.querySelector("#replay-rules-title");
 const replayRulePrimary = document.querySelector("#replay-rule-primary");
 const replayRuleSecondary = document.querySelector("#replay-rule-secondary");
@@ -239,6 +244,10 @@ let activeReplayRunId = null;
 let replayDetailStore = null;
 let replayDetailSequence = 0;
 let replayDetailWriteTail = Promise.resolve();
+let replayDetailPendingRows = [];
+let replayDetailFlushTimer = null;
+let replayStorageStartedAt = 0;
+let replayStorageElapsedMs = 0;
 let replayDetailRenderToken = 0;
 let activeGame = "baccarat";
 let activeBaccaratView = "analysis";
@@ -251,7 +260,7 @@ function resetReplayWorker() {
   // 回收整块计算内存，防止连续回测累计保留大内存。
   replayWorker?.terminate();
   replayWorkerReady = false;
-  replayWorker = new Worker(new URL("./replay-worker.js?v=23", import.meta.url), { type: "module" });
+  replayWorker = new Worker(new URL("./replay-worker.js?v=25", import.meta.url), { type: "module" });
   replayWorker.addEventListener("message", handleReplayMessage);
   replayWorker.addEventListener("error", handleReplayError);
   replayWorker.addEventListener("messageerror", handleReplayError);
@@ -795,10 +804,31 @@ function updateReplayButton() {
   replayButton.disabled = !hasInput || !replayWorkerReady || replayRunning;
 }
 
+/** 更新回测进度条；百分比由后台按“生成、概率、结算”三个阶段合成。 */
+function setReplayProgress(overall, label, detail = "") {
+  if (!replayProgressBar || !replayProgressValue || !replayProgressLabel) return;
+  const safeOverall = Math.max(0, Math.min(1, Number(overall) || 0));
+  const percentage = Math.round(safeOverall * 100);
+  replayProgressPanel?.removeAttribute("hidden");
+  replayProgressBar.style.width = `${percentage}%`;
+  replayProgressValue.textContent = `${percentage}%`;
+  replayProgressLabel.textContent = detail ? `${label} · ${detail}` : label;
+  replayProgressBar.setAttribute("aria-valuenow", String(percentage));
+}
+
+function resetReplayProgress(label = "等待开始") {
+  setReplayProgress(0, label);
+}
+
 function updateParallelReplayControls() {
   const enabled = parallelReplay.checked;
   parallelWorkerCount.disabled = !enabled || replayRunning;
   parallelWorkerCount.closest("label")?.classList.toggle(
+    "is-disabled",
+    !enabled || replayRunning,
+  );
+  parallelAutoTune.disabled = !enabled || replayRunning;
+  parallelAutoTune.closest("label")?.classList.toggle(
     "is-disabled",
     !enabled || replayRunning,
   );
@@ -1034,7 +1064,7 @@ async function renderReplayDetails() {
   replayDetailWrap.scrollTop = 0;
 }
 
-function renderReplay(report, elapsedMilliseconds) {
+function renderReplay(report, elapsedMilliseconds, timings = {}) {
   // 汇总卡片、下注分类、风险指标和本金图都来自同一份 Rust 回放报告。
   // 先更新摘要，再交给图表和明细表，避免用户看到新摘要配旧图表。
   replayError.hidden = true;
@@ -1085,6 +1115,19 @@ function renderReplay(report, elapsedMilliseconds) {
   setText("#valid-card-rows", integerFormatter.format(quality.valid_card_rows));
   setText("#hit-rate", percent(summary.hit_rate, 2));
   setText("#replay-time", `${(elapsedMilliseconds / 1000).toFixed(2)} 秒`);
+  const milliseconds = value => Number.isFinite(Number(value))
+    ? `${(Number(value) / 1000).toFixed(2)} 秒`
+    : "—";
+  setText("#replay-input-time", milliseconds(timings.generationMs));
+  setText("#replay-prepare-time", milliseconds(timings.prepareMs));
+  setText("#replay-settlement-time", milliseconds(timings.settlementMs));
+  setText("#replay-storage-time", milliseconds(timings.storageMs));
+  setText(
+    "#replay-throughput",
+    Number.isFinite(Number(timings.roundsPerSecond)) && Number(timings.roundsPerSecond) > 0
+      ? `${Number(timings.roundsPerSecond).toFixed(0)} 局/秒`
+      : "—",
+  );
 
   bankrollChartController.render(report);
   contributionChartController.render(report);
@@ -1230,6 +1273,14 @@ replayButton.addEventListener("click", async () => {
   currentReplayReport = null;
   replayPagination.hidden = true;
   replayBody.replaceChildren();
+  if (replayDetailFlushTimer) {
+    clearTimeout(replayDetailFlushTimer);
+    replayDetailFlushTimer = null;
+  }
+  replayDetailPendingRows = [];
+  replayStorageStartedAt = 0;
+  replayStorageElapsedMs = 0;
+  resetReplayProgress("准备回测");
   bankrollChartController.reset("正在回放，完成后显示新的本金变化曲线…");
   contributionChartController.reset();
   replayAnalysisChartController.reset();
@@ -1253,6 +1304,7 @@ replayButton.addEventListener("click", async () => {
       parallelReplay: parallelReplay.checked,
       parallelWorkerCount: parallelReplay.checked
         ? readNumber("#parallel-worker-count", "并行数", { min: 1, max: 8, integer: true }) : 1,
+      autoTuneWorkers: parallelReplay.checked && parallelAutoTune.checked,
     };
     if (!replayWorker) resetReplayWorker();
     if (replaySourceMode === "simulation") {
@@ -1288,8 +1340,17 @@ function handleReplayMessage(event) {
     return;
   }
   if (message.type === "detail-reset") {
+    if (replayDetailFlushTimer) {
+      clearTimeout(replayDetailFlushTimer);
+      replayDetailFlushTimer = null;
+    }
+    replayDetailPendingRows = [];
     replayDetailSequence = 0;
-    replayDetailWriteTail = replayDetailStore?.clearTemporary?.() ?? Promise.resolve();
+    // 降级重跑前先等待已经排队的批量写入，再清理旧明细；否则两个 IndexedDB
+    // 事务可能交错，导致旧批次在清理后又“复活”。
+    const store = replayDetailStore;
+    replayDetailWriteTail = replayDetailWriteTail
+      .then(() => store?.clearTemporary?.() ?? Promise.resolve());
     globalThis.__replayDetailWriteTail = replayDetailWriteTail;
     return;
   }
@@ -1305,13 +1366,27 @@ function handleReplayMessage(event) {
   }
 
   if (message.type === "complete") {
+    setReplayProgress(0.98, "正在保存本地明细", "整理回测结果");
+    replayStatus.textContent = "正在保存本地明细…";
+    if (replayDetailFlushTimer) {
+      clearTimeout(replayDetailFlushTimer);
+      replayDetailFlushTimer = null;
+    }
+    flushReplayDetails(true);
     const renderCompleted = () => {
       const executionLabel = message.parallel
         ? `${message.workerCount ?? 1} 个并行 Worker`
         : "单线程";
       setReplayRunning(false, `回放完成 · ${executionLabel}`);
       releaseReplayWorker();
-      renderReplay(message.report, message.elapsedMilliseconds);
+      replayStorageElapsedMs = replayStorageStartedAt
+        ? performance.now() - replayStorageStartedAt
+        : 0;
+      setReplayProgress(1, "回测完成", `${message.report?.summary?.replayed_rounds ?? 0} 局`);
+      renderReplay(message.report, message.elapsedMilliseconds, {
+        ...(message.timings ?? message.report?.performance ?? {}),
+        storageMs: replayStorageElapsedMs,
+      });
       if (message.fallbackReason) replayStatus.textContent += ` · ${message.fallbackReason}`;
     };
     // 有分批明细时先等待 IndexedDB 写入完成；旧报告没有这个 Promise，保持
@@ -1320,6 +1395,7 @@ function handleReplayMessage(event) {
     if (pending) void pending.then(renderCompleted).catch((error) => {
       setReplayRunning(false, "回放完成但明细保存失败");
       showError(replayError, `完整明细未能保存：${error?.message ?? error}`);
+      setReplayProgress(0, "明细保存失败", "请重新运行回测");
       releaseReplayWorker();
     });
     else renderCompleted();
@@ -1329,17 +1405,43 @@ function handleReplayMessage(event) {
   if (message.type === "progress") {
     if (message.phase === "generate") {
       replayStatus.textContent = "正在生成可复现牌靴…";
+      setReplayProgress(
+        message.overall ?? 0.02,
+        "生成牌靴",
+        `${message.completed ?? 0}/${message.total ?? 0} 靴`,
+      );
     } else if (message.phase === "probability") {
       const workerLabel = message.workerCount ? ` · ${message.workerCount} 个 Worker` : "";
       replayStatus.textContent = message.parallel
         ? `并行枚举牌靴概率 ${message.completed ?? 0}/${message.total ?? 0}${workerLabel}…`
         : "正在单线程枚举牌靴概率…";
+      setReplayProgress(
+        message.overall ?? 0.2,
+        "计算概率",
+        `${message.completed ?? 0}/${message.total ?? 0} 靴${workerLabel}`,
+      );
+    } else if (message.phase === "worker-tune") {
+      replayStatus.textContent = "正在实测并行效率…";
+      setReplayProgress(
+        message.overall ?? 0.03,
+        "自动选择 Worker",
+        "正在用首副牌靴测速",
+      );
     } else if (message.phase === "serial") {
       replayStatus.textContent = message.fallbackReason
         ? `${message.fallbackReason}；正在单线程回放…`
         : "正在单线程回放，请勿关闭页面…";
+      setReplayProgress(message.overall ?? 0.2, "单线程回放", "请勿关闭页面");
     } else if (message.phase === "settlement") {
       replayStatus.textContent = "正在按时间顺序合并本金与倍投…";
+      setReplayProgress(
+        message.overall ?? 0.7,
+        "顺序结算",
+        `${message.completed ?? message.settledRounds ?? 0}/${message.total ?? message.settlementTotal ?? 0} 局`,
+      );
+    } else if (message.phase === "input") {
+      replayStatus.textContent = "正在准备回测数据…";
+      setReplayProgress(message.overall ?? 0.02, "准备数据");
     }
     return;
   }
@@ -1350,11 +1452,42 @@ function handleReplayMessage(event) {
     contributionChartController.reset();
     replayAnalysisChartController.reset();
     showError(replayError, message.message);
+    setReplayProgress(0, "回测失败", "可以修正配置后重试");
     releaseReplayWorker();
   }
 }
 
-/** 将一个小批次明细写入当前回测库；写入链提供完成时的存储屏障。 */
+/**
+ * 将明细先聚合到一个有界缓冲区，再用更大的 IndexedDB 事务写入。
+ *
+ * Worker 仍按 256 局回传，页面最多暂存 2048 笔下注；这样减少事务提交次数，
+ * 又不会为了追求吞吐把几十万笔明细全部留在 JavaScript 内存中。
+ */
+const REPLAY_DETAIL_WRITE_BATCH = 2048;
+function flushReplayDetails(force = false) {
+  if (!replayDetailStore || !replayDetailPendingRows.length) return replayDetailWriteTail;
+  if (!force && replayDetailPendingRows.length < REPLAY_DETAIL_WRITE_BATCH) {
+    return replayDetailWriteTail;
+  }
+  const rows = replayDetailPendingRows.splice(
+    0,
+    force ? replayDetailPendingRows.length : REPLAY_DETAIL_WRITE_BATCH,
+  );
+  replayDetailWriteTail = replayDetailWriteTail
+    .then(() => replayDetailStore.put("details", rows));
+  globalThis.__replayDetailWriteTail = replayDetailWriteTail;
+  return replayDetailWriteTail;
+}
+
+function scheduleReplayDetailFlush() {
+  if (replayDetailFlushTimer || !replayDetailPendingRows.length) return;
+  replayDetailFlushTimer = setTimeout(() => {
+    replayDetailFlushTimer = null;
+    void flushReplayDetails(true);
+  }, 60);
+}
+
+/** 将一个 Worker 批次加入本地明细缓冲，并在回测结束前强制刷完。 */
 function persistReplayDetails(message) {
   if (!replayDetailStore || message.runId !== activeReplayRunId) return;
   const rows = (message.details ?? []).map((bet) => ({
@@ -1362,9 +1495,10 @@ function persistReplayDetails(message) {
     bet,
   }));
   if (!rows.length) return;
-  replayDetailWriteTail = replayDetailWriteTail
-    .then(() => replayDetailStore.put("details", rows));
-  globalThis.__replayDetailWriteTail = replayDetailWriteTail;
+  replayStorageStartedAt ||= performance.now();
+  replayDetailPendingRows.push(...rows);
+  flushReplayDetails(false);
+  scheduleReplayDetailFlush();
 }
 
 function handleReplayError(event) {
@@ -1377,6 +1511,7 @@ function handleReplayError(event) {
   contributionChartController.reset();
   replayAnalysisChartController.reset();
   showError(replayError, event.message || "CSV 回放 Worker 无法启动");
+  setReplayProgress(0, "回测失败", "可以修正配置后重试");
   releaseReplayWorker();
 }
 

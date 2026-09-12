@@ -76,7 +76,12 @@ if (!isMainThread) {
       thread.on("error", reject);
       thread.on("message", message => {
         if (message.type === "ready") {
-          if (options.useFile) {
+          if (options.simulate) {
+            thread.postMessage({
+              type: "simulate", simulation: options.simulate,
+              config: { ...config, ...settings },
+            });
+          } else if (options.useFile) {
             // 覆盖浏览器实际发送 File/Blob 的路径；Worker 应该按流读取精简 CSV，
             // 而不是要求主线程先复制整份文本或 ArrayBuffer。
             thread.postMessage({
@@ -124,6 +129,28 @@ if (!isMainThread) {
   assert.equal(streamedFile.parallel, true, streamedFile.fallbackReason);
   assert.deepEqual(streamedFile.report.bets, serial.report.bets, "Blob 流式读取与 ArrayBuffer 回放结果相同");
   assert.equal(streamedFile.report.summary.final_bankroll, serial.report.summary.final_bankroll);
+
+  // 随机回测不再经过 CSV 文本中间层；同时覆盖自动测速会复用首副牌靴，
+  // 不改变单线程的逐笔结算结果。
+  const simulation = { shoes: 8, maxRoundsPerShoe: 3, seed: "20260912" };
+  const simulatedSerial = await run(
+    { parallelReplay: false, autoTuneWorkers: false }, csv, { simulate: simulation },
+  );
+  const simulatedAuto = await run(
+    { parallelReplay: true, parallelWorkerCount: 4, autoTuneWorkers: true },
+    csv,
+    { simulate: simulation },
+  );
+  assert.deepEqual(
+    simulatedAuto.report.bets,
+    simulatedSerial.report.bets,
+    "随机 WASM 数据流与单线程结算结果相同",
+  );
+  assert.equal(
+    simulatedAuto.report.summary.final_bankroll,
+    simulatedSerial.report.summary.final_bankroll,
+  );
+  assert.ok(Number(simulatedAuto.timings?.workerProbeMs) >= 0, "自动测速应记录阶段耗时");
   const failedCreation = await run({ parallelReplay: true, parallelWorkerCount: 8 }, csv, { failCreation: true });
   assert.equal(failedCreation.parallel, false);
   assert.ok(failedCreation.fallbackReason);
@@ -193,7 +220,10 @@ if (!isMainThread) {
   const page = vm.createContext({
     Worker: PageWorker, URL, replayWorkerReady: false,
     replayStatus: { textContent: "等待选择文件" }, replaySourceMode: "csv", currentCsvFile: null,
-    updateReplayButton() {}, setReplayRunning() {},
+    updateReplayButton() {}, setReplayRunning() {}, setReplayProgress() {},
+    replayDetailFlushTimer: null, replayDetailPendingRows: [], replayDetailSequence: 0,
+    replayDetailStore: null, replayDetailWriteTail: Promise.resolve(),
+    replayStorageStartedAt: 0, replayStorageElapsedMs: 0,
     renderReplay() { assert.equal(page.oldWorker.stopped, true); rendered += 1; },
   });
   const lifecycle = appSource.slice(appSource.indexOf("let replayWorker;"), appSource.indexOf("function selectedMode"))

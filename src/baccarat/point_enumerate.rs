@@ -24,7 +24,9 @@
 
 use std::{collections::HashMap, sync::OnceLock};
 
-use crate::{OutcomeWeights, ProbabilityError, RoundError, RoundOutcome, Shoe, SideBetWeights};
+use crate::{
+    OutcomeWeights, ProbabilityError, RoundError, RoundOutcome, Shoe, SideBet, SideBetWeights,
+};
 
 use super::probability::falling_factorial;
 use super::resolve_point_round;
@@ -67,23 +69,44 @@ static COMPOSITION_TABLE: OnceLock<Vec<CompositionCoefficient>> = OnceLock::new(
 
 /// 根据当前牌靴精确计算下一局庄、闲、和的概率权重。
 pub fn calculate_main_outcomes(shoe: &Shoe) -> Result<OutcomeWeights, ProbabilityError> {
-    point_outcomes(shoe)?.main_weights()
+    point_outcomes(shoe, 0)?.main_weights()
 }
 
 /// 根据当前牌靴计算对子、完美对子、幸运 7 和超级幸运 7 权重。
 pub fn calculate_side_bet_outcomes(shoe: &Shoe) -> Result<SideBetWeights, ProbabilityError> {
-    let point = point_outcomes(shoe)?;
+    let point = point_outcomes(shoe, SideBet::ALL_MASK)?;
     let pairs = pair_weights(shoe)?;
-    Ok(point.side_bet_weights(pairs))
+    Ok(point.side_bet_weights(pairs, SideBet::ALL_MASK))
 }
 
 /// 一次点数枚举同时返回主注和边注权重，供浏览器避免重复遍历系数表。
 pub fn calculate_main_and_side_outcomes(
     shoe: &Shoe,
 ) -> Result<(OutcomeWeights, SideBetWeights), ProbabilityError> {
-    let point = point_outcomes(shoe)?;
+    calculate_main_and_side_outcomes_with_mask(shoe, SideBet::ALL_MASK)
+}
+
+/// 按指定边注掩码计算主注和边注权重。
+///
+/// 主注始终计算，因为策略必须知道庄、闲、和的概率；边注则只计算掩码中
+/// 被置为 1 的玩法。回放在某个边注的最后可下注局之后传入不包含该玩法的
+/// 掩码，避免继续遍历该玩法的无用结果桶。
+pub fn calculate_main_and_side_outcomes_with_mask(
+    shoe: &Shoe,
+    side_bet_mask: u16,
+) -> Result<(OutcomeWeights, SideBetWeights), ProbabilityError> {
+    let point = point_outcomes(shoe, side_bet_mask)?;
     let main = point.main_weights()?;
-    let sides = point.side_bet_weights(pair_weights(shoe)?);
+    let pair_mask = SideBet::AnyPair.bit()
+        | SideBet::BankerPair.bit()
+        | SideBet::PlayerPair.bit()
+        | SideBet::PerfectPair.bit();
+    let pairs = if side_bet_mask & pair_mask == 0 {
+        PairWeights::default()
+    } else {
+        pair_weights(shoe)?
+    };
+    let sides = point.side_bet_weights(pairs, side_bet_mask);
     Ok((main, sides))
 }
 
@@ -131,32 +154,103 @@ impl PointOutcomeAccumulator {
     ///
     /// 大小、幸运 6/7、龙宝只依赖点数与牌局结构，所以可以直接复用本对象；
     /// 只有对子和完美对子需要额外查看前四张具体牌，故通过 `pairs` 参数补入。
-    fn side_bet_weights(self, pairs: PairWeights) -> SideBetWeights {
+    fn side_bet_weights(self, pairs: PairWeights, side_bet_mask: u16) -> SideBetWeights {
         let total = falling_factorial(self.total_cards, 6);
         SideBetWeights::new(
             total,
-            pairs.any,
-            pairs.banker,
-            pairs.player,
-            pairs.perfect,
-            self.big,
-            self.small,
-            self.lucky_seven_two_cards,
-            self.lucky_seven_three_cards,
-            self.super_lucky_seven_four_cards,
-            self.super_lucky_seven_five_cards,
-            self.super_lucky_seven_six_cards,
-            self.lucky_six_two_cards,
-            self.lucky_six_three_cards,
-            self.banker_dragon_bonus_tiers,
-            self.banker_dragon_bonus_push,
-            self.player_dragon_bonus_tiers,
-            self.player_dragon_bonus_push,
+            if side_bet_mask & SideBet::AnyPair.bit() != 0 {
+                pairs.any
+            } else {
+                0
+            },
+            if side_bet_mask & SideBet::BankerPair.bit() != 0 {
+                pairs.banker
+            } else {
+                0
+            },
+            if side_bet_mask & SideBet::PlayerPair.bit() != 0 {
+                pairs.player
+            } else {
+                0
+            },
+            if side_bet_mask & SideBet::PerfectPair.bit() != 0 {
+                pairs.perfect
+            } else {
+                0
+            },
+            if side_bet_mask & SideBet::Big.bit() != 0 {
+                self.big
+            } else {
+                0
+            },
+            if side_bet_mask & SideBet::Small.bit() != 0 {
+                self.small
+            } else {
+                0
+            },
+            if side_bet_mask & SideBet::LuckySeven.bit() != 0 {
+                self.lucky_seven_two_cards
+            } else {
+                0
+            },
+            if side_bet_mask & SideBet::LuckySeven.bit() != 0 {
+                self.lucky_seven_three_cards
+            } else {
+                0
+            },
+            if side_bet_mask & SideBet::SuperLuckySeven.bit() != 0 {
+                self.super_lucky_seven_four_cards
+            } else {
+                0
+            },
+            if side_bet_mask & SideBet::SuperLuckySeven.bit() != 0 {
+                self.super_lucky_seven_five_cards
+            } else {
+                0
+            },
+            if side_bet_mask & SideBet::SuperLuckySeven.bit() != 0 {
+                self.super_lucky_seven_six_cards
+            } else {
+                0
+            },
+            if side_bet_mask & SideBet::LuckySix.bit() != 0 {
+                self.lucky_six_two_cards
+            } else {
+                0
+            },
+            if side_bet_mask & SideBet::LuckySix.bit() != 0 {
+                self.lucky_six_three_cards
+            } else {
+                0
+            },
+            if side_bet_mask & SideBet::BankerDragonBonus.bit() != 0 {
+                self.banker_dragon_bonus_tiers
+            } else {
+                [0; 6]
+            },
+            if side_bet_mask & SideBet::BankerDragonBonus.bit() != 0 {
+                self.banker_dragon_bonus_push
+            } else {
+                0
+            },
+            if side_bet_mask & SideBet::PlayerDragonBonus.bit() != 0 {
+                self.player_dragon_bonus_tiers
+            } else {
+                [0; 6]
+            },
+            if side_bet_mask & SideBet::PlayerDragonBonus.bit() != 0 {
+                self.player_dragon_bonus_push
+            } else {
+                0
+            },
         )
     }
 }
 
-fn point_outcomes(shoe: &Shoe) -> Result<PointOutcomeAccumulator, ProbabilityError> {
+fn point_outcomes(
+    shoe: &Shoe,
+    side_bet_mask: u16,
+) -> Result<PointOutcomeAccumulator, ProbabilityError> {
     let total_cards = shoe.total_remaining();
     // 所有终局都统一扩展到六张有序序列。少于六张时，即使某些规则只用
     // 四张牌也没有足够的“补全位置”来建立共同分母，所以直接拒绝。
@@ -241,72 +335,85 @@ fn point_outcomes(shoe: &Shoe) -> Result<PointOutcomeAccumulator, ProbabilityErr
             physical_sequences_per_permutation,
             coefficient.banker_win_on_six_permutations,
         )?;
-        lucky_seven_two_cards = add_weight(
+        lucky_seven_two_cards = add_weight_if(
             lucky_seven_two_cards,
             physical_sequences_per_permutation,
             coefficient.lucky_seven_two_cards_permutations,
+            side_bet_mask & SideBet::LuckySeven.bit() != 0,
         )?;
-        lucky_seven_three_cards = add_weight(
+        lucky_seven_three_cards = add_weight_if(
             lucky_seven_three_cards,
             physical_sequences_per_permutation,
             coefficient.lucky_seven_three_cards_permutations,
+            side_bet_mask & SideBet::LuckySeven.bit() != 0,
         )?;
-        super_lucky_seven_four_cards = add_weight(
+        super_lucky_seven_four_cards = add_weight_if(
             super_lucky_seven_four_cards,
             physical_sequences_per_permutation,
             coefficient.super_lucky_seven_four_cards_permutations,
+            side_bet_mask & SideBet::SuperLuckySeven.bit() != 0,
         )?;
-        super_lucky_seven_five_cards = add_weight(
+        super_lucky_seven_five_cards = add_weight_if(
             super_lucky_seven_five_cards,
             physical_sequences_per_permutation,
             coefficient.super_lucky_seven_five_cards_permutations,
+            side_bet_mask & SideBet::SuperLuckySeven.bit() != 0,
         )?;
-        super_lucky_seven_six_cards = add_weight(
+        super_lucky_seven_six_cards = add_weight_if(
             super_lucky_seven_six_cards,
             physical_sequences_per_permutation,
             coefficient.super_lucky_seven_six_cards_permutations,
+            side_bet_mask & SideBet::SuperLuckySeven.bit() != 0,
         )?;
-        lucky_six_two_cards = add_weight(
+        lucky_six_two_cards = add_weight_if(
             lucky_six_two_cards,
             physical_sequences_per_permutation,
             coefficient.lucky_six_two_cards_permutations,
+            side_bet_mask & SideBet::LuckySix.bit() != 0,
         )?;
-        lucky_six_three_cards = add_weight(
+        lucky_six_three_cards = add_weight_if(
             lucky_six_three_cards,
             physical_sequences_per_permutation,
             coefficient.lucky_six_three_cards_permutations,
+            side_bet_mask & SideBet::LuckySix.bit() != 0,
         )?;
         for tier in 0..6 {
-            banker_dragon_bonus_tiers[tier] = add_weight(
+            banker_dragon_bonus_tiers[tier] = add_weight_if(
                 banker_dragon_bonus_tiers[tier],
                 physical_sequences_per_permutation,
                 coefficient.banker_dragon_bonus_tier_permutations[tier],
+                side_bet_mask & SideBet::BankerDragonBonus.bit() != 0,
             )?;
-            player_dragon_bonus_tiers[tier] = add_weight(
+            player_dragon_bonus_tiers[tier] = add_weight_if(
                 player_dragon_bonus_tiers[tier],
                 physical_sequences_per_permutation,
                 coefficient.player_dragon_bonus_tier_permutations[tier],
+                side_bet_mask & SideBet::PlayerDragonBonus.bit() != 0,
             )?;
         }
-        banker_dragon_bonus_push = add_weight(
+        banker_dragon_bonus_push = add_weight_if(
             banker_dragon_bonus_push,
             physical_sequences_per_permutation,
             coefficient.banker_dragon_bonus_push_permutations,
+            side_bet_mask & SideBet::BankerDragonBonus.bit() != 0,
         )?;
-        player_dragon_bonus_push = add_weight(
+        player_dragon_bonus_push = add_weight_if(
             player_dragon_bonus_push,
             physical_sequences_per_permutation,
             coefficient.player_dragon_bonus_push_permutations,
+            side_bet_mask & SideBet::PlayerDragonBonus.bit() != 0,
         )?;
-        small = add_weight(
+        small = add_weight_if(
             small,
             physical_sequences_per_permutation,
             coefficient.small_permutations,
+            side_bet_mask & SideBet::Small.bit() != 0,
         )?;
-        big = add_weight(
+        big = add_weight_if(
             big,
             physical_sequences_per_permutation,
             coefficient.big_permutations,
+            side_bet_mask & SideBet::Big.bit() != 0,
         )?;
     }
 
@@ -529,6 +636,23 @@ fn add_weight(
         .ok_or(ProbabilityError::WeightOverflow)
 }
 
+/// 只有目标边注仍然有效时才把结果桶加入累计值。
+///
+/// 把判断放在加权汇总层，而不是在策略层事后把结果设为零，才能真正省掉
+/// 大批无用的整数乘法和溢出检查；主注桶仍然始终由 `add_weight` 计算。
+fn add_weight_if(
+    current: u64,
+    physical_weight: u64,
+    permutations: u16,
+    enabled: bool,
+) -> Result<u64, ProbabilityError> {
+    if enabled {
+        add_weight(current, physical_weight, permutations)
+    } else {
+        Ok(current)
+    }
+}
+
 /// 返回进程内共享的组合系数表。
 ///
 /// `OnceLock` 保证第一次调用时完成初始化，之后只读复用；这对 CLI、WASM 页面
@@ -709,9 +833,12 @@ fn resolve_six_position_sequence(points: &[u8; 6]) -> super::round::PointRoundRe
 
 #[cfg(test)]
 mod tests {
-    use crate::{Card, Rank, Shoe, Suit};
+    use crate::{Card, Rank, Shoe, SideBet, Suit};
 
-    use super::{COMPOSITION_COUNT, calculate_main_outcomes, composition_table};
+    use super::{
+        COMPOSITION_COUNT, calculate_main_and_side_outcomes_with_mask, calculate_main_outcomes,
+        composition_table,
+    };
 
     fn card(input: &str) -> Card {
         input.parse().expect("测试使用的牌面必须合法")
@@ -785,5 +912,32 @@ mod tests {
         assert!(weights.banker_probability() > weights.player_probability());
         assert!(weights.banker_win_on_six_weight() > 0);
         assert!(weights.banker_win_on_six_weight() <= weights.banker_weight());
+    }
+
+    #[test]
+    fn side_bet_mask_skips_disabled_buckets_without_changing_main_weights() {
+        let shoe = Shoe::default();
+        let (all_main, all_side) =
+            calculate_main_and_side_outcomes_with_mask(&shoe, SideBet::ALL_MASK)
+                .expect("完整边注掩码应该能够完成枚举");
+        let (banker_pair_main, banker_pair_only) =
+            calculate_main_and_side_outcomes_with_mask(&shoe, SideBet::BankerPair.bit())
+                .expect("只启用庄对应该能够完成枚举");
+
+        assert_eq!(all_main, banker_pair_main);
+        assert_eq!(
+            banker_pair_only.win_weight(SideBet::BankerPair),
+            all_side.win_weight(SideBet::BankerPair)
+        );
+        for bet in SideBet::ALL {
+            if bet != SideBet::BankerPair {
+                assert_eq!(
+                    banker_pair_only.win_weight(bet),
+                    0,
+                    "已关闭的边注不应继续累加结果桶：{}",
+                    bet.as_str()
+                );
+            }
+        }
     }
 }
