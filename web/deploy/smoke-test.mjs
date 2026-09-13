@@ -95,6 +95,12 @@ if (!/id="bet-count-grid"/.test(pageHtml)) {
 if (!/id="replay-stop-notice"/.test(pageHtml)) {
   throw new Error("回放结果缺少本金耗尽后的提前停止提示");
 }
+if (!/id="trend-bet-filter"/.test(pageHtml)
+    || !/value="banker"/.test(pageHtml)
+    || !/value="perfect_pair"/.test(pageHtml)
+    || !/by_bet/.test(replayWorkerSource)) {
+  throw new Error("下注趋势图缺少按庄、完美对子等玩法筛选");
+}
 
 // 资金曲线不能放在默认 hidden 的回放结果容器中，否则用户第一次打开
 // 页面时完全看不到这个功能，也不知道上传 CSV 后会生成图表。

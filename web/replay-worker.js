@@ -617,6 +617,10 @@ class BoundedCurve {
     this.stakeMetric = new BoundedMetric();
     this.roundProfitMetric = new BoundedMetric();
     this.roundCounts = new Map();
+    // 同一份回放报告同时保留“全部下注”和“按玩法”的有界曲线。
+    // 这样页面切换庄、闲、对子等筛选时不需要重新回放，也不会把百万笔
+    // 明细全部复制到主线程；每种玩法只保留峰谷采样点和局号计数。
+    this.betTrends = new Map();
     this.first = {
       index: 0, bankroll: this.initial, cumulativeProfit: 0, drawdown: 0,
       drawdownRate: 0, drawdownDuration: 0, peakBankroll: this.initial,
@@ -633,7 +637,7 @@ class BoundedCurve {
         this.pending = {
           key, bankroll: Number(bet.bankroll_after), roundStake: 0, roundProfit: 0,
           betCount: 0, tableId: bet.table_id, sessionId: bet.session_id,
-          roundNo: bet.round_no, startedAt: bet.started_at,
+          roundNo: bet.round_no, startedAt: bet.started_at, byBet: new Map(),
         };
       }
       const stake = Number(bet.amount) || 0;
@@ -641,6 +645,11 @@ class BoundedCurve {
       this.pending.roundStake += stake;
       this.pending.roundProfit += Number(bet.actual_profit) || 0;
       this.pending.betCount += 1;
+      const betKey = String(bet.bet || "unknown");
+      const betPending = this.pending.byBet.get(betKey) ?? { stake: 0, profit: 0 };
+      betPending.stake += stake;
+      betPending.profit += Number(bet.actual_profit) || 0;
+      this.pending.byBet.set(betKey, betPending);
     }
   }
 
@@ -664,12 +673,34 @@ class BoundedCurve {
     if (Number.isSafeInteger(roundNo) && roundNo > 0) {
       this.roundCounts.set(roundNo, (this.roundCounts.get(roundNo) ?? 0) + 1);
     }
+    for (const [betKey, betPending] of pending.byBet) {
+      const trend = this.betTrends.get(betKey) ?? {
+        stakeMetric: new BoundedMetric(),
+        roundProfitMetric: new BoundedMetric(),
+        roundCounts: new Map(),
+      };
+      trend.stakeMetric.add(betPending.stake);
+      trend.roundProfitMetric.add(betPending.profit);
+      if (Number.isSafeInteger(roundNo) && roundNo > 0) {
+        trend.roundCounts.set(roundNo, (trend.roundCounts.get(roundNo) ?? 0) + 1);
+      }
+      this.betTrends.set(betKey, trend);
+    }
     this.pending = null;
   }
 
   finish() { this.flush(); }
 
   trends() {
+    const serialize = (trend) => ({
+      stake_points: trend.stakeMetric.points(),
+      round_profit_points: trend.roundProfitMetric.points(),
+      round_distribution: [...trend.roundCounts.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([roundNo, count]) => ({ roundNo, count })),
+      total_bets: trend.stakeMetric.index,
+      betting_rounds: trend.roundProfitMetric.index,
+    });
     return {
       stake_points: this.stakeMetric.points(),
       round_profit_points: this.roundProfitMetric.points(),
@@ -678,6 +709,9 @@ class BoundedCurve {
         .map(([roundNo, count]) => ({ roundNo, count })),
       total_bets: this.stakeMetric.index,
       betting_rounds: this.roundProfitMetric.index,
+      by_bet: Object.fromEntries(
+        [...this.betTrends.entries()].map(([betKey, trend]) => [betKey, serialize(trend)]),
+      ),
     };
   }
 
@@ -1064,7 +1098,7 @@ async function runStreamPipeline({
       for (let index = 0; index < poolSize; index += 1) {
         let worker;
         try {
-          worker = new Worker(new URL("./replay-shard-worker.js?v=27", import.meta.url), { type: "module" });
+          worker = new Worker(new URL("./replay-shard-worker.js?v=28", import.meta.url), { type: "module" });
         } catch (error) {
           reject(error);
           return;
@@ -1151,7 +1185,7 @@ function mergePreparedResults(results) {
 
 /* ----------------------------- 入口 ----------------------------- */
 
-const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=27", import.meta.url));
+const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=28", import.meta.url));
 ready.then(() => self.postMessage({ type: "ready" })).catch((error) => {
   self.postMessage({ type: "error", message: `无法加载 CSV 回放核心：${error?.message ?? String(error)}` });
 });

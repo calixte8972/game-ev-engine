@@ -2724,6 +2724,29 @@ td:first-child {
   margin-top: 14px;
 }
 
+.trend-chart-toolbar {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
+  align-items: end;
+  gap: 8px 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: linear-gradient(135deg, rgba(236, 248, 242, 0.96), var(--surface-tint));
+}
+
+.trend-chart-toolbar h3 { margin: 0; font-size: 1.1rem; color: var(--ink); }
+.trend-chart-toolbar .eyebrow { margin: 0 0 3px; }
+.trend-bet-filter { display: grid; gap: 5px; color: var(--ink); font-size: 0.8rem; font-weight: 700; }
+.trend-bet-filter select { width: 100%; min-height: 40px; }
+.trend-filter-note {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
 .trend-chart-card {
   min-width: 0;
   padding: 16px;
@@ -2789,6 +2812,8 @@ td:first-child {
 }
 
 @media (max-width: 560px) {
+  .trend-chart-toolbar { grid-template-columns: 1fr; }
+  .trend-filter-note { grid-column: auto; }
   .replay-streak-heading { display: block; }
   .replay-streak-heading span { display: block; margin-top: 3px; }
   .replay-streak-cards > div { display: block; }

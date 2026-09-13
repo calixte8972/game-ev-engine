@@ -127,6 +127,19 @@ if (!isMainThread) {
     trends.betting_rounds,
     "可下注子局数直方图应按局计数，同局多注不能重复",
   );
+  assert.ok(Object.keys(trends.by_bet ?? {}).length > 0, "趋势图必须保留按玩法筛选的数据");
+  for (const [bet, selected] of Object.entries(trends.by_bet)) {
+    const selectedBets = serial.report.bets.filter(item => item.bet === bet);
+    const selectedRounds = new Set(selectedBets.map(item =>
+      [item.table_id, item.session_id, item.round_no, item.started_at].join("|")));
+    assert.equal(selected.total_bets, selectedBets.length, `${bet} 的下注笔数筛选口径一致`);
+    assert.equal(selected.betting_rounds, selectedRounds.size, `${bet} 的下注子局数筛选口径一致`);
+    assert.equal(
+      selected.round_distribution.reduce((sum, item) => sum + item.count, 0),
+      selected.betting_rounds,
+      `${bet} 的子局分布同局只计一次`,
+    );
+  }
   for (const count of [2, 4, 8]) {
     const parallel = await run({ parallelReplay: true, parallelWorkerCount: count });
     assert.equal(parallel.parallel, true, parallel.fallbackReason);

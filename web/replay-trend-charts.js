@@ -69,7 +69,11 @@ function createLineController(card, kind) {
         ? input.filter((point) => Number.isFinite(Number(point.index)) && Number.isFinite(Number(point.value)))
         : [];
       svg.replaceChildren();
-      if (!points.length) return;
+      if (!points.length || !total) {
+        summary.textContent = "该玩法暂无下注";
+        hover.textContent = "没有该玩法的实际下注记录";
+        return;
+      }
       viewportWidth = svg.clientWidth < 540 ? 360 : 720;
       plot.left = viewportWidth === 360 ? 66 : 76;
       plot.right = viewportWidth - 20;
@@ -123,7 +127,11 @@ function createDistributionController(card) {
     },
     render(distribution, bettingRounds) {
       plot.replaceChildren();
-      if (!Array.isArray(distribution) || !distribution.length) return;
+      if (!Array.isArray(distribution) || !distribution.length || !bettingRounds) {
+        summary.textContent = "该玩法暂无下注";
+        plot.setAttribute("aria-label", "该玩法没有实际下注子局");
+        return;
+      }
       const maximumRound = Math.max(...distribution.map((item) => Number(item.roundNo) || 0));
       const width = Math.max(10, Math.ceil(maximumRound / 18 / 10) * 10);
       const bins = new Map();
@@ -160,22 +168,46 @@ export function createReplayTrendCharts(section) {
   const stake = createLineController(section.querySelector('[data-trend="stake"]'), "stake");
   const profit = createLineController(section.querySelector('[data-trend="profit"]'), "profit");
   const rounds = createDistributionController(section.querySelector('[data-trend="rounds"]'));
+  const filter = section.querySelector("#trend-bet-filter");
+  const filterNote = section.querySelector("#trend-filter-note");
+  let currentReport = null;
+
+  function selectedLabel() {
+    return filter?.selectedOptions?.[0]?.textContent?.trim() || "全部下注";
+  }
+
+  function renderSelected() {
+    const trends = currentReport?.trend_charts;
+    const selected = filter?.value && filter.value !== "all"
+      ? trends?.by_bet?.[filter.value]
+      : trends;
+    const totalBets = Number(selected?.total_bets) || 0;
+    const bettingRounds = Number(selected?.betting_rounds) || 0;
+    if (filterNote) {
+      filterNote.textContent = `${selectedLabel()} · ${countFormat.format(totalBets)} 笔下注 · ${countFormat.format(bettingRounds)} 个实际下注子局`;
+    }
+    stake.render(selected?.stake_points, totalBets);
+    profit.render(selected?.round_profit_points, bettingRounds);
+    rounds.render(selected?.round_distribution, bettingRounds);
+  }
+
+  filter?.addEventListener("change", renderSelected);
   return {
     reset() {
+      currentReport = null;
       section.hidden = true;
       stake.reset();
       profit.reset();
       rounds.reset();
+      if (filterNote) filterNote.textContent = "全部下注 · 完成回测后可切换玩法";
     },
-    render(report) {
-      const trends = report?.trend_charts;
+    render(nextReport) {
+      currentReport = nextReport;
+      const trends = nextReport?.trend_charts;
       const totalBets = Number(trends?.total_bets) || 0;
-      const bettingRounds = Number(trends?.betting_rounds) || 0;
       section.hidden = totalBets === 0;
       if (totalBets === 0) return;
-      stake.render(trends.stake_points, totalBets);
-      profit.render(trends.round_profit_points, bettingRounds);
-      rounds.render(trends.round_distribution, bettingRounds);
+      renderSelected();
     },
   };
 }
