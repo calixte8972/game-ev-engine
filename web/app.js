@@ -252,7 +252,6 @@ let replayDetailSequence = 0;
 let replayDetailWriteTail = Promise.resolve();
 let replayDetailPendingRows = [];
 let replayDetailFlushTimer = null;
-let replayStorageStartedAt = 0;
 let replayStorageElapsedMs = 0;
 let replayDetailRenderToken = 0;
 let replayProgressOverall = 0;
@@ -267,7 +266,7 @@ function resetReplayWorker() {
   // 回收整块计算内存，防止连续回测累计保留大内存。
   replayWorker?.terminate();
   replayWorkerReady = false;
-  replayWorker = new Worker(new URL("./replay-worker.js?v=29", import.meta.url), { type: "module" });
+  replayWorker = new Worker(new URL("./replay-worker.js?v=30", import.meta.url), { type: "module" });
   replayWorker.addEventListener("message", handleReplayMessage);
   replayWorker.addEventListener("error", handleReplayError);
   replayWorker.addEventListener("messageerror", handleReplayError);
@@ -1316,7 +1315,6 @@ replayButton.addEventListener("click", async () => {
     replayDetailFlushTimer = null;
   }
   replayDetailPendingRows = [];
-  replayStorageStartedAt = 0;
   replayStorageElapsedMs = 0;
   resetReplayProgress("准备回测");
   bankrollChartController.reset("正在回放，完成后显示新的本金变化曲线…");
@@ -1388,8 +1386,11 @@ function handleReplayMessage(event) {
     // 降级重跑前先等待已经排队的批量写入，再清理旧明细；否则两个 IndexedDB
     // 事务可能交错，导致旧批次在清理后又“复活”。
     const store = replayDetailStore;
-    replayDetailWriteTail = replayDetailWriteTail
-      .then(() => store?.clearTemporary?.() ?? Promise.resolve());
+    replayDetailWriteTail = replayDetailWriteTail.then(async () => {
+      const started = performance.now();
+      await store?.clearTemporary?.();
+      replayStorageElapsedMs += performance.now() - started;
+    });
     globalThis.__replayDetailWriteTail = replayDetailWriteTail;
     return;
   }
@@ -1418,9 +1419,6 @@ function handleReplayMessage(event) {
         : "单线程";
       setReplayRunning(false, `回放完成 · ${executionLabel}`);
       releaseReplayWorker();
-      replayStorageElapsedMs = replayStorageStartedAt
-        ? performance.now() - replayStorageStartedAt
-        : 0;
       setReplayProgress(1, "回测完成", `${message.report?.summary?.replayed_rounds ?? 0} 局`);
       renderReplay(message.report, message.elapsedMilliseconds, {
         ...(message.timings ?? message.report?.performance ?? {}),
@@ -1520,8 +1518,11 @@ function flushReplayDetails(force = false) {
     0,
     force ? replayDetailPendingRows.length : REPLAY_DETAIL_WRITE_BATCH,
   );
-  replayDetailWriteTail = replayDetailWriteTail
-    .then(() => replayDetailStore.put("details", rows));
+  replayDetailWriteTail = replayDetailWriteTail.then(async () => {
+    const started = performance.now();
+    await replayDetailStore.put("details", rows);
+    replayStorageElapsedMs += performance.now() - started;
+  });
   globalThis.__replayDetailWriteTail = replayDetailWriteTail;
   return replayDetailWriteTail;
 }
@@ -1542,7 +1543,6 @@ function persistReplayDetails(message) {
     bet,
   }));
   if (!rows.length) return;
-  replayStorageStartedAt ||= performance.now();
   replayDetailPendingRows.push(...rows);
   flushReplayDetails(false);
   scheduleReplayDetailFlush();
@@ -1576,7 +1576,7 @@ async function start() {
   // wasm-bindgen 初始化完成前，所有计算按钮都保持禁用；初始化成功后再做
   // 一次默认分析，让用户打开页面即可看到完整八副牌基线结果。
   try {
-    await init(new URL("./pkg/game_ev_engine_bg.wasm?v=29", import.meta.url));
+    await init(new URL("./pkg/game_ev_engine_bg.wasm?v=30", import.meta.url));
     wasmReady = true;
     wasmStatus.textContent = "WASM 已就绪";
     wasmStatus.classList.add("ready");

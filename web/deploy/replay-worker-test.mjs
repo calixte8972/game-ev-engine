@@ -284,5 +284,13 @@ if (!isMainThread) {
     }
     console.log("PASS: 12,000 rounds, serial vs 4/8 Workers, repeated runs");
   }
+  if (process.argv.includes("--profile")) {
+    const sample = await run(
+      { parallelReplay: true, parallelWorkerCount: 4, autoTuneWorkers: false },
+      csv,
+      { simulate: { shoes: 100, maxRoundsPerShoe: 10, seed: "20260914" } },
+    );
+    console.log("PROFILE:", JSON.stringify(sample.timings));
+  }
   console.log("PASS: real WASM Workers 2/4/8, serial limits, memory fallback, creation cleanup, exact integers");
 }

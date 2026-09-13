@@ -953,7 +953,15 @@ async function runStreamPipeline({
     let stopped = false;
     let pumping = false;
     let settled = false;
-    const assignedTaskIds = new Set();
+    // 百万靴回测只需要记住任务是否已派发。每靴一个字节的标记比保存
+    // 百万个数字的 Set 更省内存，也减少长时间回测时的 GC 压力。
+    const assignedTasks = new Uint8Array(taskCount);
+    let assignedTaskCount = 0;
+    const markAssigned = (taskId) => {
+      if (assignedTasks[taskId] !== 0) throw new Error("并行任务编号无效或重复派发");
+      assignedTasks[taskId] = 1;
+      assignedTaskCount += 1;
+    };
 
     const cleanup = () => {
       for (const worker of workers) worker.terminate();
@@ -993,7 +1001,7 @@ async function runStreamPipeline({
     if (prefetchedEntries) {
       // 自动测速已经完成第 0 副牌靴：把它放回与子 Worker 完全相同的
       // ready 队列，并标记为已派发，后面的 pump 会从第 1 副继续。
-      assignedTaskIds.add(0);
+      markAssigned(0);
       completed = 1;
       if (!targetOrder) {
         readyTasks.set(0, prefetchedEntries);
@@ -1014,7 +1022,7 @@ async function runStreamPipeline({
       if (pumping || settled || stopped) return;
       pumping = true;
       try {
-        while (!stopped && available.length && assignedTaskIds.size < taskCount) {
+        while (!stopped && available.length && assignedTaskCount < taskCount) {
           // 带时间的多桌数据可能把不同牌靴交错排列。若全局下一局属于尚未
           // 派发的牌靴，即使普通背压名额已满，也必须先派发这一靴；否则前面
           // 牌靴的后续快照会占满 readyTasks，回放会永远等不到下一局。
@@ -1022,7 +1030,7 @@ async function runStreamPipeline({
             ? taskForSourceOrder?.get(targetOrder[nextOrder])
             : undefined;
           const requiredTaskMissing = Number.isInteger(requiredTaskId)
-            && !assignedTaskIds.has(requiredTaskId);
+            && !assignedTasks[requiredTaskId];
           const hasCapacity = inFlight.size + readyTasks.size < poolSize * 2;
           if (!hasCapacity && !requiredTaskMissing) break;
 
@@ -1033,12 +1041,12 @@ async function runStreamPipeline({
             // 第一个未派发的普通任务，之后再补齐被跳过的任务，避免任务丢失。
             taskId = requiredTaskId;
           } else {
-            while (nextTask < taskCount && assignedTaskIds.has(nextTask)) nextTask += 1;
+            while (nextTask < taskCount && assignedTasks[nextTask]) nextTask += 1;
             if (nextTask >= taskCount) break;
             taskId = nextTask;
             nextTask += 1;
           }
-          assignedTaskIds.add(taskId);
+          markAssigned(taskId);
           const task = await getTask(taskId);
           inFlight.set(worker, taskId);
           worker.postMessage(task.generatedRowsJson
@@ -1108,7 +1116,7 @@ async function runStreamPipeline({
       for (let index = 0; index < poolSize; index += 1) {
         let worker;
         try {
-          worker = new Worker(new URL("./replay-shard-worker.js?v=29", import.meta.url), { type: "module" });
+          worker = new Worker(new URL("./replay-shard-worker.js?v=30", import.meta.url), { type: "module" });
         } catch (error) {
           reject(error);
           return;
@@ -1195,7 +1203,7 @@ function mergePreparedResults(results) {
 
 /* ----------------------------- 入口 ----------------------------- */
 
-const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=29", import.meta.url));
+const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=30", import.meta.url));
 ready.then(() => self.postMessage({ type: "ready" })).catch((error) => {
   self.postMessage({ type: "error", message: `无法加载 CSV 回放核心：${error?.message ?? String(error)}` });
 });

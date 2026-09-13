@@ -12,7 +12,7 @@ import init, {
   prepareReplayShoeWithSideBetLimits,
 } from "./pkg/game_ev_engine.js";
 
-const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=29", import.meta.url));
+const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=30", import.meta.url));
 
 self.addEventListener("message", async (event) => {
   if (!["prepare", "prepare-generated"].includes(event.data?.type)) return;

@@ -48,7 +48,10 @@ export async function openReplayStore(runId) {
     async put(store, rows) {
       if (!rows.length) return;
       const tx = db.transaction(store, "readwrite"), done = committed(tx);
-      for (const row of rows) tx.objectStore(store).put(row);
+      // 同一事务内反复使用一个 ObjectStore 句柄。大回测的一批明细可达
+      // 2048 笔，无需每笔重新从事务查询同一张表。
+      const target = tx.objectStore(store);
+      for (const row of rows) target.put(row);
       await done;
     },
     async get(store, key) {

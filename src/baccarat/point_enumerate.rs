@@ -75,7 +75,7 @@ pub fn calculate_main_outcomes(shoe: &Shoe) -> Result<OutcomeWeights, Probabilit
 /// 根据当前牌靴计算对子、完美对子、幸运 7 和超级幸运 7 权重。
 pub fn calculate_side_bet_outcomes(shoe: &Shoe) -> Result<SideBetWeights, ProbabilityError> {
     let point = point_outcomes(shoe, SideBet::ALL_MASK)?;
-    let pairs = pair_weights(shoe)?;
+    let pairs = pair_weights(shoe, SideBet::ALL_MASK)?;
     Ok(point.side_bet_weights(pairs, SideBet::ALL_MASK))
 }
 
@@ -104,7 +104,7 @@ pub fn calculate_main_and_side_outcomes_with_mask(
     let pairs = if side_bet_mask & pair_mask == 0 {
         PairWeights::default()
     } else {
-        pair_weights(shoe)?
+        pair_weights(shoe, side_bet_mask)?
     };
     let sides = point.side_bet_weights(pairs, side_bet_mask);
     Ok((main, sides))
@@ -295,6 +295,14 @@ fn point_outcomes(
     let mut player_dragon_bonus_push = 0_u64;
     let mut small = 0_u64;
     let mut big = 0_u64;
+    let point_side_mask = SideBet::LuckySeven.bit()
+        | SideBet::SuperLuckySeven.bit()
+        | SideBet::LuckySix.bit()
+        | SideBet::BankerDragonBonus.bit()
+        | SideBet::PlayerDragonBonus.bit()
+        | SideBet::Small.bit()
+        | SideBet::Big.bit();
+    let calculate_point_sides = side_bet_mask & point_side_mask != 0;
 
     for coefficient in composition_table() {
         // 同一点数组成的所有抽象排列，对应相同数量的物理发牌序列。
@@ -335,6 +343,11 @@ fn point_outcomes(
             physical_sequences_per_permutation,
             coefficient.banker_win_on_six_permutations,
         )?;
+        // 截止局之后通常只剩主注，或只剩 Rank 对子。两种情况都无需
+        // 遍历下面十余个点数边注桶；每项组合在主注累计后即可进入下一项。
+        if !calculate_point_sides {
+            continue;
+        }
         lucky_seven_two_cards = add_weight_if(
             lucky_seven_two_cards,
             physical_sequences_per_permutation,
@@ -442,7 +455,7 @@ fn point_outcomes(
 }
 
 /// 对子只依赖前四张牌的 Rank；终局后再用任意两张补齐统一六张分母。
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 struct PairWeights {
     any: u64,
     banker: u64,
@@ -450,7 +463,7 @@ struct PairWeights {
     perfect: u64,
 }
 
-fn pair_weights(shoe: &Shoe) -> Result<PairWeights, ProbabilityError> {
+fn pair_weights(shoe: &Shoe, mask: u16) -> Result<PairWeights, ProbabilityError> {
     let total_cards = shoe.total_remaining();
     // 前四张决定庄对/闲对；统一六张分母还需要为后两张保留任意排列。
     if total_cards < 6 {
@@ -459,91 +472,78 @@ fn pair_weights(shoe: &Shoe) -> Result<PairWeights, ProbabilityError> {
         });
     }
 
-    let mut counts = shoe.rank_counts();
-    // 这里是 13 个 Rank 的计数，而不是 52 个具体牌的计数。普通对子只问
-    // “两张 Rank 是否相同”，因此不同花色、不同副本应作为同一 Rank 的可选项。
     let completion_weight = falling_factorial(total_cards - 4, 2);
-    let mut result = PairWeights {
-        // 完美对子必须保留花色和具体牌身份，所以这部分不能从 13 类 counts
-        // 推导，而要使用 52 类 card_counts 单独做一次容斥计算。
-        perfect: perfect_pair_first_four_weight(shoe)?
+    let mut result = PairWeights::default();
+
+    // 完美对子需要比较 Rank + 花色，只有该玩法仍可下注时才做 52 类牌的
+    // 容斥计算。普通对子只需要 13 个 Rank 的计数。
+    if mask & SideBet::PerfectPair.bit() != 0 {
+        result.perfect = perfect_pair_first_four_weight(shoe)?
             .checked_mul(completion_weight)
-            .ok_or(ProbabilityError::WeightOverflow)?,
-        ..PairWeights::default()
-    };
+            .ok_or(ProbabilityError::WeightOverflow)?;
+    }
 
-    // 发牌顺序仍是 P1、B1、P2、B2。循环中的 copies 让同 Rank 下不同花色、
-    // 不同副牌的物理牌都被正确计入，同时扣减 counts 表达不放回抽牌。
-    for player_first in 0..counts.len() {
-        let player_first_copies = counts[player_first];
-        if player_first_copies == 0 {
-            continue;
+    let ordinary_mask =
+        SideBet::AnyPair.bit() | SideBet::BankerPair.bit() | SideBet::PlayerPair.bit();
+    if mask & ordinary_mask == 0 {
+        return Ok(result);
+    }
+
+    // 设 n_r 为 Rank r 的剩余张数，A = Σ n_r(n_r-1)。A 是指定一方
+    // 两张牌成对的有序抽法数；另外两张任取，故单方命中数为
+    // A × (N-2)(N-3)。庄/闲对称，不必分别枚举 13^4 种 Rank 排列。
+    let counts = shoe.rank_counts();
+    let mut pair_choices = 0_u64;
+    let mut pair_choice_squares = 0_u64;
+    let mut same_rank_four = 0_u64;
+    for &count in &counts {
+        let pair = if count >= 2 {
+            falling_factorial(count, 2)
+        } else {
+            0
+        };
+        pair_choices = pair_choices
+            .checked_add(pair)
+            .ok_or(ProbabilityError::WeightOverflow)?;
+        if mask & SideBet::AnyPair.bit() != 0 {
+            pair_choice_squares = pair_choice_squares
+                .checked_add(
+                    pair.checked_mul(pair)
+                        .ok_or(ProbabilityError::WeightOverflow)?,
+                )
+                .ok_or(ProbabilityError::WeightOverflow)?;
+            same_rank_four = same_rank_four
+                .checked_add(if count >= 4 {
+                    falling_factorial(count, 4)
+                } else {
+                    0
+                })
+                .ok_or(ProbabilityError::WeightOverflow)?;
         }
-        counts[player_first] -= 1;
-
-        for banker_first in 0..counts.len() {
-            let banker_first_copies = counts[banker_first];
-            if banker_first_copies == 0 {
-                continue;
-            }
-            counts[banker_first] -= 1;
-
-            for player_second in 0..counts.len() {
-                let player_second_copies = counts[player_second];
-                if player_second_copies == 0 {
-                    continue;
-                }
-                counts[player_second] -= 1;
-
-                for (banker_second, &banker_second_copies) in counts.iter().enumerate() {
-                    if banker_second_copies == 0 {
-                        continue;
-                    }
-
-                    let first_four_weight = u64::from(player_first_copies)
-                        .checked_mul(u64::from(banker_first_copies))
-                        .and_then(|weight| weight.checked_mul(u64::from(player_second_copies)))
-                        .and_then(|weight| weight.checked_mul(u64::from(banker_second_copies)))
-                        .ok_or(ProbabilityError::WeightOverflow)?;
-                    let weight = first_four_weight
-                        .checked_mul(completion_weight)
-                        .ok_or(ProbabilityError::WeightOverflow)?;
-                    let player_pair = player_first == player_second;
-                    let banker_pair = banker_first == banker_second;
-
-                    // first_four_weight 是按四个发牌位置依次选择具体 Rank 的
-                    // 有序数量；completion_weight 再把已经结束后的两个无关位置
-                    // 补进共同六张分母。any_pair 使用“或”，故不会重复计算双方
-                    // 同时成对的同一条序列。
-                    if player_pair {
-                        result.player = result
-                            .player
-                            .checked_add(weight)
-                            .ok_or(ProbabilityError::WeightOverflow)?;
-                    }
-                    if banker_pair {
-                        result.banker = result
-                            .banker
-                            .checked_add(weight)
-                            .ok_or(ProbabilityError::WeightOverflow)?;
-                    }
-                    if player_pair || banker_pair {
-                        result.any = result
-                            .any
-                            .checked_add(weight)
-                            .ok_or(ProbabilityError::WeightOverflow)?;
-                    }
-                }
-
-                // 离开 player_second 分支前恢复它，保证下一种第二张牌看到的是
-                // 同一个父节点状态。下面两层恢复逻辑与具体牌回溯器相同。
-                counts[player_second] += 1;
-            }
-
-            counts[banker_first] += 1;
-        }
-
-        counts[player_first] += 1;
+    }
+    let one_side = pair_choices
+        .checked_mul(falling_factorial(total_cards - 2, 2))
+        .and_then(|weight| weight.checked_mul(completion_weight))
+        .ok_or(ProbabilityError::WeightOverflow)?;
+    if mask & SideBet::PlayerPair.bit() != 0 {
+        result.player = one_side;
+    }
+    if mask & SideBet::BankerPair.bit() != 0 {
+        result.banker = one_side;
+    }
+    if mask & SideBet::AnyPair.bit() != 0 {
+        // 任意对子 = 闲对 + 庄对 − 双方同时成对。双方 Rank 不同的
+        // 抽法是 A² − Σ[n_r(n_r−1)]²；Rank 相同的抽法另加 Σ(n_r)₄。
+        let both_sides = pair_choices
+            .checked_mul(pair_choices)
+            .and_then(|weight| weight.checked_sub(pair_choice_squares))
+            .and_then(|weight| weight.checked_add(same_rank_four))
+            .and_then(|weight| weight.checked_mul(completion_weight))
+            .ok_or(ProbabilityError::WeightOverflow)?;
+        result.any = one_side
+            .checked_mul(2)
+            .and_then(|weight| weight.checked_sub(both_sides))
+            .ok_or(ProbabilityError::WeightOverflow)?;
     }
 
     Ok(result)
@@ -561,59 +561,47 @@ fn pair_weights(shoe: &Shoe) -> Result<PairWeights, ProbabilityError> {
 /// ```
 ///
 /// `single_hand` 计算一方完美成对后，另一方任取两张的序列数；两方对称，
-/// 所以乘 2。`both_hands` 再扣除同时命中的重复部分。这样只需遍历 52² 种
-/// 具体牌组合，不需要枚举 52⁴ 条前四张序列。
+/// 所以乘 2。`both_hands` 再扣除同时命中的重复部分。将不同牌的两重求和
+/// 改写成“总和的平方 − 同牌平方和”，只需扫描 52 种具体牌各一次。
 fn perfect_pair_first_four_weight(shoe: &Shoe) -> Result<u64, ProbabilityError> {
     let counts = shoe.card_counts();
     let total = shoe.total_remaining();
     let other_hand_weight = falling_factorial(total - 2, 2);
 
-    let mut single_hand = 0_u64;
+    let mut pair_choices = 0_u64;
+    let mut pair_choice_squares = 0_u64;
+    let mut same_card_four = 0_u64;
     for &count in &counts {
         let pair_weight = if count >= 2 {
             falling_factorial(u16::from(count), 2)
         } else {
             0
         };
-        single_hand = single_hand
+        pair_choices = pair_choices
+            .checked_add(pair_weight)
+            .ok_or(ProbabilityError::WeightOverflow)?;
+        pair_choice_squares = pair_choice_squares
             .checked_add(
                 pair_weight
-                    .checked_mul(other_hand_weight)
+                    .checked_mul(pair_weight)
                     .ok_or(ProbabilityError::WeightOverflow)?,
             )
             .ok_or(ProbabilityError::WeightOverflow)?;
-    }
-
-    let mut both_hands = 0_u64;
-    for (player_card, &player_count) in counts.iter().enumerate() {
-        for (banker_card, &banker_count) in counts.iter().enumerate() {
-            let weight = if player_card == banker_card {
-                if player_count >= 4 {
-                    falling_factorial(u16::from(player_count), 4)
-                } else {
-                    0
-                }
-            } else {
-                let player_pair = if player_count >= 2 {
-                    falling_factorial(u16::from(player_count), 2)
-                } else {
-                    0
-                };
-                let banker_pair = if banker_count >= 2 {
-                    falling_factorial(u16::from(banker_count), 2)
-                } else {
-                    0
-                };
-                player_pair
-                    .checked_mul(banker_pair)
-                    .ok_or(ProbabilityError::WeightOverflow)?
-            };
-            both_hands = both_hands
-                .checked_add(weight)
+        if count >= 4 {
+            same_card_four = same_card_four
+                .checked_add(falling_factorial(u16::from(count), 4))
                 .ok_or(ProbabilityError::WeightOverflow)?;
         }
     }
 
+    let single_hand = pair_choices
+        .checked_mul(other_hand_weight)
+        .ok_or(ProbabilityError::WeightOverflow)?;
+    let both_hands = pair_choices
+        .checked_mul(pair_choices)
+        .and_then(|weight| weight.checked_sub(pair_choice_squares))
+        .and_then(|weight| weight.checked_add(same_card_four))
+        .ok_or(ProbabilityError::WeightOverflow)?;
     single_hand
         .checked_mul(2)
         .and_then(|both_sides| both_sides.checked_sub(both_hands))
@@ -836,8 +824,8 @@ mod tests {
     use crate::{Card, Rank, Shoe, SideBet, Suit};
 
     use super::{
-        COMPOSITION_COUNT, calculate_main_and_side_outcomes_with_mask, calculate_main_outcomes,
-        composition_table,
+        COMPOSITION_COUNT, PairWeights, calculate_main_and_side_outcomes_with_mask,
+        calculate_main_outcomes, composition_table, pair_weights,
     };
 
     fn card(input: &str) -> Card {
@@ -939,5 +927,55 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn pair_formula_matches_physical_card_enumeration_and_mask() {
+        // 重复的 AS/AH/KD 是不同副牌里的物理牌；穷举每张牌的下标可同时
+        // 核对同 Rank 的普通对子与同 Rank、花色的完美对子。
+        let cards = ["AS", "AS", "AH", "AH", "KD", "KD", "QC", "2C"].map(card);
+        let shoe = Shoe::from_remaining(2, &cards).expect("八张牌不能超过两副牌容量");
+        let mut expected = PairWeights::default();
+        let completion = 12; // 前四张之后还有 4 × 3 种补全方式。
+        for p1 in 0..cards.len() {
+            for b1 in 0..cards.len() {
+                for p2 in 0..cards.len() {
+                    for b2 in 0..cards.len() {
+                        if p1 == b1 || p1 == p2 || p1 == b2 || b1 == p2 || b1 == b2 || p2 == b2 {
+                            continue;
+                        }
+                        let player_pair = cards[p1].rank() == cards[p2].rank();
+                        let banker_pair = cards[b1].rank() == cards[b2].rank();
+                        if player_pair {
+                            expected.player += completion;
+                        }
+                        if banker_pair {
+                            expected.banker += completion;
+                        }
+                        if player_pair || banker_pair {
+                            expected.any += completion;
+                        }
+                        if cards[p1] == cards[p2] || cards[b1] == cards[b2] {
+                            expected.perfect += completion;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(pair_weights(&shoe, SideBet::ALL_MASK).unwrap(), expected);
+
+        let ordinary =
+            SideBet::AnyPair.bit() | SideBet::BankerPair.bit() | SideBet::PlayerPair.bit();
+        let ordinary_result = pair_weights(&shoe, ordinary).unwrap();
+        assert_eq!(ordinary_result.perfect, 0);
+        assert_eq!(ordinary_result.any, expected.any);
+        assert_eq!(ordinary_result.banker, expected.banker);
+        assert_eq!(ordinary_result.player, expected.player);
+
+        let perfect_result = pair_weights(&shoe, SideBet::PerfectPair.bit()).unwrap();
+        assert_eq!(perfect_result.perfect, expected.perfect);
+        assert_eq!(perfect_result.any, 0);
+        assert_eq!(perfect_result.banker, 0);
+        assert_eq!(perfect_result.player, 0);
     }
 }
