@@ -15,6 +15,7 @@ const assetDefinitions = [
   ["/bankroll-chart.js", "bankroll-chart.js", "text/javascript; charset=utf-8"],
   ["/bet-contribution-charts.js", "bet-contribution-charts.js", "text/javascript; charset=utf-8"],
   ["/replay-analysis-charts.js", "replay-analysis-charts.js", "text/javascript; charset=utf-8"],
+  ["/replay-trend-charts.js", "replay-trend-charts.js", "text/javascript; charset=utf-8"],
   ["/replay-worker.js", "replay-worker.js", "text/javascript; charset=utf-8"],
   ["/replay-shard-worker.js", "replay-shard-worker.js", "text/javascript; charset=utf-8"],
   ["/replay-storage.js", "replay-storage.js", "text/javascript; charset=utf-8"],
