@@ -16,6 +16,7 @@ import init, { analyzeBaccaratStrategy, analyzeBlackjack } from "./pkg/game_ev_e
 import { createBankrollChart } from "./bankroll-chart.js";
 import { createBetContributionCharts } from "./bet-contribution-charts.js";
 import { createReplayAnalysisCharts } from "./replay-analysis-charts.js";
+import { createReplayTrendCharts } from "./replay-trend-charts.js";
 import { deleteReplayStore, openReplayStore, readReplayDetailPage } from "./replay-storage.js";
 
 const form = document.querySelector("#analysis-form");
@@ -56,6 +57,7 @@ const replayRuleSecondary = document.querySelector("#replay-rule-secondary");
 const replayRuleOrder = document.querySelector("#replay-rule-order");
 const replayError = document.querySelector("#replay-error");
 const replayResults = document.querySelector("#replay-results");
+const replayStreakPanel = document.querySelector("#replay-streak-panel");
 const replayBody = document.querySelector("#replay-body");
 const replayDetailWrap = document.querySelector(".replay-detail-wrap");
 const replayPagination = document.querySelector("#replay-pagination");
@@ -134,6 +136,9 @@ const replayAnalysisChartController = createReplayAnalysisCharts({
   section: document.querySelector("#replay-analysis-charts"),
   labels: allBetLabels,
 });
+const replayTrendChartController = createReplayTrendCharts(
+  document.querySelector("#replay-trend-charts"),
+);
 const sideBetRoundLimitInputs = {
   any_pair: "#limit-any-pair",
   banker_pair: "#limit-banker-pair",
@@ -260,7 +265,7 @@ function resetReplayWorker() {
   // 回收整块计算内存，防止连续回测累计保留大内存。
   replayWorker?.terminate();
   replayWorkerReady = false;
-  replayWorker = new Worker(new URL("./replay-worker.js?v=25", import.meta.url), { type: "module" });
+  replayWorker = new Worker(new URL("./replay-worker.js?v=27", import.meta.url), { type: "module" });
   replayWorker.addEventListener("message", handleReplayMessage);
   replayWorker.addEventListener("error", handleReplayError);
   replayWorker.addEventListener("messageerror", handleReplayError);
@@ -1069,6 +1074,7 @@ function renderReplay(report, elapsedMilliseconds, timings = {}) {
   // 先更新摘要，再交给图表和明细表，避免用户看到新摘要配旧图表。
   replayError.hidden = true;
   replayResults.hidden = false;
+  replayStreakPanel.hidden = false;
   currentReplayReport = report;
   currentReplayPage = 1;
   const { dataset, quality, summary } = report;
@@ -1138,9 +1144,12 @@ function renderReplay(report, elapsedMilliseconds, timings = {}) {
   );
 
   bankrollChartController.render(report);
+  replayTrendChartController.render(report);
   contributionChartController.render(report);
   replayAnalysisChartController.render(report);
   renderReplayDetails();
+  // 回测可能持续较久，自动定位到第一眼就能看见的连续表现与资金图。
+  requestAnimationFrame(() => replayStreakPanel.scrollIntoView({ behavior: "smooth", block: "start" }));
 }
 
 form.addEventListener("submit", (event) => {
@@ -1229,10 +1238,12 @@ csvFileInput.addEventListener("change", () => {
   const [file] = csvFileInput.files;
   currentCsvFile = file ?? null;
   replayResults.hidden = true;
+  replayStreakPanel.hidden = true;
   replayError.hidden = true;
   currentReplayReport = null;
   replayPagination.hidden = true;
   bankrollChartController.reset();
+  replayTrendChartController.reset();
   contributionChartController.reset();
   replayAnalysisChartController.reset();
 
@@ -1278,6 +1289,7 @@ replayButton.addEventListener("click", async () => {
   if (replayRunning || (replaySourceMode === "csv" && !currentCsvFile)) return;
   replayError.hidden = true;
   replayResults.hidden = true;
+  replayStreakPanel.hidden = true;
   currentReplayReport = null;
   replayPagination.hidden = true;
   replayBody.replaceChildren();
@@ -1290,6 +1302,7 @@ replayButton.addEventListener("click", async () => {
   replayStorageElapsedMs = 0;
   resetReplayProgress("准备回测");
   bankrollChartController.reset("正在回放，完成后显示新的本金变化曲线…");
+  replayTrendChartController.reset();
   contributionChartController.reset();
   replayAnalysisChartController.reset();
 
@@ -1332,6 +1345,7 @@ replayButton.addEventListener("click", async () => {
   } catch (error) {
     setReplayRunning(false, "回放失败");
     bankrollChartController.reset("回放失败；修正文件或配置后重新运行即可生成本金变化曲线。");
+    replayTrendChartController.reset();
     contributionChartController.reset();
     replayAnalysisChartController.reset();
     showError(replayError, error);
@@ -1457,6 +1471,7 @@ function handleReplayMessage(event) {
   if (message.type === "error") {
     setReplayRunning(false, "回放失败");
     bankrollChartController.reset("回放失败；修正文件或配置后重新运行即可生成本金变化曲线。");
+    replayTrendChartController.reset();
     contributionChartController.reset();
     replayAnalysisChartController.reset();
     showError(replayError, message.message);
@@ -1516,6 +1531,7 @@ function handleReplayError(event) {
   replayWorkerReady = false;
   setReplayRunning(false, "回放计算中断，可重新尝试");
   bankrollChartController.reset("计算中断；可关闭并行或减少数据量后重试。");
+  replayTrendChartController.reset();
   contributionChartController.reset();
   replayAnalysisChartController.reset();
   showError(replayError, event.message || "CSV 回放 Worker 无法启动");
@@ -1535,7 +1551,7 @@ async function start() {
   // wasm-bindgen 初始化完成前，所有计算按钮都保持禁用；初始化成功后再做
   // 一次默认分析，让用户打开页面即可看到完整八副牌基线结果。
   try {
-    await init();
+    await init(new URL("./pkg/game_ev_engine_bg.wasm?v=27", import.meta.url));
     wasmReady = true;
     wasmStatus.textContent = "WASM 已就绪";
     wasmStatus.classList.add("ready");

@@ -8,7 +8,7 @@
       content="使用 Rust WebAssembly 在浏览器中计算百家乐与二十一点有限牌靴 EV。"
     />
     <title>牌靴 EV 策略实验室</title>
-    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./styles.css?v=27" />
   </head>
   <body>
     <!-- 首屏工具栏把品牌、游戏切换、规则入口和运行状态放在同一行。 -->
@@ -543,6 +543,26 @@
 
         <div id="replay-error" class="error-message" role="alert" hidden></div>
 
+        <section id="replay-streak-panel" class="replay-streak-panel" aria-label="连续下注表现" hidden>
+          <div class="replay-streak-heading">
+            <strong>连续下注表现</strong>
+            <span>按每局所有下注合并后的净盈亏统计</span>
+          </div>
+          <div class="replay-streak-cards">
+            <div class="streak-win-card">
+              <span>最大连赢</span>
+              <strong id="maximum-consecutive-wins">—</strong>
+              <small>连续净盈利的下注局</small>
+            </div>
+            <div class="streak-loss-card">
+              <span>最大连输</span>
+              <strong id="maximum-consecutive-losses">—</strong>
+              <small>连续净亏损的下注局</small>
+            </div>
+          </div>
+          <p>没有下注的局不计入连续次数；下注后净盈亏为零会打断连续。</p>
+        </section>
+
         <!-- 图表只显示下注结算后的资金点；跳过局没有资金变化点。 -->
         <section class="bankroll-chart-panel" aria-labelledby="bankroll-chart-title">
           <div class="bankroll-chart-heading">
@@ -574,6 +594,35 @@
               <span id="bankroll-tooltip-round">—</span>
             </div>
           </div>
+
+          <section id="replay-trend-charts" class="replay-trend-charts" aria-label="下注时序与可下注子局数" hidden>
+            <article class="trend-chart-card" data-trend="stake">
+              <header>
+                <h4>每笔下注额变化</h4>
+                <span class="trend-summary">暂无下注</span>
+              </header>
+              <p>按真实下注顺序排列；大量下注时保留各区间峰谷。</p>
+              <svg viewBox="0 0 720 230" role="img" aria-label="每笔下注额变化折线图" tabindex="0"></svg>
+              <output class="trend-hover">完成回测后显示</output>
+            </article>
+            <article class="trend-chart-card" data-trend="profit">
+              <header>
+                <h4>逐局盈亏变化</h4>
+                <span class="trend-summary">暂无下注</span>
+              </header>
+              <p>同局多注合并为一次净盈亏，包含返水。</p>
+              <svg viewBox="0 0 720 230" role="img" aria-label="逐局盈亏变化折线图" tabindex="0"></svg>
+              <output class="trend-hover">完成回测后显示</output>
+            </article>
+            <article class="trend-chart-card trend-distribution-card" data-trend="rounds">
+              <header>
+                <h4>可下注子局数分布</h4>
+                <span class="trend-summary">暂无下注</span>
+              </header>
+              <p>统计每副牌靴中实际执行下注的局号；同一局多注只算一次。</p>
+              <div class="trend-distribution-bars" role="img" aria-label="实际下注子局数分布"></div>
+            </article>
+          </section>
 
           <section id="bet-contribution-charts" class="contribution-charts" aria-label="下注类别盈利与亏损贡献" hidden>
             <article class="contribution-chart-card" data-kind="profit">
@@ -757,16 +806,6 @@
               <span>最低本金</span>
               <strong id="minimum-bankroll">—</strong>
             </div>
-            <div class="streak-win-card">
-              <span>最大连赢</span>
-              <strong id="maximum-consecutive-wins">—</strong>
-              <small class="streak-definition">按每局净盈利统计</small>
-            </div>
-            <div class="streak-loss-card">
-              <span>最大连输</span>
-              <strong id="maximum-consecutive-losses">—</strong>
-              <small class="streak-definition">按每局净亏损统计</small>
-            </div>
             <div>
               <span>最大单笔下注</span>
               <strong id="maximum-single-stake">—</strong>
@@ -776,10 +815,6 @@
               <strong id="maximum-round-stake">—</strong>
             </div>
           </div>
-
-          <p class="streak-definition-note">
-            统计口径：同一局的多笔下注先合并净输赢；没有下注的局不计入连续次数，打平会打断连赢或连输。
-          </p>
 
           <p id="replay-stop-notice" class="replay-stop-notice" hidden role="status"></p>
 
@@ -1164,6 +1199,6 @@
       <span>历史收益不代表未来结果，EV 是概率期望，不是单局保证。</span>
     </footer>
 
-    <script type="module" src="./app.js?v=26"></script>
+    <script type="module" src="./app.js?v=27"></script>
   </body>
 </html>

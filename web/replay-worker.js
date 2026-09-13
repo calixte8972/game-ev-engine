@@ -558,6 +558,51 @@ function isArrayBuffer(value) {
     && Object.prototype.toString.call(value) === "[object ArrayBuffer]";
 }
 
+/** 每笔金额/每局盈亏只保留每段的最高、最低点，避免百万局图表占满内存。 */
+class BoundedMetric {
+  constructor() {
+    this.index = 0;
+    this.width = 1;
+    this.buckets = new Map();
+    this.first = null;
+    this.last = null;
+  }
+
+  add(value) {
+    const point = { index: ++this.index, value: Number(value) || 0 };
+    this.first ??= point;
+    this.last = point;
+    this.addPoint(point);
+  }
+
+  addPoint(point) {
+    const key = Math.floor((point.index - 1) / this.width);
+    const bucket = this.buckets.get(key);
+    if (!bucket) this.buckets.set(key, { low: point, high: point });
+    else {
+      if (point.value < bucket.low.value) bucket.low = point;
+      if (point.value > bucket.high.value) bucket.high = point;
+    }
+    if (this.buckets.size > 600) {
+      const saved = this.points();
+      this.width *= 2;
+      this.buckets.clear();
+      for (const item of saved) this.addPoint(item);
+    }
+  }
+
+  points() {
+    const unique = new Map();
+    if (this.first) unique.set(this.first.index, this.first);
+    for (const bucket of this.buckets.values()) {
+      unique.set(bucket.low.index, bucket.low);
+      unique.set(bucket.high.index, bucket.high);
+    }
+    if (this.last) unique.set(this.last.index, this.last);
+    return [...unique.values()].sort((a, b) => a.index - b.index);
+  }
+}
+
 /** 曲线是有界诊断数据，完整下注明细由页面另行落盘。 */
 class BoundedCurve {
   constructor(initial) {
@@ -568,6 +613,10 @@ class BoundedCurve {
     this.width = 1;
     this.buckets = new Map();
     this.last = null;
+    this.pending = null;
+    this.stakeMetric = new BoundedMetric();
+    this.roundProfitMetric = new BoundedMetric();
+    this.roundCounts = new Map();
     this.first = {
       index: 0, bankroll: this.initial, cumulativeProfit: 0, drawdown: 0,
       drawdownRate: 0, drawdownDuration: 0, peakBankroll: this.initial,
@@ -577,38 +626,59 @@ class BoundedCurve {
   }
 
   addBets(bets) {
-    let pending = null;
-    const flush = () => {
-      if (!pending) return;
-      this.peak = Math.max(this.peak, pending.bankroll);
-      const drawdown = Math.max(0, this.peak - pending.bankroll);
-      this.duration = drawdown > 0 ? this.duration + 1 : 0;
-      const point = {
-        ...pending, index: ++this.index,
-        cumulativeProfit: pending.bankroll - this.initial,
-        peakBankroll: this.peak, drawdown,
-        drawdownRate: this.peak > 0 ? drawdown / this.peak : 0,
-        drawdownDuration: this.duration,
-      };
-      this.last = point;
-      this.addPoint(point);
-      pending = null;
-    };
     for (const bet of bets) {
       const key = [bet.table_id, bet.session_id, bet.round_no, bet.started_at].join("|");
-      if (pending && pending.key !== key) flush();
-      if (!pending) {
-        pending = {
+      if (this.pending && this.pending.key !== key) this.flush();
+      if (!this.pending) {
+        this.pending = {
           key, bankroll: Number(bet.bankroll_after), roundStake: 0, roundProfit: 0,
           betCount: 0, tableId: bet.table_id, sessionId: bet.session_id,
           roundNo: bet.round_no, startedAt: bet.started_at,
         };
       }
-      pending.roundStake += Number(bet.amount) || 0;
-      pending.roundProfit += Number(bet.actual_profit) || 0;
-      pending.betCount += 1;
+      const stake = Number(bet.amount) || 0;
+      this.stakeMetric.add(stake);
+      this.pending.roundStake += stake;
+      this.pending.roundProfit += Number(bet.actual_profit) || 0;
+      this.pending.betCount += 1;
     }
-    flush();
+  }
+
+  flush() {
+    const pending = this.pending;
+    if (!pending) return;
+    this.peak = Math.max(this.peak, pending.bankroll);
+    const drawdown = Math.max(0, this.peak - pending.bankroll);
+    this.duration = drawdown > 0 ? this.duration + 1 : 0;
+    const point = {
+      ...pending, index: ++this.index,
+      cumulativeProfit: pending.bankroll - this.initial,
+      peakBankroll: this.peak, drawdown,
+      drawdownRate: this.peak > 0 ? drawdown / this.peak : 0,
+      drawdownDuration: this.duration,
+    };
+    this.last = point;
+    this.addPoint(point);
+    this.roundProfitMetric.add(pending.roundProfit);
+    const roundNo = Number(pending.roundNo);
+    if (Number.isSafeInteger(roundNo) && roundNo > 0) {
+      this.roundCounts.set(roundNo, (this.roundCounts.get(roundNo) ?? 0) + 1);
+    }
+    this.pending = null;
+  }
+
+  finish() { this.flush(); }
+
+  trends() {
+    return {
+      stake_points: this.stakeMetric.points(),
+      round_profit_points: this.roundProfitMetric.points(),
+      round_distribution: [...this.roundCounts.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([roundNo, count]) => ({ roundNo, count })),
+      total_bets: this.stakeMetric.index,
+      betting_rounds: this.roundProfitMetric.index,
+    };
   }
 
   addPoint(point) {
@@ -994,7 +1064,7 @@ async function runStreamPipeline({
       for (let index = 0; index < poolSize; index += 1) {
         let worker;
         try {
-          worker = new Worker(new URL("./replay-shard-worker.js?v=26", import.meta.url), { type: "module" });
+          worker = new Worker(new URL("./replay-shard-worker.js?v=27", import.meta.url), { type: "module" });
         } catch (error) {
           reject(error);
           return;
@@ -1029,7 +1099,9 @@ async function runStreamPipeline({
   report.omitted_bet_details = 0;
   report.detail_count = Number(report.summary?.placed_bet_count ?? 0);
   report.run_id = runId;
+  curve.finish();
   report.chart_points = curve.points();
+  report.trend_charts = curve.trends();
   report.streamed = true;
   report.performance = timings;
   postPipelineProgress(
@@ -1054,7 +1126,9 @@ function externalizeLegacyReport(report, runId) {
   report.detail_count = bets.length;
   report.omitted_bet_details = 0;
   report.run_id = runId;
+  curve.finish();
   report.chart_points = curve.points();
+  report.trend_charts = curve.trends();
   report.streamed = false;
   return report;
 }
@@ -1077,7 +1151,7 @@ function mergePreparedResults(results) {
 
 /* ----------------------------- 入口 ----------------------------- */
 
-const ready = init();
+const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=27", import.meta.url));
 ready.then(() => self.postMessage({ type: "ready" })).catch((error) => {
   self.postMessage({ type: "error", message: `无法加载 CSV 回放核心：${error?.message ?? String(error)}` });
 });

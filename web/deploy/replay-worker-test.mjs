@@ -115,6 +115,18 @@ if (!isMainThread) {
   ));
   assert.deepEqual(serial.report.bets, expected.bets, "单线程必须保留独立边注截止局数");
   assert.equal(serial.report.summary.final_bankroll, expected.summary.final_bankroll);
+  const trends = serial.report.trend_charts;
+  const bettingRounds = new Set(serial.report.bets.map(bet =>
+    [bet.table_id, bet.session_id, bet.round_no, bet.started_at].join("|")));
+  assert.equal(trends.total_bets, serial.report.summary.placed_bet_count);
+  assert.equal(trends.betting_rounds, bettingRounds.size);
+  assert.equal(trends.stake_points.at(-1)?.index, trends.total_bets);
+  assert.equal(trends.round_profit_points.at(-1)?.index, trends.betting_rounds);
+  assert.equal(
+    trends.round_distribution.reduce((sum, item) => sum + item.count, 0),
+    trends.betting_rounds,
+    "可下注子局数直方图应按局计数，同局多注不能重复",
+  );
   for (const count of [2, 4, 8]) {
     const parallel = await run({ parallelReplay: true, parallelWorkerCount: count });
     assert.equal(parallel.parallel, true, parallel.fallbackReason);
@@ -122,6 +134,7 @@ if (!isMainThread) {
     assert.equal(parallel.terminated, count);
     assert.deepEqual(parallel.report.bets, serial.report.bets, `${count} 线程逐笔下注与顺序回放相同`);
     assert.equal(parallel.report.summary.final_bankroll, serial.report.summary.final_bankroll);
+    assert.deepEqual(parallel.report.trend_charts, trends, `${count} 线程的三张新图表应与单线程一致`);
   }
   const streamedFile = await run(
     { parallelReplay: true, parallelWorkerCount: 4 }, csv, { useFile: true },
@@ -244,6 +257,7 @@ if (!isMainThread) {
       assert.equal(result.created, result.terminated);
       assert.deepEqual(result.report.bets, sequential.report.bets);
       assert.equal(result.report.summary.final_bankroll, sequential.report.summary.final_bankroll);
+      assert.deepEqual(result.report.trend_charts, sequential.report.trend_charts);
     }
     console.log("PASS: 12,000 rounds, serial vs 4/8 Workers, repeated runs");
   }
