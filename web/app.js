@@ -1090,6 +1090,14 @@ function renderReplay(report, elapsedMilliseconds, timings = {}) {
   applySignedClass(document.querySelector("#maximum-profit"), summary.maximum_profit);
   setText("#maximum-bankroll", money(summary.maximum_bankroll));
   setText("#minimum-bankroll", money(summary.minimum_bankroll));
+  setText(
+    "#maximum-consecutive-wins",
+    integerFormatter.format(Number(summary.maximum_consecutive_wins ?? 0)),
+  );
+  setText(
+    "#maximum-consecutive-losses",
+    integerFormatter.format(Number(summary.maximum_consecutive_losses ?? 0)),
+  );
   setText("#maximum-single-stake", money(summary.maximum_single_stake));
   setText("#maximum-round-stake", money(summary.maximum_round_stake));
 

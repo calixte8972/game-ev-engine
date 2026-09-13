@@ -1964,6 +1964,24 @@ td:first-child {
   background: var(--positive);
 }
 
+.replay-summary .streak-win-card {
+  border-color: #b8d6c9;
+  background: #f0faf5;
+}
+
+.replay-summary .streak-win-card::before {
+  background: var(--positive);
+}
+
+.replay-summary .streak-loss-card {
+  border-color: #e7c2bc;
+  background: #fff5f2;
+}
+
+.replay-summary .streak-loss-card::before {
+  background: var(--negative);
+}
+
 .replay-summary span,
 .quality-panel span {
   display: block;

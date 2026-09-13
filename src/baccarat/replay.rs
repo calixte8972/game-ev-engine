@@ -737,6 +737,10 @@ pub struct CsvReplaySummary {
     pub maximum_single_stake: f64,
     /// 同一局所有下注金额之和的最大值，用来观察同局多注的最大风险敞口。
     pub maximum_round_stake: f64,
+    /// 按每局实际下注后的净盈利统计，连续盈利的最大下注局数。
+    pub maximum_consecutive_wins: u64,
+    /// 按每局实际下注后的净亏损统计，连续亏损的最大下注局数。
+    pub maximum_consecutive_losses: u64,
 }
 
 /// 一笔真实下注明细。
@@ -1588,6 +1592,8 @@ pub(crate) struct ReplayState {
     peak_bankroll: f64,
     effective_ev_sum: f64,
     progression_states: HashMap<(u64, u64, &'static str), StakeProgression>,
+    current_win_streak: u64,
+    current_loss_streak: u64,
 }
 
 impl ReplayState {
@@ -1607,6 +1613,8 @@ impl ReplayState {
             peak_bankroll: config.initial_bankroll,
             effective_ev_sum: 0.0,
             progression_states: HashMap::new(),
+            current_win_streak: 0,
+            current_loss_streak: 0,
         }
     }
 
@@ -1673,6 +1681,8 @@ fn settle_replay_batch(
         mut peak_bankroll,
         mut effective_ev_sum,
         mut progression_states,
+        mut current_win_streak,
+        mut current_loss_streak,
     } = state;
     let mut details = Vec::new();
     for round in rounds {
@@ -1932,6 +1942,13 @@ fn settle_replay_batch(
         // 边注会错误地把同局前一笔输赢当成下一局资金变化。
         summary.maximum_round_stake = summary.maximum_round_stake.max(round_stake);
         current_bankroll += round_profit;
+        update_consecutive_streaks(
+            &mut summary,
+            &mut current_win_streak,
+            &mut current_loss_streak,
+            round_stake,
+            round_profit,
+        );
         // 最高/最低本金按每局真实结算后的余额统计，初始本金已经在循环前作为基准写入。
         summary.maximum_bankroll = summary.maximum_bankroll.max(current_bankroll);
         summary.minimum_bankroll = summary.minimum_bankroll.min(current_bankroll);
@@ -2047,9 +2064,43 @@ fn settle_replay_batch(
             peak_bankroll,
             effective_ev_sum,
             progression_states,
+            current_win_streak,
+            current_loss_streak,
         },
         details,
     ))
+}
+
+/// 更新回测期间的最大连赢/连输。
+///
+/// 这里按“局”而不是按“下注笔数”统计：同一局同时下注庄、闲和边注时，
+/// 先把这一局全部下注的最终净变化合并，再决定这一局是盈利、亏损还是打平。
+/// 没有真正下注的局不会改变当前连续次数；净变化为 0 的下注局会打断两种连续。
+fn update_consecutive_streaks(
+    summary: &mut CsvReplaySummary,
+    current_win_streak: &mut u64,
+    current_loss_streak: &mut u64,
+    round_stake: f64,
+    round_profit: f64,
+) {
+    if round_stake <= 0.0 {
+        return;
+    }
+
+    if round_profit > 0.0 {
+        *current_win_streak += 1;
+        *current_loss_streak = 0;
+        summary.maximum_consecutive_wins =
+            summary.maximum_consecutive_wins.max(*current_win_streak);
+    } else if round_profit < 0.0 {
+        *current_loss_streak += 1;
+        *current_win_streak = 0;
+        summary.maximum_consecutive_losses =
+            summary.maximum_consecutive_losses.max(*current_loss_streak);
+    } else {
+        *current_win_streak = 0;
+        *current_loss_streak = 0;
+    }
 }
 
 /// 把一方最终实际使用的两张或三张牌转换成稳定、易读的牌面字符串。
@@ -2313,8 +2364,8 @@ impl Error for CsvReplayError {}
 #[cfg(test)]
 mod tests {
     use super::{
-        CsvReplayConfig, SideBetRoundLimits, StreamingReplay, parse_raw_cards, prepare_stream_shoe,
-        provider_card, replay_csv_text,
+        CsvReplayConfig, CsvReplaySummary, SideBetRoundLimits, StreamingReplay, parse_raw_cards,
+        prepare_stream_shoe, provider_card, replay_csv_text, update_consecutive_streaks,
     };
     use crate::{MainBetRules, SideBet, StakeSizingStrategy};
 
@@ -2375,6 +2426,38 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_streaks_use_net_profit_per_betting_round() {
+        let mut summary = CsvReplaySummary::default();
+        let mut current_win_streak = 0;
+        let mut current_loss_streak = 0;
+
+        // 空局不打断连续下注；打平的下注局会同时清零两种连续次数。
+        for (stake, profit) in [
+            (10.0, 2.0),
+            (10.0, 1.0),
+            (0.0, 0.0),
+            (10.0, -1.0),
+            (10.0, -2.0),
+            (10.0, -3.0),
+            (10.0, 0.0),
+            (10.0, -1.0),
+        ] {
+            update_consecutive_streaks(
+                &mut summary,
+                &mut current_win_streak,
+                &mut current_loss_streak,
+                stake,
+                profit,
+            );
+        }
+
+        assert_eq!(summary.maximum_consecutive_wins, 2);
+        assert_eq!(summary.maximum_consecutive_losses, 3);
+        assert_eq!(current_win_streak, 0);
+        assert_eq!(current_loss_streak, 1);
+    }
+
+    #[test]
     fn streaming_session_matches_one_shot_replay_across_batches() {
         let csv = "session_id,round_no,raw_cards\n\
                    9150,1,\"b:24,31,45;p:31,42,47\"\n\
@@ -2407,6 +2490,14 @@ mod tests {
         assert_eq!(
             actual["summary"]["total_profit"],
             expected.summary.total_profit
+        );
+        assert_eq!(
+            actual["summary"]["maximum_consecutive_wins"],
+            expected.summary.maximum_consecutive_wins
+        );
+        assert_eq!(
+            actual["summary"]["maximum_consecutive_losses"],
+            expected.summary.maximum_consecutive_losses
         );
     }
 
