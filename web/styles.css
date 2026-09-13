@@ -1982,6 +1982,26 @@ td:first-child {
   background: var(--negative);
 }
 
+.replay-summary .streak-definition {
+  display: block;
+  margin-top: 5px;
+  margin-bottom: 0;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+}
+
+.streak-definition-note {
+  margin: -2px 0 16px;
+  padding: 10px 13px;
+  border: 1px solid #cce3d8;
+  border-radius: 10px;
+  background: #f3faf6;
+  color: #316456;
+  font-size: 0.78rem;
+  line-height: 1.55;
+}
+
 .replay-summary span,
 .quality-panel span {
   display: block;

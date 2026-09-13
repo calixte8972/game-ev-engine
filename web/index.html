@@ -760,10 +760,12 @@
             <div class="streak-win-card">
               <span>最大连赢</span>
               <strong id="maximum-consecutive-wins">—</strong>
+              <small class="streak-definition">按每局净盈利统计</small>
             </div>
             <div class="streak-loss-card">
               <span>最大连输</span>
               <strong id="maximum-consecutive-losses">—</strong>
+              <small class="streak-definition">按每局净亏损统计</small>
             </div>
             <div>
               <span>最大单笔下注</span>
@@ -775,10 +777,14 @@
             </div>
           </div>
 
+          <p class="streak-definition-note">
+            统计口径：同一局的多笔下注先合并净输赢；没有下注的局不计入连续次数，打平会打断连赢或连输。
+          </p>
+
           <p id="replay-stop-notice" class="replay-stop-notice" hidden role="status"></p>
 
           <p class="result-note replay-metrics-note">
-            模拟最大盈利 = 回放期间最高本金 − 初始本金；最高/最低本金按每局结算后统计。最大连赢/连输按每局所有下注合并后的净变化统计，没有下注的局不计入，打平会打断连续。最大单局下注是同一局多笔下注金额的合计，用来观察同局多下注时的最大资金暴露。
+            模拟最大盈利 = 回放期间最高本金 − 初始本金；最高/最低本金按每局结算后统计。最大单局下注是同一局多笔下注金额的合计，用来观察同局多下注时的最大资金暴露。
           </p>
 
           <section class="bet-count-panel" aria-labelledby="bet-count-title">
