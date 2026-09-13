@@ -1476,6 +1476,11 @@ td:first-child {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  min-width: 220px;
+  width: min(320px, 100%);
+  max-width: 100%;
+  justify-content: center;
+  overflow: hidden;
   padding: 8px 11px;
   border-radius: 999px;
   color: var(--muted);
@@ -1483,19 +1488,28 @@ td:first-child {
   font-size: 0.75rem;
   font-weight: 800;
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
-.replay-status.running::before {
+.replay-status::before {
   width: 9px;
   height: 9px;
   border: 2px solid #b7c8c0;
-  border-top-color: var(--felt);
   border-radius: 50%;
   content: "";
+  opacity: 0;
+  visibility: hidden;
+}
+
+.replay-status.running::before {
+  border-top-color: var(--felt);
+  opacity: 1;
+  visibility: visible;
   animation: spin 800ms linear infinite;
 }
 
 .replay-progress-panel {
+  min-height: 65px;
   margin: 0 0 14px;
   padding: 12px 14px;
   border: 1px solid #cfe5da;
@@ -1512,6 +1526,13 @@ td:first-child {
   color: var(--felt-dark);
   font-size: 0.76rem;
   font-weight: 800;
+}
+
+.replay-progress-heading span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .replay-progress-heading strong {
@@ -1538,10 +1559,20 @@ td:first-child {
   transition: width 180ms ease-out;
 }
 
+.replay-progress-bar.is-indeterminate {
+  background-size: 200% 100%;
+  animation: progress-shimmer 1.2s linear infinite;
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
   }
+}
+
+@keyframes progress-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
 }
 
 .replay-source-switch {

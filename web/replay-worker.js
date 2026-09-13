@@ -759,6 +759,7 @@ async function runStreamPipeline({
   let probabilityCompleted = 0;
   let settledRounds = 0;
   let lastProgressAt = 0;
+  let lastOverall = 0;
   const timings = {
     generationMs: 0,
     prepareMs: 0,
@@ -779,9 +780,15 @@ async function runStreamPipeline({
     if (!force && now - lastProgressAt < PROGRESS_THROTTLE_MS
         && completed !== total) return;
     lastProgressAt = now;
-    const probabilityRatio = taskCount > 0 ? probabilityCompleted / taskCount : 1;
-    const settlementRatio = progressTotal > 0 ? settledRounds / progressTotal : 0;
-    const overall = Math.min(0.98, 0.05 + probabilityRatio * 0.55 + settlementRatio * 0.38);
+    const probabilityRatio = taskCount > 0
+      ? Math.min(1, probabilityCompleted / taskCount) : 1;
+    const settlementRatio = progressTotal > 0
+      ? Math.min(1, settledRounds / progressTotal) : 0;
+    const calculatedOverall = Math.min(0.98, 0.05 + probabilityRatio * 0.55 + settlementRatio * 0.38);
+    // 并行任务的完成消息不是严格按派发顺序到达；Worker 自己也保证单调，
+    // 主线程即使收到交错阶段消息，也不会把进度条写回较小百分比。
+    const overall = Math.max(lastOverall, calculatedOverall);
+    lastOverall = overall;
     self.postMessage({
       type: "progress", phase, completed, total, workerCount, parallel: isParallel,
       overall, settledRounds, settlementTotal: progressTotal,
@@ -803,7 +810,10 @@ async function runStreamPipeline({
       const response = JSON.parse(session.push(payload));
       timings.settlementMs += performance.now() - settleStarted;
       timings.settlementBatches += 1;
-      settledRounds = Number(response.summary?.replayed_rounds ?? (settledRounds + batch.length));
+      settledRounds = Math.max(
+        settledRounds,
+        Number(response.summary?.replayed_rounds ?? (settledRounds + batch.length)),
+      );
       postPipelineProgress(
         "settlement", settledRounds, progressTotal,
         localOnly ? 1 : poolSize, !localOnly,
@@ -1098,7 +1108,7 @@ async function runStreamPipeline({
       for (let index = 0; index < poolSize; index += 1) {
         let worker;
         try {
-          worker = new Worker(new URL("./replay-shard-worker.js?v=28", import.meta.url), { type: "module" });
+          worker = new Worker(new URL("./replay-shard-worker.js?v=29", import.meta.url), { type: "module" });
         } catch (error) {
           reject(error);
           return;
@@ -1185,7 +1195,7 @@ function mergePreparedResults(results) {
 
 /* ----------------------------- 入口 ----------------------------- */
 
-const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=28", import.meta.url));
+const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=29", import.meta.url));
 ready.then(() => self.postMessage({ type: "ready" })).catch((error) => {
   self.postMessage({ type: "error", message: `无法加载 CSV 回放核心：${error?.message ?? String(error)}` });
 });
@@ -1275,18 +1285,23 @@ self.addEventListener("message", async (event) => {
           ? await csvFile.text()
           : new TextDecoder().decode(event.data.csvBuffer);
       }
-      if (requestedParallel && !taskAt) {
+      // 精简 CSV 不论是否开启并行都进入同一条流式流水线；单线程也能按
+      // 牌靴和结算批次持续报告进度。只有带来源主键或牌靴交错的完整格式
+      // 才保留 Rust 一次性回放路径。
+      if (!taskAt) {
         const split = splitCsvIntoShoeTasks(csvText);
-        taskAt = async (taskId) => split.tasks[taskId];
-        taskCount = split.tasks.length;
-        sessionCount = taskCount;
-        order = split.order;
-        taskForSourceOrder = split.order ? sourceOrderTaskMap(split.tasks) : null;
-        timestampOrder = split.allHaveStartedAt;
-        if (typeof inspectReplayShoe === "function") {
-          const inspected = JSON.parse(inspectReplayShoe(csvText));
-          dataset = inspected.dataset;
-          quality = inspected.quality;
+        if (!split.requiresLegacy) {
+          taskAt = async (taskId) => split.tasks[taskId];
+          taskCount = split.tasks.length;
+          sessionCount = taskCount;
+          order = split.order;
+          taskForSourceOrder = split.order ? sourceOrderTaskMap(split.tasks) : null;
+          timestampOrder = split.allHaveStartedAt;
+          if (typeof inspectReplayShoe === "function") {
+            const inspected = JSON.parse(inspectReplayShoe(csvText));
+            dataset = inspected.dataset;
+            quality = inspected.quality;
+          }
         }
       }
     }
@@ -1294,9 +1309,9 @@ self.addEventListener("message", async (event) => {
     let report;
     let performanceTimings = null;
     let pipelineFallbackReason = "";
-    if (event.data.type === "replay" && !requestedParallel) {
-      // 非并行 CSV 保持 Rust 原有的完整顺序实现，尤其是带时间的多桌交错数据；
-      // 用户开启并行后才进入下面的有界概率/结算流水线。
+    if (event.data.type === "replay" && !taskAt) {
+      // 无法安全拆成独立牌靴任务的完整格式仍使用 Rust 原有的一次性路径；
+      // 普通精简 CSV 已在上面进入流式流水线，即使单线程也能持续报告进度。
       self.postMessage({ type: "progress", phase: "serial" });
       const serialStarted = performance.now();
       report = externalizeLegacyReport(

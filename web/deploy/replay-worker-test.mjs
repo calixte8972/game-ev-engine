@@ -73,8 +73,12 @@ if (!isMainThread) {
       });
       const timeout = setTimeout(() => { thread.terminate(); reject(new Error("Worker timeout")); }, 30_000);
       const detailBatches = [];
+      const progressValues = [];
       thread.on("error", reject);
       thread.on("message", message => {
+        if (message.type === "progress" && Number.isFinite(Number(message.overall))) {
+          progressValues.push(Number(message.overall));
+        }
         if (message.type === "ready") {
           if (options.simulate) {
             thread.postMessage({
@@ -102,6 +106,7 @@ if (!isMainThread) {
             ...message,
             report: { ...message.report, bets: message.report.bets?.length
               ? message.report.bets : detailBatches },
+            progressValues,
           });
         }
       });
@@ -109,6 +114,11 @@ if (!isMainThread) {
   }
   const serial = await run({ parallelReplay: false });
   assert.equal(serial.created, 0);
+  assert.ok(serial.progressValues.some(value => value > 0.2), "单线程精简 CSV 应持续报告阶段进度");
+  assert.ok(
+    serial.progressValues.every((value, index, values) => index === 0 || value >= values[index - 1]),
+    "单线程进度消息不能倒退",
+  );
   const expected = JSON.parse(wasm.replayBaccaratCsvWithSideBetLimits(
     csv, 8, 0.009, -1, 10_000, 0.05, 500, 500,
     "standard", "martingale", 10, -1, 100, JSON.stringify(limits), true,

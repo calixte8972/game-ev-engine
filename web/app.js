@@ -51,6 +51,7 @@ const replayProgressPanel = document.querySelector("#replay-progress-panel");
 const replayProgressBar = document.querySelector("#replay-progress-bar");
 const replayProgressValue = document.querySelector("#replay-progress-value");
 const replayProgressLabel = document.querySelector("#replay-progress-label");
+const replayProgressTrack = document.querySelector("#replay-progress-track");
 const replayRulesTitle = document.querySelector("#replay-rules-title");
 const replayRulePrimary = document.querySelector("#replay-rule-primary");
 const replayRuleSecondary = document.querySelector("#replay-rule-secondary");
@@ -254,6 +255,7 @@ let replayDetailFlushTimer = null;
 let replayStorageStartedAt = 0;
 let replayStorageElapsedMs = 0;
 let replayDetailRenderToken = 0;
+let replayProgressOverall = 0;
 let activeGame = "baccarat";
 let activeBaccaratView = "analysis";
 
@@ -265,7 +267,7 @@ function resetReplayWorker() {
   // 回收整块计算内存，防止连续回测累计保留大内存。
   replayWorker?.terminate();
   replayWorkerReady = false;
-  replayWorker = new Worker(new URL("./replay-worker.js?v=28", import.meta.url), { type: "module" });
+  replayWorker = new Worker(new URL("./replay-worker.js?v=29", import.meta.url), { type: "module" });
   replayWorker.addEventListener("message", handleReplayMessage);
   replayWorker.addEventListener("error", handleReplayError);
   replayWorker.addEventListener("messageerror", handleReplayError);
@@ -809,20 +811,36 @@ function updateReplayButton() {
   replayButton.disabled = !hasInput || !replayWorkerReady || replayRunning;
 }
 
-/** 更新回测进度条；百分比由后台按“生成、概率、结算”三个阶段合成。 */
-function setReplayProgress(overall, label, detail = "") {
+/**
+ * 更新回测进度条；百分比由后台按“生成、概率、结算”三个阶段合成。
+ *
+ * Worker 消息可能因为并行任务完成顺序不同而交错到达，所以页面只接受
+ * 单调递增的进度。否则例如“生成完成 15%”后收到“自动测速 3%”，进度条
+ * 就会倒退，看起来像页面闪烁或重复计算。
+ */
+function setReplayProgress(
+  overall,
+  label,
+  detail = "",
+  { allowDecrease = false, indeterminate = false } = {},
+) {
   if (!replayProgressBar || !replayProgressValue || !replayProgressLabel) return;
   const safeOverall = Math.max(0, Math.min(1, Number(overall) || 0));
-  const percentage = Math.round(safeOverall * 100);
+  replayProgressOverall = allowDecrease
+    ? safeOverall
+    : Math.max(replayProgressOverall, safeOverall);
+  const percentage = Math.round(replayProgressOverall * 100);
   replayProgressPanel?.removeAttribute("hidden");
   replayProgressBar.style.width = `${percentage}%`;
+  replayProgressBar.classList.toggle("is-indeterminate", indeterminate);
   replayProgressValue.textContent = `${percentage}%`;
   replayProgressLabel.textContent = detail ? `${label} · ${detail}` : label;
   replayProgressBar.setAttribute("aria-valuenow", String(percentage));
+  replayProgressTrack?.setAttribute("aria-valuenow", String(percentage));
 }
 
 function resetReplayProgress(label = "等待开始") {
-  setReplayProgress(0, label);
+  setReplayProgress(0, label, "", { allowDecrease: true });
 }
 
 function updateParallelReplayControls() {
@@ -1148,8 +1166,8 @@ function renderReplay(report, elapsedMilliseconds, timings = {}) {
   contributionChartController.render(report);
   replayAnalysisChartController.render(report);
   renderReplayDetails();
-  // 回测可能持续较久，自动定位到第一眼就能看见的连续表现与资金图。
-  requestAnimationFrame(() => replayStreakPanel.scrollIntoView({ behavior: "smooth", block: "start" }));
+  // 不自动平滑滚动：结果区出现时强制滚动会让整页突然跳动，尤其在移动端
+  // 看起来像页面闪烁。连续表现卡片已经位于结果区顶部，用户可自然向下查看。
 }
 
 form.addEventListener("submit", (event) => {
@@ -1336,7 +1354,6 @@ replayButton.addEventListener("click", async () => {
       if (currentCsvFile.size > 200 * 1024 * 1024) {
         throw new Error("CSV 超过 200 MB；请先按牌靴拆分后再回放。");
       }
-      setReplayRunning(true, "正在读取 CSV…");
       setReplayRunning(true, "正在重建牌靴并计算策略…");
       // File 可结构化传给 Worker；并行回放时 Worker 会按 Blob 流逐行拆分精简 CSV，
       // 不在主线程复制整份文件；带完整来源键的数据库格式仍由 Rust 完整校验。
@@ -1417,6 +1434,7 @@ function handleReplayMessage(event) {
     if (pending) void pending.then(renderCompleted).catch((error) => {
       setReplayRunning(false, "回放完成但明细保存失败");
       showError(replayError, `完整明细未能保存：${error?.message ?? error}`);
+      resetReplayProgress("明细保存失败");
       setReplayProgress(0, "明细保存失败", "请重新运行回测");
       releaseReplayWorker();
     });
@@ -1453,7 +1471,12 @@ function handleReplayMessage(event) {
       replayStatus.textContent = message.fallbackReason
         ? `${message.fallbackReason}；正在单线程回放…`
         : "正在单线程回放，请勿关闭页面…";
-      setReplayProgress(message.overall ?? 0.2, "单线程回放", "请勿关闭页面");
+      setReplayProgress(
+        message.overall ?? 0.2,
+        "单线程回放",
+        "正在计算，请勿关闭页面",
+        { indeterminate: true },
+      );
     } else if (message.phase === "settlement") {
       replayStatus.textContent = "正在按时间顺序合并本金与倍投…";
       setReplayProgress(
@@ -1475,6 +1498,7 @@ function handleReplayMessage(event) {
     contributionChartController.reset();
     replayAnalysisChartController.reset();
     showError(replayError, message.message);
+    resetReplayProgress("回测失败");
     setReplayProgress(0, "回测失败", "可以修正配置后重试");
     releaseReplayWorker();
   }
@@ -1535,6 +1559,7 @@ function handleReplayError(event) {
   contributionChartController.reset();
   replayAnalysisChartController.reset();
   showError(replayError, event.message || "CSV 回放 Worker 无法启动");
+  resetReplayProgress("回测失败");
   setReplayProgress(0, "回测失败", "可以修正配置后重试");
   releaseReplayWorker();
 }
@@ -1551,7 +1576,7 @@ async function start() {
   // wasm-bindgen 初始化完成前，所有计算按钮都保持禁用；初始化成功后再做
   // 一次默认分析，让用户打开页面即可看到完整八副牌基线结果。
   try {
-    await init(new URL("./pkg/game_ev_engine_bg.wasm?v=28", import.meta.url));
+    await init(new URL("./pkg/game_ev_engine_bg.wasm?v=29", import.meta.url));
     wasmReady = true;
     wasmStatus.textContent = "WASM 已就绪";
     wasmStatus.classList.add("ready");

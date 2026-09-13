@@ -8,7 +8,7 @@
       content="使用 Rust WebAssembly 在浏览器中计算百家乐与二十一点有限牌靴 EV。"
     />
     <title>牌靴 EV 策略实验室</title>
-    <link rel="stylesheet" href="./styles.css?v=28" />
+    <link rel="stylesheet" href="./styles.css?v=29" />
   </head>
   <body>
     <!-- 首屏工具栏把品牌、游戏切换、规则入口和运行状态放在同一行。 -->
@@ -444,7 +444,7 @@
             <span id="replay-progress-label">等待开始</span>
             <strong id="replay-progress-value">0%</strong>
           </div>
-          <div class="replay-progress-track" role="progressbar" aria-label="回测计算进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="replay-progress-track" class="replay-progress-track" role="progressbar" aria-label="回测计算进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
             <div id="replay-progress-bar" class="replay-progress-bar"></div>
           </div>
         </div>
@@ -1226,6 +1226,6 @@
       <span>历史收益不代表未来结果，EV 是概率期望，不是单局保证。</span>
     </footer>
 
-    <script type="module" src="./app.js?v=28"></script>
+    <script type="module" src="./app.js?v=29"></script>
   </body>
 </html>

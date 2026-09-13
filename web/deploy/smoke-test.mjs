@@ -95,6 +95,11 @@ if (!/id="bet-count-grid"/.test(pageHtml)) {
 if (!/id="replay-stop-notice"/.test(pageHtml)) {
   throw new Error("回放结果缺少本金耗尽后的提前停止提示");
 }
+if (!/id="replay-progress-track"/.test(pageHtml)
+    || !/replayProgressOverall = allowDecrease/.test(readFileSync(resolve(webDirectory, "app.js"), "utf8"))
+    || !/lastOverall/.test(replayWorkerSource)) {
+  throw new Error("回测进度条缺少单调进度保护");
+}
 if (!/id="trend-bet-filter"/.test(pageHtml)
     || !/value="banker"/.test(pageHtml)
     || !/value="perfect_pair"/.test(pageHtml)
