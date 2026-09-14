@@ -125,6 +125,32 @@ if (!isMainThread) {
   ));
   assert.deepEqual(serial.report.bets, expected.bets, "单线程必须保留独立边注截止局数");
   assert.equal(serial.report.summary.final_bankroll, expected.summary.final_bankroll);
+  const comparisonConfig = { stakeStrategy: "fixed", strategyParameter: 20 };
+  const comparisonSerial = await run({
+    parallelReplay: false, comparisonConfig,
+  });
+  const fixedSerial = await run({
+    parallelReplay: false, ...comparisonConfig,
+  });
+  assert.deepEqual(comparisonSerial.report.bets, serial.report.bets,
+    "开启对比后，策略 A 的逐笔结算不能改变");
+  assert.deepEqual(comparisonSerial.report.summary, serial.report.summary,
+    "开启对比后，策略 A 的汇总不能改变");
+  assert.deepEqual(comparisonSerial.report.comparison.summary, fixedSerial.report.summary,
+    "策略 B 必须等于对相同 CSV 单独运行 B 的结果");
+  assert.deepEqual(comparisonSerial.report.comparison.chart_points, fixedSerial.report.chart_points,
+    "策略 B 的资金点不能因对比模式而改变");
+  for (const point of comparisonSerial.report.comparison.chart_points.slice(1)) {
+    assert.ok(point.timelineIndex >= point.index,
+      "双策略曲线横轴应使用共同牌局顺序，而不是各自下注顺序");
+  }
+  const skippedInput = wasm.generateBaccaratCsv(5, 20, "20260914", 8);
+  const withSkippedRounds = await run({
+    minimumEffectiveEv: -0.002, minimumSideBetEv: 0,
+    comparisonConfig,
+  }, skippedInput);
+  assert.ok(withSkippedRounds.report.comparison.chart_points.some(point => point.timelineIndex > point.index),
+    "跳过局后资金曲线应保留共同牌局的横轴间隔");
   const trends = serial.report.trend_charts;
   const bettingRounds = new Set(serial.report.bets.map(bet =>
     [bet.table_id, bet.session_id, bet.round_no, bet.started_at].join("|")));
@@ -186,6 +212,37 @@ if (!isMainThread) {
     simulatedAuto.report.summary.final_bankroll,
     simulatedSerial.report.summary.final_bankroll,
   );
+  const simulatedComparison = await run(
+    { parallelReplay: true, parallelWorkerCount: 4, comparisonConfig },
+    csv,
+    { simulate: simulation },
+  );
+  const simulatedFixed = await run(
+    { parallelReplay: false, ...comparisonConfig },
+    csv,
+    { simulate: simulation },
+  );
+  assert.deepEqual(simulatedComparison.report.summary, simulatedSerial.report.summary,
+    "同一个随机种子下，对比模式不能改变策略 A");
+  assert.deepEqual(simulatedComparison.report.comparison.summary, simulatedFixed.report.summary,
+    "同一个随机种子下，B 必须等于单独运行 B");
+  // A 爆仓不能让调度器提前终止 B；B 仍要吃完相同随机牌靴的后续局。
+  const stopSimulation = { shoes: 4, maxRoundsPerShoe: 30, seed: "1" };
+  const stopConfig = {
+    parallelReplay: false, bankroll: 100, rebateRate: 0, maxFraction: 1, maxRoundStake: 100,
+    tableLimit: 100, sideBetLimit: 100, allowMultipleBets: false,
+    stakeStrategy: "fixed", strategyParameter: 100,
+  };
+  const stopComparison = await run({
+    ...stopConfig, comparisonConfig: { stakeStrategy: "fixed", strategyParameter: 1 },
+  }, csv, { simulate: stopSimulation });
+  const stopBAlone = await run({
+    ...stopConfig, stakeStrategy: "fixed", strategyParameter: 1,
+  }, csv, { simulate: stopSimulation });
+  assert.equal(stopComparison.report.summary.stopped_early, true);
+  assert.ok(stopComparison.report.summary.replayed_rounds < stopComparison.report.comparison.summary.replayed_rounds,
+    "A 提前停止后 B 必须继续结算");
+  assert.deepEqual(stopComparison.report.comparison.summary, stopBAlone.report.summary);
   assert.ok(Number(simulatedAuto.timings?.workerProbeMs) >= 0, "自动测速应记录阶段耗时");
   const failedCreation = await run({ parallelReplay: true, parallelWorkerCount: 8 }, csv, { failCreation: true });
   assert.equal(failedCreation.parallel, false);

@@ -8,7 +8,7 @@
       content="使用 Rust WebAssembly 在浏览器中计算百家乐与二十一点有限牌靴 EV。"
     />
     <title>牌靴 EV 策略实验室</title>
-    <link rel="stylesheet" href="./styles.css?v=30" />
+    <link rel="stylesheet" href="./styles.css?v=31" />
   </head>
   <body>
     <!-- 首屏工具栏把品牌、游戏切换、规则入口和运行状态放在同一行。 -->
@@ -535,6 +535,40 @@
               </div>
               <p class="replay-execution-note">并行上限会按设备资源下调；开启自动测速后，系统先用首副牌靴测量实际概率计算耗时，再在上限内选择线程数。随机牌靴按需生成，精简 CSV 按流读取。回测按整靴分批、限制在途任务，并在同一个资金会话中按原顺序结算。完整下注明细保存在本机浏览器，页面只读取当前页。</p>
             </div>
+            <div class="strategy-compare-config">
+              <label class="replay-parallel-toggle" for="compare-strategies">
+                <input id="compare-strategies" type="checkbox" />
+                <span>
+                  <strong>同一牌局比较两种金额策略</strong>
+                  <small>可选。A 使用上方策略；B 使用下方策略。两者共享牌靴、种子、EV 门槛、返水与初始本金，分别结算。</small>
+                </span>
+              </label>
+              <div id="compare-strategy-fields" class="strategy-compare-fields" hidden>
+                <label class="field" for="compare-stake-strategy">
+                  <span>策略 B · 下注金额策略</span>
+                  <select id="compare-stake-strategy">
+                    <option value="full_kelly">完整凯利</option>
+                    <option value="half_kelly" selected>半凯利</option>
+                    <option value="quarter_kelly">四分之一凯利</option>
+                    <option value="custom_kelly">自定义分数凯利</option>
+                    <option value="fixed">固定金额</option>
+                    <option value="bankroll_fraction">固定本金比例</option>
+                    <option value="target_expected_profit">固定期望盈利</option>
+                    <option value="target_volatility">目标波动率</option>
+                    <option value="martingale">倍投（输后翻倍）</option>
+                    <option value="reverse_martingale">反倍投（赢后翻倍）</option>
+                    <option value="dalembert">达朗贝尔（输加赢减）</option>
+                  </select>
+                </label>
+                <label id="compare-strategy-parameter-field" class="field" for="compare-strategy-parameter" hidden>
+                  <span id="compare-strategy-parameter-label">策略 B 参数</span>
+                  <span class="input-suffix">
+                    <input id="compare-strategy-parameter" type="number" min="0" step="0.1" />
+                    <span id="compare-strategy-parameter-unit">%</span>
+                  </span>
+                </label>
+              </div>
+            </div>
             <button id="replay-button" class="primary-button replay-button" type="button" disabled>
               开始策略回放
             </button>
@@ -563,17 +597,32 @@
           <p>没有下注的局不计入连续次数；下注后净盈亏为零会打断连续。</p>
         </section>
 
+        <section id="strategy-compare-results" class="strategy-compare-results" aria-label="双策略回测对比" hidden>
+          <div class="replay-streak-heading">
+            <strong>同牌局 · 策略 A / B 对比</strong>
+            <span>相同输入、相同概率；仅下注金额策略不同</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th scope="col">指标</th><th id="compare-a-heading" scope="col">策略 A</th><th id="compare-b-heading" scope="col">策略 B</th><th scope="col">B − A</th></tr></thead>
+              <tbody id="strategy-compare-body"></tbody>
+            </table>
+          </div>
+          <p id="strategy-compare-note" class="field-help"></p>
+        </section>
+
         <!-- 图表只显示下注结算后的资金点；跳过局没有资金变化点。 -->
         <section class="bankroll-chart-panel" aria-labelledby="bankroll-chart-title">
           <div class="bankroll-chart-heading">
             <div>
               <p class="eyebrow">资金路径</p>
               <h3 id="bankroll-chart-title">本金变化曲线</h3>
-              <p>横轴按实际下注结算局排列；同局多注合并成一个资金点，跳过局不会重复绘制。</p>
+              <p id="bankroll-chart-description">横轴按实际下注结算局排列；同局多注合并成一个资金点，跳过局不会重复绘制。</p>
             </div>
             <div class="bankroll-chart-meta" aria-label="图例">
               <span id="bankroll-chart-count">暂无资金变化点</span>
-              <span><i class="chart-line-swatch" aria-hidden="true"></i>结算后本金</span>
+              <span><i class="chart-line-swatch" aria-hidden="true"></i><span id="bankroll-primary-legend">结算后本金</span></span>
+              <span id="bankroll-compare-legend" hidden><i class="chart-line-swatch chart-line-swatch-b" aria-hidden="true"></i>策略 B</span>
               <span><i class="chart-baseline-swatch" aria-hidden="true"></i>初始本金</span>
             </div>
           </div>
@@ -1226,6 +1275,6 @@
       <span>历史收益不代表未来结果，EV 是概率期望，不是单局保证。</span>
     </footer>
 
-    <script type="module" src="./app.js?v=30"></script>
+    <script type="module" src="./app.js?v=31"></script>
   </body>
 </html>

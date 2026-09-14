@@ -204,9 +204,18 @@ export function createBankrollChart({
   const context = canvas.getContext("2d");
   const panel = plot.closest(".bankroll-chart-panel");
   let points = [];
+  let comparisonPoints = [];
+  let hoverPoints = [];
+  let comparisonMode = false;
+  let timelineEnd = 0;
+  let primaryStoppedEarly = false;
+  let comparisonStoppedEarly = false;
+  let timelineLabel = "同一输入的牌局序号";
   let geometry = null;
   let keyboardIndex = 0;
   let resizeFrame = 0;
+  const positionOf = (point) => comparisonMode
+    ? finiteNumber(point.timelineIndex, point.index) : point.index;
 
   function hideTooltip() {
     tooltip.hidden = true;
@@ -217,7 +226,7 @@ export function createBankrollChart({
   function showTooltip(point) {
     if (!geometry || !point) return;
 
-    const x = geometry.xForIndex(point.index);
+    const x = geometry.xForIndex(positionOf(point));
     const y = geometry.yForValue(point.bankroll);
     guide.style.left = `${x}px`;
     guide.style.top = `${geometry.top}px`;
@@ -230,11 +239,11 @@ export function createBankrollChart({
 
     // 初始点没有桌台/牌靴/局号；其他点才显示一次下注结算局的定位信息。
     if (point.index === 0) {
-      tooltipTitle.textContent = "模拟开始";
+      tooltipTitle.textContent = comparisonMode ? `${point.strategyLabel} · 模拟开始` : "模拟开始";
       tooltipMeta.textContent = "初始本金";
       tooltipRound.textContent = "尚未发生下注结算";
     } else {
-      tooltipTitle.textContent = `第 ${integerFormatter.format(point.index)} 个下注结算局`;
+      tooltipTitle.textContent = `${comparisonMode ? `${point.strategyLabel} · ` : ""}第 ${integerFormatter.format(point.index)} 个下注结算局`;
       tooltipMeta.textContent = `桌 ${point.tableId} · 牌靴 ${point.sessionId} · 第 ${point.roundNo} 局 · ${point.startedAt}`;
       tooltipRound.textContent = `${point.betCount} 笔下注 · 合计 ${money(point.roundStake)} · 本局净输赢 ${money(point.roundProfit)} · 当前回撤 ${money(point.drawdown)}`;
     }
@@ -255,7 +264,7 @@ export function createBankrollChart({
   }
 
   function drawMarker(point, color, label, placeBelow) {
-    const x = geometry.xForIndex(point.index);
+    const x = geometry.xForIndex(positionOf(point));
     const y = geometry.yForValue(point.bankroll);
     context.beginPath();
     context.arc(x, y, 4.5, 0, Math.PI * 2);
@@ -276,7 +285,7 @@ export function createBankrollChart({
   }
 
   function draw() {
-    if (points.length <= 1 || plot.hidden) return;
+    if (points.length <= 1 && comparisonPoints.length <= 1 || plot.hidden) return;
 
     const bounds = canvas.getBoundingClientRect();
     const width = Math.max(240, Math.round(bounds.width));
@@ -300,7 +309,7 @@ export function createBankrollChart({
     // 被抽掉的峰值/谷值可能导致曲线超出图表或风险幅度显示失真。
     let rawMinimum = points[0].bankroll;
     let rawMaximum = points[0].bankroll;
-    for (const point of points) {
+    for (const point of [...points, ...comparisonPoints]) {
       rawMinimum = Math.min(rawMinimum, point.bankroll);
       rawMaximum = Math.max(rawMaximum, point.bankroll);
     }
@@ -311,12 +320,12 @@ export function createBankrollChart({
     const minimum = rawMinimum - padding;
     const maximum = rawMaximum + padding;
     const range = maximum - minimum;
-    const finalIndex = points.at(-1).index;
+    const finalIndex = Math.max(1, timelineEnd, ...points.map(positionOf), ...comparisonPoints.map(positionOf));
     // 横轴按结算点序号等距分布，纵轴按本金线性映射；鼠标和键盘也复用
     // 同一个 geometry，因此标记与悬停位置始终一致。
     const xForIndex = (index) => left + (index / finalIndex) * plotWidth;
     const yForValue = (value) => top + ((maximum - value) / range) * plotHeight;
-    geometry = { width, height, left, top, plotWidth, plotHeight, xForIndex, yForValue };
+    geometry = { width, height, left, top, plotWidth, plotHeight, finalIndex, xForIndex, yForValue };
 
     const line = chartColor("--line", "#d9ddd7");
     const muted = chartColor("--muted", "#66736d");
@@ -355,7 +364,7 @@ export function createBankrollChart({
       context.fillText(integerFormatter.format(index), x, height - 17);
     }
     context.textAlign = "right";
-    context.fillText("下注结算局序号", width - right, height - 2);
+    context.fillText(comparisonMode ? timelineLabel : "下注结算局序号", width - right, height - 2);
 
     const initialY = yForValue(points[0].bankroll);
     context.beginPath();
@@ -373,35 +382,53 @@ export function createBankrollChart({
     // 屏幕能显示的有效像素有限，绘图时只抽样到约每两个像素一个点；
     // 但最高/最低点由峰谷抽样保留，视觉上不会抹掉重要风险事件。
     const drawablePoints = sampleBankrollSeries(points, Math.max(120, Math.floor(plotWidth * 2)));
+    const traceSeries = (series, extendToEnd) => {
+      series.forEach((point, index) => {
+        const x = xForIndex(positionOf(point));
+        const y = yForValue(point.bankroll);
+        if (index === 0) context.moveTo(x, y);
+        else {
+          if (comparisonMode) context.lineTo(x, yForValue(series[index - 1].bankroll));
+          context.lineTo(x, y);
+        }
+      });
+      if (comparisonMode && extendToEnd && series.length > 0) {
+        context.lineTo(xForIndex(finalIndex), yForValue(series.at(-1).bankroll));
+      }
+    };
     const gradient = context.createLinearGradient(0, top, 0, top + plotHeight);
     gradient.addColorStop(0, `${pathColor}29`);
     gradient.addColorStop(1, `${pathColor}03`);
     context.beginPath();
-    drawablePoints.forEach((point, index) => {
-      const x = xForIndex(point.index);
-      const y = yForValue(point.bankroll);
-      if (index === 0) context.moveTo(x, y);
-      else context.lineTo(x, y);
-    });
-    context.lineTo(xForIndex(drawablePoints.at(-1).index), top + plotHeight);
-    context.lineTo(xForIndex(drawablePoints[0].index), top + plotHeight);
+    traceSeries(drawablePoints, !primaryStoppedEarly);
+    context.lineTo(xForIndex(comparisonMode && !primaryStoppedEarly ? finalIndex : positionOf(drawablePoints.at(-1))), top + plotHeight);
+    context.lineTo(xForIndex(positionOf(drawablePoints[0])), top + plotHeight);
     context.closePath();
     context.fillStyle = gradient;
     context.fill();
 
     context.beginPath();
-    drawablePoints.forEach((point, index) => {
-      const x = xForIndex(point.index);
-      const y = yForValue(point.bankroll);
-      if (index === 0) context.moveTo(x, y);
-      else context.lineTo(x, y);
-    });
+    traceSeries(drawablePoints, !primaryStoppedEarly);
     context.strokeStyle = pathColor;
     context.lineWidth = compact ? 2 : 2.5;
     context.lineJoin = "round";
     context.lineCap = "round";
     context.stroke();
 
+    if (comparisonPoints.length > 1) {
+      const secondary = sampleBankrollSeries(comparisonPoints, Math.max(120, Math.floor(plotWidth * 2)));
+      context.beginPath();
+      traceSeries(secondary, !comparisonStoppedEarly);
+      context.strokeStyle = chartColor("--comparison", "#4a6dd7");
+      context.lineWidth = compact ? 2 : 2.5;
+      context.stroke();
+    }
+
+    if (comparisonMode) {
+      if (points.length > 1) drawMarker(points.at(-1), pathColor, "A", false);
+      if (comparisonPoints.length > 1) drawMarker(comparisonPoints.at(-1), chartColor("--comparison", "#4a6dd7"), "B", true);
+      return;
+    }
     const highest = points.reduce((best, point) => (
       point.bankroll > best.bankroll ? point : best
     ));
@@ -421,7 +448,7 @@ export function createBankrollChart({
   }
 
   canvas.addEventListener("pointermove", (event) => {
-    if (!geometry || points.length <= 1) return;
+    if (!geometry || hoverPoints.length <= 1) return;
     const bounds = canvas.getBoundingClientRect();
     const x = event.clientX - bounds.left;
     if (x < geometry.left || x > geometry.left + geometry.plotWidth) {
@@ -431,26 +458,38 @@ export function createBankrollChart({
     const ratio = (x - geometry.left) / geometry.plotWidth;
     // 指针位置映射回完整 points，而不是 drawablePoints，所以即使图形绘制
     // 经过抽样，悬停仍能查看完整报告中的每个结算点。
-    keyboardIndex = Math.round(ratio * (points.length - 1));
-    showTooltip(points[keyboardIndex]);
+    if (comparisonMode) {
+      const targetX = geometry.xForIndex(ratio * geometry.finalIndex);
+      const targetY = event.clientY - bounds.top;
+      let bestDistance = Infinity;
+      hoverPoints.forEach((point, index) => {
+        const dx = geometry.xForIndex(positionOf(point)) - targetX;
+        const dy = geometry.yForValue(point.bankroll) - targetY;
+        const distance = dx * dx + dy * dy;
+        if (distance < bestDistance) { bestDistance = distance; keyboardIndex = index; }
+      });
+    } else {
+      keyboardIndex = Math.round(ratio * (hoverPoints.length - 1));
+    }
+    showTooltip(hoverPoints[keyboardIndex]);
   });
   canvas.addEventListener("pointerleave", hideTooltip);
   canvas.addEventListener("focus", () => {
-    keyboardIndex = points.length - 1;
-    showTooltip(points[keyboardIndex]);
+    keyboardIndex = hoverPoints.length - 1;
+    showTooltip(hoverPoints[keyboardIndex]);
   });
   canvas.addEventListener("blur", hideTooltip);
   canvas.addEventListener("keydown", (event) => {
-    if (points.length <= 1) return;
-    const largeStep = Math.max(1, Math.floor(points.length / 100));
+    if (hoverPoints.length <= 1) return;
+    const largeStep = Math.max(1, Math.floor(hoverPoints.length / 100));
     const step = event.shiftKey ? largeStep : 1;
     if (event.key === "ArrowLeft") keyboardIndex = Math.max(0, keyboardIndex - step);
-    else if (event.key === "ArrowRight") keyboardIndex = Math.min(points.length - 1, keyboardIndex + step);
+    else if (event.key === "ArrowRight") keyboardIndex = Math.min(hoverPoints.length - 1, keyboardIndex + step);
     else if (event.key === "Home") keyboardIndex = 0;
-    else if (event.key === "End") keyboardIndex = points.length - 1;
+    else if (event.key === "End") keyboardIndex = hoverPoints.length - 1;
     else return;
     event.preventDefault();
-    showTooltip(points[keyboardIndex]);
+    showTooltip(hoverPoints[keyboardIndex]);
   });
 
   if (typeof ResizeObserver === "function") {
@@ -462,6 +501,10 @@ export function createBankrollChart({
   return {
     reset(message = "上传 CSV 并完成策略回放后，这里会显示结算后本金的变化曲线。") {
       points = [];
+      comparisonPoints = [];
+      hoverPoints = [];
+      comparisonMode = false;
+      timelineEnd = 0;
       geometry = null;
       keyboardIndex = 0;
       pointCount.textContent = "暂无资金变化点";
@@ -475,11 +518,31 @@ export function createBankrollChart({
       // 每次新报告到来都重新建立完整曲线；图表不会在内部累加旧报告，
       // 这样重新上传 CSV 或重新配置策略时不会串入上一次的本金数据。
       points = buildBankrollSeries(report);
-      const settlementCount = Math.max(0, points.length - 1);
-      pointCount.textContent = settlementCount > 0
+      comparisonMode = Boolean(report?.comparison);
+      timelineEnd = comparisonMode
+        ? Number(report.comparison.timeline_end)
+          || Math.max(Number(report.summary?.replayed_rounds ?? 0), Number(report.comparison.summary?.replayed_rounds ?? 0))
+        : 0;
+      timelineLabel = report.comparison?.timeline_mode === "bet_union"
+        ? "双方下注局的共同序号" : "同一输入的牌局序号";
+      primaryStoppedEarly = Boolean(report.summary?.stopped_early);
+      comparisonStoppedEarly = Boolean(report.comparison?.summary?.stopped_early);
+      comparisonPoints = comparisonMode ? buildBankrollSeries(report.comparison) : [];
+      if (comparisonMode) {
+        points = points.map(point => ({ ...point, strategyLabel: "策略 A" }));
+        comparisonPoints = comparisonPoints.map(point => ({ ...point, strategyLabel: "策略 B" }));
+      }
+      hoverPoints = [...points, ...comparisonPoints].sort((a, b) => positionOf(a) - positionOf(b));
+      const settlementCount = Number(report?.trend_charts?.betting_rounds)
+        || Math.max(0, points.length - 1);
+      const comparisonSettlementCount = Number(report?.comparison?.trend_charts?.betting_rounds)
+        || Math.max(0, comparisonPoints.length - 1);
+      pointCount.textContent = comparisonMode
+        ? `A ${integerFormatter.format(settlementCount)} 局 · B ${integerFormatter.format(comparisonSettlementCount)} 局`
+        : settlementCount > 0
         ? `${integerFormatter.format(settlementCount)} 个下注结算局`
         : "暂无资金变化点";
-      const hasSettlements = settlementCount > 0;
+      const hasSettlements = points.length > 1 || comparisonPoints.length > 1;
       if (panel) {
         panel.dataset.trend = points.at(-1)?.cumulativeProfit < 0 ? "negative" : "positive";
       }
@@ -495,9 +558,11 @@ export function createBankrollChart({
 
       canvas.setAttribute(
         "aria-label",
-        `本金变化折线图，共 ${integerFormatter.format(settlementCount)} 个下注结算局；可使用左右方向键逐点查看。`,
+        comparisonMode
+          ? `策略 A 与策略 B 本金变化对比折线图；A ${integerFormatter.format(settlementCount)} 个下注局，B ${integerFormatter.format(comparisonSettlementCount)} 个下注局；可使用左右方向键查看。`
+          : `本金变化折线图，共 ${integerFormatter.format(settlementCount)} 个下注结算局；可使用左右方向键逐点查看。`,
       );
-      keyboardIndex = points.length - 1;
+      keyboardIndex = hoverPoints.length - 1;
       scheduleDraw();
     },
   };

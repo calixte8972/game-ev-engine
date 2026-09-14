@@ -629,7 +629,7 @@ class BoundedCurve {
     };
   }
 
-  addBets(bets) {
+  addBets(bets, timelinePositions = null) {
     for (const bet of bets) {
       const key = [bet.table_id, bet.session_id, bet.round_no, bet.started_at].join("|");
       if (this.pending && this.pending.key !== key) this.flush();
@@ -638,6 +638,7 @@ class BoundedCurve {
           key, bankroll: Number(bet.bankroll_after), roundStake: 0, roundProfit: 0,
           betCount: 0, tableId: bet.table_id, sessionId: bet.session_id,
           roundNo: bet.round_no, startedAt: bet.started_at, byBet: new Map(),
+          timelineIndex: timelinePositions?.get(key) ?? this.index + 1,
         };
       }
       const stake = Number(bet.amount) || 0;
@@ -751,9 +752,17 @@ class BoundedCurve {
 async function runStreamPipeline({
   order, taskAt, taskCount, config, sessionCount, timestampOrder,
   parallel, requestedWorkerCount, runId, taskForSourceOrder, totalRoundCount,
+  comparisonConfig,
 }) {
   const session = new ReplaySession(streamConfigJson(config, sessionCount));
   const curve = new BoundedCurve(config.bankroll);
+  // 两套资金状态独立，但消费完全相同的 prepared round；概率枚举只做一次。
+  const comparisonSession = comparisonConfig
+    ? new ReplaySession(streamConfigJson(comparisonConfig, sessionCount)) : null;
+  const comparisonCurve = comparisonConfig ? new BoundedCurve(comparisonConfig.bankroll) : null;
+  let primaryStopped = false;
+  let comparisonStopped = false;
+  let timelineOffset = 0;
   const targetOrder = order;
   let detailSequence = 0;
   let probabilityCompleted = 0;
@@ -803,29 +812,43 @@ async function runStreamPipeline({
   const processEntries = (entries) => {
     for (let offset = 0; offset < entries.length; offset += REPLAY_BATCH_SIZE) {
       const batch = entries.slice(offset, offset + REPLAY_BATCH_SIZE);
+      // 横轴用本次回放中的真实局序，而非各策略各自的“第几次下注”。
+      // 因此 A 跳过某局而 B 下注时，两条线仍落在同一时间位置。
+      const timelinePositions = new Map(batch.map((entry, index) => {
+        const source = (entry.packet ?? entry).source;
+        return [[source.table_id, source.session_id, source.round_no, source.started_at].join("|"), timelineOffset + index + 1];
+      }));
+      timelineOffset += batch.length;
       const serializeStarted = performance.now();
       const payload = JSON.stringify(batch.map((entry) => entry.packet ?? entry));
       timings.serializeMs += performance.now() - serializeStarted;
       const settleStarted = performance.now();
-      const response = JSON.parse(session.push(payload));
+      const response = primaryStopped ? null : JSON.parse(session.push(payload));
+      const comparisonResponse = comparisonSession && !comparisonStopped
+        ? JSON.parse(comparisonSession.push(payload)) : null;
       timings.settlementMs += performance.now() - settleStarted;
       timings.settlementBatches += 1;
       settledRounds = Math.max(
         settledRounds,
-        Number(response.summary?.replayed_rounds ?? (settledRounds + batch.length)),
+        Number(response?.summary?.replayed_rounds ?? 0),
+        Number(comparisonResponse?.summary?.replayed_rounds ?? 0),
       );
       postPipelineProgress(
         "settlement", settledRounds, progressTotal,
         localOnly ? 1 : poolSize, !localOnly,
       );
-      const bets = Array.isArray(response.bets) ? response.bets : [];
+      const bets = Array.isArray(response?.bets) ? response.bets : [];
       if (bets.length) {
         const curveStarted = performance.now();
-        curve.addBets(bets);
+        curve.addBets(bets, timelinePositions);
         timings.curveMs += performance.now() - curveStarted;
         self.postMessage({ type: "detail-batch", runId, batchId: detailSequence++, details: bets });
       }
-      if (response.summary?.stopped_early) return true;
+      const comparisonBets = Array.isArray(comparisonResponse?.bets) ? comparisonResponse.bets : [];
+      if (comparisonBets.length) comparisonCurve.addBets(comparisonBets, timelinePositions);
+      primaryStopped ||= Boolean(response?.summary?.stopped_early);
+      comparisonStopped ||= Boolean(comparisonResponse?.summary?.stopped_early);
+      if (primaryStopped && (!comparisonSession || comparisonStopped)) return true;
     }
     return false;
   };
@@ -1116,7 +1139,7 @@ async function runStreamPipeline({
       for (let index = 0; index < poolSize; index += 1) {
         let worker;
         try {
-          worker = new Worker(new URL("./replay-shard-worker.js?v=30", import.meta.url), { type: "module" });
+          worker = new Worker(new URL("./replay-shard-worker.js?v=31", import.meta.url), { type: "module" });
         } catch (error) {
           reject(error);
           return;
@@ -1156,6 +1179,16 @@ async function runStreamPipeline({
   report.trend_charts = curve.trends();
   report.streamed = true;
   report.performance = timings;
+  if (comparisonSession) {
+    const comparisonReport = JSON.parse(comparisonSession.finish());
+    comparisonCurve.finish();
+    comparisonReport.bets = [];
+    comparisonReport.detail_count = Number(comparisonReport.summary?.placed_bet_count ?? 0);
+    comparisonReport.chart_points = comparisonCurve.points();
+    comparisonReport.trend_charts = comparisonCurve.trends();
+    comparisonReport.streamed = true;
+    report.comparison = comparisonReport;
+  }
   postPipelineProgress(
     "settlement", settledRounds, progressTotal,
     localOnly ? 1 : poolSize, !localOnly, true,
@@ -1164,11 +1197,33 @@ async function runStreamPipeline({
 }
 
 /** 兼容旧核心回放，并把它的完整明细转成和流式回放相同的页面协议。 */
-function externalizeLegacyReport(report, runId) {
+function legacyComparisonPositions(primaryBets, comparisonBets) {
+  const keyOf = (bet) => [bet.table_id, bet.session_id, bet.round_no, bet.started_at].join("|");
+  const unique = new Map([...primaryBets, ...comparisonBets].map((bet) => [keyOf(bet), bet]));
+  const bets = [...unique.values()];
+  const csvLine = (bet) => /^CSV 第 (\d+) 行$/.exec(String(bet.started_at));
+  const hasCsvLines = bets.length > 0 && bets.every(csvLine);
+  bets.sort((left, right) => {
+    if (hasCsvLines) return Number(csvLine(left)[1]) - Number(csvLine(right)[1]);
+    return String(left.started_at).localeCompare(String(right.started_at))
+      || Number(left.table_id) - Number(right.table_id)
+      || Number(left.session_id) - Number(right.session_id)
+      || Number(left.round_no) - Number(right.round_no);
+  });
+  return {
+    positions: new Map(bets.map((bet, index) => [
+      keyOf(bet), hasCsvLines ? Number(csvLine(bet)[1]) - 1 : index + 1,
+    ])),
+    mode: hasCsvLines ? "csv_row" : "bet_union",
+    end: hasCsvLines ? Number(csvLine(bets.at(-1))?.[1] ?? 1) - 1 : bets.length,
+  };
+}
+
+function externalizeLegacyReport(report, runId, postDetails = true, timelinePositions = null) {
   const bets = Array.isArray(report.bets) ? report.bets : [];
   const curve = new BoundedCurve(report.summary?.initial_bankroll ?? 0);
-  curve.addBets(bets);
-  for (let offset = 0, batchId = 0; offset < bets.length; offset += REPLAY_BATCH_SIZE, batchId += 1) {
+  curve.addBets(bets, timelinePositions);
+  for (let offset = 0, batchId = 0; postDetails && offset < bets.length; offset += REPLAY_BATCH_SIZE, batchId += 1) {
     self.postMessage({
       type: "detail-batch", runId, batchId,
       details: bets.slice(offset, offset + REPLAY_BATCH_SIZE),
@@ -1203,7 +1258,7 @@ function mergePreparedResults(results) {
 
 /* ----------------------------- 入口 ----------------------------- */
 
-const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=30", import.meta.url));
+const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=31", import.meta.url));
 ready.then(() => self.postMessage({ type: "ready" })).catch((error) => {
   self.postMessage({ type: "error", message: `无法加载 CSV 回放核心：${error?.message ?? String(error)}` });
 });
@@ -1213,6 +1268,14 @@ self.addEventListener("message", async (event) => {
   if (!new Set(["replay", "simulate"]).has(event.data?.type) || running) return;
   running = true;
   const config = event.data.config ?? {};
+  // 对比只允许金额策略与其参数不同；其余规则沿用 A，确保同一概率流可复用。
+  const comparisonConfig = config.comparisonConfig
+    ? {
+      ...config,
+      stakeStrategy: config.comparisonConfig.stakeStrategy,
+      strategyParameter: config.comparisonConfig.strategyParameter,
+    }
+    : null;
   const runId = config.runId ?? `run-${Date.now()}`;
   try {
     await ready;
@@ -1322,10 +1385,17 @@ self.addEventListener("message", async (event) => {
       // 普通精简 CSV 已在上面进入流式流水线，即使单线程也能持续报告进度。
       self.postMessage({ type: "progress", phase: "serial" });
       const serialStarted = performance.now();
-      report = externalizeLegacyReport(
-        JSON.parse(replayBaccaratCsvWithSideBetLimits(csvText, ...commonArguments(config))),
-        runId,
-      );
+      const primaryRaw = JSON.parse(replayBaccaratCsvWithSideBetLimits(csvText, ...commonArguments(config)));
+      const comparisonRaw = comparisonConfig
+        ? JSON.parse(replayBaccaratCsvWithSideBetLimits(csvText, ...commonArguments(comparisonConfig))) : null;
+      const timeline = comparisonRaw
+        ? legacyComparisonPositions(primaryRaw.bets, comparisonRaw.bets) : null;
+      report = externalizeLegacyReport(primaryRaw, runId, true, timeline?.positions);
+      if (comparisonConfig) {
+        report.comparison = externalizeLegacyReport(comparisonRaw, runId, false, timeline.positions);
+        report.comparison.timeline_mode = timeline.mode;
+        report.comparison.timeline_end = timeline.end;
+      }
       performanceTimings = {
         generationMs: 0,
         prepareMs: 0,
@@ -1342,6 +1412,7 @@ self.addEventListener("message", async (event) => {
           order, taskAt, taskCount, config, sessionCount, timestampOrder,
           parallel: requestedParallel, requestedWorkerCount, runId, taskForSourceOrder,
           totalRoundCount: dataset?.total_rows ?? taskCount,
+          comparisonConfig,
         });
         report = pipelineResult.report;
         performanceTimings = pipelineResult.timings;
@@ -1355,7 +1426,16 @@ self.addEventListener("message", async (event) => {
         quality = undefined;
         const fallbackStarted = performance.now();
         const legacy = JSON.parse(replayBaccaratCsvWithSideBetLimits(csvText, ...commonArguments(config)));
-        report = externalizeLegacyReport(legacy, runId);
+        const comparisonRaw = comparisonConfig
+          ? JSON.parse(replayBaccaratCsvWithSideBetLimits(csvText, ...commonArguments(comparisonConfig))) : null;
+        const timeline = comparisonRaw
+          ? legacyComparisonPositions(legacy.bets, comparisonRaw.bets) : null;
+        report = externalizeLegacyReport(legacy, runId, true, timeline?.positions);
+        if (comparisonConfig) {
+          report.comparison = externalizeLegacyReport(comparisonRaw, runId, false, timeline.positions);
+          report.comparison.timeline_mode = timeline.mode;
+          report.comparison.timeline_end = timeline.end;
+        }
         performanceTimings = {
           generationMs: 0,
           prepareMs: 0,
@@ -1377,6 +1457,10 @@ self.addEventListener("message", async (event) => {
     if (dataset && quality) {
       report.dataset = dataset;
       report.quality = quality;
+    }
+    if (comparisonConfig && report.comparison) {
+      report.primary_strategy = config.stakeStrategy;
+      report.comparison.stake_strategy = comparisonConfig.stakeStrategy;
     }
     // “开启并行”不等于“本次实际创建了多个线程”：只有一副牌靴、单核设备
     // 或低内存设备可能把有效 Worker 数压到 1，页面应准确显示实际执行方式。

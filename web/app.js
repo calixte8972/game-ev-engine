@@ -94,6 +94,13 @@ const strategyParameterWrapper = document.querySelector("#strategy-parameter-wra
 const strategyParameterInput = document.querySelector("#strategy-parameter");
 const strategyParameterPrefix = document.querySelector("#strategy-parameter-prefix");
 const strategyParameterSuffix = document.querySelector("#strategy-parameter-suffix");
+const compareStrategies = document.querySelector("#compare-strategies");
+const compareStrategyFields = document.querySelector("#compare-strategy-fields");
+const compareStakeStrategy = document.querySelector("#compare-stake-strategy");
+const compareStrategyParameterField = document.querySelector("#compare-strategy-parameter-field");
+const compareStrategyParameterLabel = document.querySelector("#compare-strategy-parameter-label");
+const compareStrategyParameterInput = document.querySelector("#compare-strategy-parameter");
+const compareStrategyParameterUnit = document.querySelector("#compare-strategy-parameter-unit");
 const allowMultipleBets = document.querySelector("#allow-multiple-bets");
 const gameTabs = document.querySelectorAll(".game-tab");
 const baccaratViewTabs = document.querySelectorAll("[data-baccarat-view-tab]");
@@ -266,7 +273,7 @@ function resetReplayWorker() {
   // 回收整块计算内存，防止连续回测累计保留大内存。
   replayWorker?.terminate();
   replayWorkerReady = false;
-  replayWorker = new Worker(new URL("./replay-worker.js?v=30", import.meta.url), { type: "module" });
+  replayWorker = new Worker(new URL("./replay-worker.js?v=31", import.meta.url), { type: "module" });
   replayWorker.addEventListener("message", handleReplayMessage);
   replayWorker.addEventListener("error", handleReplayError);
   replayWorker.addEventListener("messageerror", handleReplayError);
@@ -383,6 +390,34 @@ function strategyConfig() {
     stakeStrategy: selectedStakeStrategy,
     strategyParameter,
   };
+}
+
+/** B 只覆盖下注金额策略；其他设置由 A 继承，保证对照试验输入一致。 */
+function comparisonStrategyConfig() {
+  if (!compareStrategies.checked) return null;
+  const selected = compareStakeStrategy.value;
+  const definition = stakeStrategyParameters[selected];
+  let parameter = 0;
+  if (definition) {
+    parameter = readNumber("#compare-strategy-parameter", `策略 B ${definition.label}`, {
+      min: 0,
+      max: definition.unit === "percent" ? 100 : undefined,
+    });
+    if (definition.unit === "percent") parameter /= 100;
+  }
+  return { stakeStrategy: selected, strategyParameter: parameter };
+}
+
+function updateComparisonStrategyFields() {
+  compareStrategyFields.hidden = !compareStrategies.checked;
+  const definition = stakeStrategyParameters[compareStakeStrategy.value];
+  compareStrategyParameterField.hidden = !definition;
+  if (!definition) return;
+  compareStrategyParameterLabel.textContent = `策略 B · ${definition.label}`;
+  compareStrategyParameterInput.value = String(definition.defaultValue);
+  compareStrategyParameterInput.step = String(definition.step);
+  compareStrategyParameterInput.max = definition.unit === "percent" ? "100" : "";
+  compareStrategyParameterUnit.textContent = definition.unit === "money" ? "¥" : "%";
 }
 
 /**
@@ -1160,6 +1195,7 @@ function renderReplay(report, elapsedMilliseconds, timings = {}) {
       : "—",
   );
 
+  renderStrategyComparison(report);
   bankrollChartController.render(report);
   replayTrendChartController.render(report);
   contributionChartController.render(report);
@@ -1167,6 +1203,63 @@ function renderReplay(report, elapsedMilliseconds, timings = {}) {
   renderReplayDetails();
   // 不自动平滑滚动：结果区出现时强制滚动会让整页突然跳动，尤其在移动端
   // 看起来像页面闪烁。连续表现卡片已经位于结果区顶部，用户可自然向下查看。
+}
+
+function renderStrategyComparison(report) {
+  const section = document.querySelector("#strategy-compare-results");
+  const description = document.querySelector("#bankroll-chart-description");
+  const legend = document.querySelector("#bankroll-compare-legend");
+  const comparison = report.comparison;
+  section.hidden = !comparison;
+  legend.hidden = !comparison;
+  setText("#bankroll-primary-legend", comparison ? "策略 A" : "结算后本金");
+  description.textContent = comparison
+    ? comparison.timeline_mode === "bet_union"
+      ? "横轴按两套策略实际下注局的共同时间顺序对齐；未下注局没有资金点。"
+      : "横轴为同一输入流中的牌局顺序；A、B 共用牌局，只在各自下注时产生资金点。"
+    : "横轴按实际下注结算局排列；同局多注合并成一个资金点，跳过局不会重复绘制。";
+  if (!comparison) return;
+
+  const a = report.summary;
+  const b = comparison.summary;
+  const aLabel = stakeStrategyLabels[report.primary_strategy] ?? "策略 A";
+  const bLabel = stakeStrategyLabels[comparison.stake_strategy] ?? "策略 B";
+  setText("#compare-a-heading", `A · ${aLabel}`);
+  setText("#compare-b-heading", `B · ${bLabel}`);
+  const rows = [
+    ["期末本金", "final_bankroll", money, money],
+    ["最终净盈亏", "total_profit", money, money],
+    ["本金收益率", "return_on_initial", value => percent(value, 2), value => percent(value, 2)],
+    ["累计下注额", "total_stake", money, money],
+    ["实际下注笔数", "placed_bet_count", value => integerFormatter.format(value), value => integerFormatter.format(value)],
+    ["命中率", "hit_rate", value => percent(value, 2), value => percent(value, 2)],
+    ["返水收入", "rebate_income", money, money],
+    ["最大回撤", "maximum_drawdown", money, money],
+    ["最大连输局数", "maximum_consecutive_losses", value => integerFormatter.format(value), value => integerFormatter.format(value)],
+    ["最低本金", "minimum_bankroll", money, money],
+  ];
+  const body = document.querySelector("#strategy-compare-body");
+  body.replaceChildren(...rows.map(([label, key, format, formatDifference]) => {
+    const tr = document.createElement("tr");
+    const title = document.createElement("th");
+    title.scope = "row";
+    title.textContent = label;
+    tr.append(title);
+    for (const value of [a[key], b[key]]) {
+      const cell = document.createElement("td");
+      cell.textContent = format(Number(value) || 0);
+      tr.append(cell);
+    }
+    const delta = Number(b[key] ?? 0) - Number(a[key] ?? 0);
+    const difference = document.createElement("td");
+    difference.textContent = `${delta > 0 ? "+" : ""}${formatDifference(delta)}`;
+    tr.append(difference);
+    return tr;
+  }));
+  setText(
+    "#strategy-compare-note",
+    `A ${a.stopped_early ? "提前停止" : "完成回测"}（${integerFormatter.format(a.replayed_rounds)} 局）；B ${b.stopped_early ? "提前停止" : "完成回测"}（${integerFormatter.format(b.replayed_rounds)} 局）。B − A 只表示数值差，不代表每个指标越大越好。`,
+  );
 }
 
 form.addEventListener("submit", (event) => {
@@ -1217,6 +1310,8 @@ stakeStrategy.addEventListener("change", () => {
   updateStakeStrategyFields();
   calculate();
 });
+compareStrategies.addEventListener("change", updateComparisonStrategyFields);
+compareStakeStrategy.addEventListener("change", updateComparisonStrategyFields);
 
 payoutRule.addEventListener("change", calculate);
 allowMultipleBets.addEventListener("change", calculate);
@@ -1256,6 +1351,7 @@ csvFileInput.addEventListener("change", () => {
   currentCsvFile = file ?? null;
   replayResults.hidden = true;
   replayStreakPanel.hidden = true;
+  document.querySelector("#strategy-compare-results").hidden = true;
   replayError.hidden = true;
   currentReplayReport = null;
   replayPagination.hidden = true;
@@ -1337,6 +1433,7 @@ replayButton.addEventListener("click", async () => {
 
     const config = {
       ...strategyConfig(),
+      comparisonConfig: comparisonStrategyConfig(),
       runId: activeReplayRunId,
       parallelReplay: parallelReplay.checked,
       parallelWorkerCount: parallelReplay.checked
@@ -1576,7 +1673,7 @@ async function start() {
   // wasm-bindgen 初始化完成前，所有计算按钮都保持禁用；初始化成功后再做
   // 一次默认分析，让用户打开页面即可看到完整八副牌基线结果。
   try {
-    await init(new URL("./pkg/game_ev_engine_bg.wasm?v=30", import.meta.url));
+    await init(new URL("./pkg/game_ev_engine_bg.wasm?v=31", import.meta.url));
     wasmReady = true;
     wasmStatus.textContent = "WASM 已就绪";
     wasmStatus.classList.add("ready");
@@ -1592,6 +1689,7 @@ async function start() {
 updateModeHelp();
 updateBlackjackModeHelp();
 updateStakeStrategyFields();
+updateComparisonStrategyFields();
 updateSideBetRoundLimitHints();
 updateConfigSummaries();
 updateSimulationEstimate();

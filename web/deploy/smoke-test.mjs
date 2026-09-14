@@ -12,7 +12,7 @@ import {
   replayBaccaratCsvWithPreparedWeights,
   simulateBaccaratShoesWithSideBetLimits,
 } from "../pkg/game_ev_engine.js";
-import { buildBankrollSeries, sampleBankrollSeries } from "../bankroll-chart.js";
+import { buildBankrollSeries, sampleBankrollSeries, createBankrollChart } from "../bankroll-chart.js";
 import { buildContributionSeries } from "../bet-contribution-charts.js";
 import {
   buildDrawdownSeries,
@@ -73,6 +73,69 @@ if (!/<input id="limit-super-lucky-seven"[^>]*value="30"/.test(pageHtml)
 if (!/id="bankroll-chart"/.test(pageHtml)
     || !/id="bankroll-chart-tooltip"/.test(pageHtml)) {
   throw new Error("回放结果缺少本金变化折线图或逐点提示");
+}
+for (const id of ["compare-strategies", "compare-stake-strategy", "strategy-compare-results", "strategy-compare-body", "bankroll-compare-legend"]) {
+  if (!new RegExp(`id="${id}"`).test(pageHtml)) throw new Error(`双策略对比缺少页面元素：${id}`);
+}
+
+// 用最小 Canvas 宿主执行双线绘制，防止上线后才遇到坐标或提示框的运行时错误。
+{
+  const previousWindow = globalThis.window;
+  const previousDocument = globalThis.document;
+  const previousResizeObserver = globalThis.ResizeObserver;
+  const previousGetComputedStyle = globalThis.getComputedStyle;
+  const strokes = [];
+  const context = new Proxy({}, {
+    get(target, property) {
+      if (property === "createLinearGradient") return () => ({ addColorStop() {} });
+      if (property === "stroke") return () => strokes.push(target.strokeStyle);
+      return target[property] ?? (() => {});
+    },
+  });
+  const element = () => ({ hidden: false, style: {}, textContent: "", offsetWidth: 140, offsetHeight: 90 });
+  const plot = { hidden: true, closest: () => ({ dataset: {} }) };
+  const canvas = {
+    getContext: () => context,
+    getBoundingClientRect: () => ({ width: 720, height: 350, left: 0, top: 0 }),
+    addEventListener() {},
+    setAttribute(name, value) { if (name === "aria-label") this.ariaLabel = value; },
+  };
+  globalThis.window = {
+    devicePixelRatio: 1,
+    cancelAnimationFrame() {},
+    requestAnimationFrame(callback) { callback(); return 1; },
+  };
+  globalThis.ResizeObserver = class { observe() {} };
+  globalThis.document = { documentElement: {} };
+  globalThis.getComputedStyle = () => ({ getPropertyValue: () => "" });
+  try {
+    const controller = createBankrollChart({
+      canvas, plot, emptyState: element(), pointCount: element(), tooltip: element(),
+      tooltipTitle: element(), tooltipMeta: element(), tooltipBankroll: element(),
+      tooltipProfit: element(), tooltipRound: element(), guide: element(), focus: element(),
+    });
+    const point = (index, bankroll, timelineIndex) => ({
+      index, bankroll, timelineIndex, cumulativeProfit: bankroll - 100,
+      drawdown: 0, roundStake: 10, roundProfit: bankroll - 100,
+      betCount: 1, tableId: 1, sessionId: 1, roundNo: index, startedAt: "test",
+    });
+    controller.render({
+      summary: { initial_bankroll: 100, replayed_rounds: 3 },
+      chart_points: [point(0, 100, 0), point(1, 110, 1)],
+      comparison: {
+        summary: { initial_bankroll: 100, replayed_rounds: 3 },
+        chart_points: [point(0, 100, 0), point(1, 95, 2)],
+      },
+    });
+    if (plot.hidden || !strokes.includes("#4a6dd7") || !canvas.ariaLabel.includes("策略 B")) {
+      throw new Error("双策略本金曲线没有正确绘制两条线");
+    }
+  } finally {
+    globalThis.window = previousWindow;
+    globalThis.document = previousDocument;
+    globalThis.ResizeObserver = previousResizeObserver;
+    globalThis.getComputedStyle = previousGetComputedStyle;
+  }
 }
 
 if (!/id="bet-contribution-charts"/.test(pageHtml)
