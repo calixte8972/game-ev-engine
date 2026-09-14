@@ -147,8 +147,8 @@ pub struct ShoeGenerator(crate::baccarat::BaccaratShoeGenerator);
 impl ShoeGenerator {
     #[wasm_bindgen(constructor)]
     pub fn new(shoes: u32, rounds: u32, seed: &str, decks: u8) -> Result<ShoeGenerator, JsValue> {
-        if shoes > 20_000 {
-            return Err(JsValue::from_str("牌靴数不能超过 20000"));
+        if shoes > 200_000 {
+            return Err(JsValue::from_str("牌靴数不能超过 200000"));
         }
         let seed = seed
             .parse::<u64>()

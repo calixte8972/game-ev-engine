@@ -1149,7 +1149,7 @@ async function runStreamPipeline({
       for (let index = 0; index < poolSize; index += 1) {
         let worker;
         try {
-          worker = new Worker(new URL("./replay-shard-worker.js?v=32", import.meta.url), { type: "module" });
+          worker = new Worker(new URL("./replay-shard-worker.js?v=33", import.meta.url), { type: "module" });
         } catch (error) {
           reject(error);
           return;
@@ -1268,7 +1268,7 @@ function mergePreparedResults(results) {
 
 /* ----------------------------- 入口 ----------------------------- */
 
-const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=32", import.meta.url));
+const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=33", import.meta.url));
 ready.then(() => self.postMessage({ type: "ready" })).catch((error) => {
   self.postMessage({ type: "error", message: `无法加载 CSV 回放核心：${error?.message ?? String(error)}` });
 });

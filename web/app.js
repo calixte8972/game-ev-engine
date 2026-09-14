@@ -288,7 +288,7 @@ function resetReplayWorker() {
   // 回收整块计算内存，防止连续回测累计保留大内存。
   replayWorker?.terminate();
   replayWorkerReady = false;
-  replayWorker = new Worker(new URL("./replay-worker.js?v=32", import.meta.url), { type: "module" });
+  replayWorker = new Worker(new URL("./replay-worker.js?v=33", import.meta.url), { type: "module" });
   replayWorker.addEventListener("message", handleReplayMessage);
   replayWorker.addEventListener("error", handleReplayError);
   replayWorker.addEventListener("messageerror", handleReplayError);
@@ -968,7 +968,7 @@ function updateSimulationEstimate({ clampRounds = false } = {}) {
 function simulationRequest() {
   const shoes = readNumber("#simulation-shoes", "生成牌靴数", {
     min: 1,
-    max: 20_000,
+    max: 200_000,
     integer: true,
   });
   const maxRoundsPerShoe = readNumber("#simulation-rounds", "每靴最大子局数", {
@@ -1730,7 +1730,7 @@ async function start() {
   // wasm-bindgen 初始化完成前，所有计算按钮都保持禁用；初始化成功后再做
   // 一次默认分析，让用户打开页面即可看到完整八副牌基线结果。
   try {
-    await init(new URL("./pkg/game_ev_engine_bg.wasm?v=32", import.meta.url));
+    await init(new URL("./pkg/game_ev_engine_bg.wasm?v=33", import.meta.url));
     wasmReady = true;
     wasmStatus.textContent = "WASM 已就绪";
     wasmStatus.classList.add("ready");
