@@ -377,7 +377,23 @@ export function createBankrollChart({
     context.fillStyle = gold;
     context.textAlign = "right";
     context.font = "700 10px Inter, system-ui, sans-serif";
-    context.fillText(`初始 ${compactMoney(points[0].bankroll)}`, width - right - 3, initialY - 7);
+    context.fillText(`${comparisonMode ? "A 初始" : "初始"} ${compactMoney(points[0].bankroll)}`,
+      width - right - 3, initialY - 7);
+    if (comparisonMode && comparisonPoints.length > 0
+        && comparisonPoints[0].bankroll !== points[0].bankroll) {
+      const secondaryInitialY = yForValue(comparisonPoints[0].bankroll);
+      const secondaryColor = chartColor("--comparison", "#4a6dd7");
+      context.beginPath();
+      context.setLineDash([4, 5]);
+      context.strokeStyle = secondaryColor;
+      context.moveTo(left, secondaryInitialY);
+      context.lineTo(width - right, secondaryInitialY);
+      context.stroke();
+      context.setLineDash([]);
+      context.fillStyle = secondaryColor;
+      context.fillText(`B 初始 ${compactMoney(comparisonPoints[0].bankroll)}`,
+        width - right - 3, secondaryInitialY + 14);
+    }
 
     // 屏幕能显示的有效像素有限，绘图时只抽样到约每两个像素一个点；
     // 但最高/最低点由峰谷抽样保留，视觉上不会抹掉重要风险事件。

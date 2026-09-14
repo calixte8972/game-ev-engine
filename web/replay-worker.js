@@ -4,10 +4,11 @@
  *   CSV/随机生成 -> 每个子 Worker 只计算一副牌靴的概率
  *                -> 有界在途队列
  *                -> 本 Worker 的 ReplaySession 按全局顺序结算本金/倍投
+ *                -> 对比模式下，第二个 ReplaySession 消费同一批牌局概率
  *                -> 每个小批次的明细交给页面 IndexedDB
  *
- * 子 Worker 数量可以改变，但资金状态只有一个。这样不会因为并行而把本金
- * 复制成多份，也不会为了等待最后一副牌靴而把全部概率 JSON 留在内存中。
+ * 子 Worker 数量可以改变，但每套策略始终只有一个资金状态。这样不会因
+ * 概率计算并行而把本金按牌靴复制，也不用把全部概率 JSON 留在内存中。
  */
 import * as wasm from "./pkg/game_ev_engine.js";
 
@@ -105,8 +106,17 @@ function streamConfigJson(config, sessionCount) {
   });
 }
 
-function sideBetRoundLimitsJson(config) {
-  return JSON.stringify(normalizedSideBetRoundLimits(config));
+function preparationSideBetRoundLimitsJson(config, comparisonConfig = null) {
+  const primary = normalizedSideBetRoundLimits(config);
+  if (!comparisonConfig) return JSON.stringify(primary);
+  const secondary = normalizedSideBetRoundLimits(comparisonConfig);
+  // 概率预计算必须覆盖 A/B 任意一方仍可下注的边注。0 是“不限局数”，
+  // 因而并集里的 0 比任何有限截止局都更宽；各资金会话仍按自己的限制决策。
+  return JSON.stringify(Object.fromEntries(Object.keys(primary).map((key) => [
+    key,
+    primary[key] === 0 || secondary[key] === 0
+      ? 0 : Math.max(primary[key], secondary[key]),
+  ])));
 }
 
 /* ----------------------------- CSV 读取 ----------------------------- */
@@ -853,7 +863,7 @@ async function runStreamPipeline({
     return false;
   };
 
-  const limitsJson = sideBetRoundLimitsJson(config);
+  const limitsJson = preparationSideBetRoundLimitsJson(config, comparisonConfig);
   let prefetchedTask = null;
   let prefetchedPreparedJson = null;
   let prefetchedEntries = null;
@@ -1139,7 +1149,7 @@ async function runStreamPipeline({
       for (let index = 0; index < poolSize; index += 1) {
         let worker;
         try {
-          worker = new Worker(new URL("./replay-shard-worker.js?v=31", import.meta.url), { type: "module" });
+          worker = new Worker(new URL("./replay-shard-worker.js?v=32", import.meta.url), { type: "module" });
         } catch (error) {
           reject(error);
           return;
@@ -1258,7 +1268,7 @@ function mergePreparedResults(results) {
 
 /* ----------------------------- 入口 ----------------------------- */
 
-const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=31", import.meta.url));
+const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=32", import.meta.url));
 ready.then(() => self.postMessage({ type: "ready" })).catch((error) => {
   self.postMessage({ type: "error", message: `无法加载 CSV 回放核心：${error?.message ?? String(error)}` });
 });
@@ -1268,12 +1278,13 @@ self.addEventListener("message", async (event) => {
   if (!new Set(["replay", "simulate"]).has(event.data?.type) || running) return;
   running = true;
   const config = event.data.config ?? {};
-  // 对比只允许金额策略与其参数不同；其余规则沿用 A，确保同一概率流可复用。
+  // B 有完整独立的资金、EV、赔付和边注限制配置；只有牌靴副数必须与 A
+  // 相同，因为两者对照的是同一批真实牌局和同一条概率预计算流。
   const comparisonConfig = config.comparisonConfig
     ? {
       ...config,
-      stakeStrategy: config.comparisonConfig.stakeStrategy,
-      strategyParameter: config.comparisonConfig.strategyParameter,
+      ...config.comparisonConfig,
+      decks: config.decks,
     }
     : null;
   const runId = config.runId ?? `run-${Date.now()}`;

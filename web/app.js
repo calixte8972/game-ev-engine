@@ -96,11 +96,26 @@ const strategyParameterPrefix = document.querySelector("#strategy-parameter-pref
 const strategyParameterSuffix = document.querySelector("#strategy-parameter-suffix");
 const compareStrategies = document.querySelector("#compare-strategies");
 const compareStrategyFields = document.querySelector("#compare-strategy-fields");
+// B 使用 A 现有的三组设置结构，给所有 ID 加前缀后成为完全独立的控件。
+// 新增边注字段时只维护一份 HTML，避免 A/B 的默认值或可选项悄悄分叉。
+for (const source of [form.querySelector(".strategy-config-stack"), form.querySelector(".side-limit-config")]) {
+  const clone = source.cloneNode(true);
+  for (const element of [clone, ...clone.querySelectorAll("[id]")]) {
+    if (element.id) element.id = `compare-${element.id}`;
+  }
+  for (const label of clone.querySelectorAll("[for]")) {
+    label.htmlFor = `compare-${label.htmlFor}`;
+  }
+  compareStrategyFields.append(clone);
+}
 const compareStakeStrategy = document.querySelector("#compare-stake-strategy");
 const compareStrategyParameterField = document.querySelector("#compare-strategy-parameter-field");
 const compareStrategyParameterLabel = document.querySelector("#compare-strategy-parameter-label");
+const compareStrategyParameterWrapper = document.querySelector("#compare-strategy-parameter-wrapper");
 const compareStrategyParameterInput = document.querySelector("#compare-strategy-parameter");
-const compareStrategyParameterUnit = document.querySelector("#compare-strategy-parameter-unit");
+const compareStrategyParameterPrefix = document.querySelector("#compare-strategy-parameter-prefix");
+const compareStrategyParameterSuffix = document.querySelector("#compare-strategy-parameter-suffix");
+const compareCopyPrimary = document.querySelector("#compare-copy-primary");
 const allowMultipleBets = document.querySelector("#allow-multiple-bets");
 const gameTabs = document.querySelectorAll(".game-tab");
 const baccaratViewTabs = document.querySelectorAll("[data-baccarat-view-tab]");
@@ -273,7 +288,7 @@ function resetReplayWorker() {
   // 回收整块计算内存，防止连续回测累计保留大内存。
   replayWorker?.terminate();
   replayWorkerReady = false;
-  replayWorker = new Worker(new URL("./replay-worker.js?v=31", import.meta.url), { type: "module" });
+  replayWorker = new Worker(new URL("./replay-worker.js?v=32", import.meta.url), { type: "module" });
   replayWorker.addEventListener("message", handleReplayMessage);
   replayWorker.addEventListener("error", handleReplayError);
   replayWorker.addEventListener("messageerror", handleReplayError);
@@ -343,19 +358,21 @@ function readNumber(selector, label, options = {}) {
 }
 
 /**
- * 把表单中的“人类输入”转换成 Rust API 使用的配置对象。
+ * 把 A 或 B 表单中的“人类输入”转换成 Rust API 使用的配置对象。
  *
  * HTML 数字输入读出来都是字符串；这里统一转成 Number，并在边界层检查
  * 有限值、正数、范围和整数。页面按百分比显示返水/EV/本金比例，但 Rust
- * 使用 0.009、0.01 这样的比例小数，因此转换也集中在这里，避免不同调用点
- * 对同一个字段重复除以 100 或忘记除以 100。
+ * 使用 0.009、0.01 这样的比例小数，因此转换也集中在这里，避免 A/B
+ * 不小心使用不同单位；prefix 只改变所读控件，业务字段结构完全相同。
  */
-function strategyConfig() {
-  const selectedStakeStrategy = stakeStrategy.value;
+function strategyConfig(prefix = "") {
+  const field = (id) => `#${prefix}${id}`;
+  const labelPrefix = prefix ? "策略 B " : "";
+  const selectedStakeStrategy = document.querySelector(field("stake-strategy")).value;
   const parameterDefinition = stakeStrategyParameters[selectedStakeStrategy];
   let strategyParameter = 0;
   if (parameterDefinition) {
-    strategyParameter = readNumber("#strategy-parameter", parameterDefinition.label, {
+    strategyParameter = readNumber(field("strategy-parameter"), `${labelPrefix}${parameterDefinition.label}`, {
       min: 0,
       max: parameterDefinition.unit === "percent" ? 100 : undefined,
     });
@@ -364,7 +381,7 @@ function strategyConfig() {
   const sideBetRoundLimits = Object.fromEntries(
     Object.entries(sideBetRoundLimitInputs).map(([key, selector]) => [
       key,
-      readNumber(selector, `${sideBetLabels[key]}最后可下注局数`, {
+      readNumber(field(selector.slice(1)), `${labelPrefix}${sideBetLabels[key]}最后可下注局数`, {
         min: 0,
         integer: true,
       }),
@@ -373,51 +390,55 @@ function strategyConfig() {
 
   return {
     decks: Number.parseInt(deckCount.value, 10),
-    rebateRate: readNumber("#rebate-rate", "返水比例", { min: 0, max: 100 }) / 100,
-    minimumEffectiveEv: readNumber("#minimum-ev", "最低有效 EV") / 100,
-    minimumSideBetEv: readNumber("#minimum-side-bet-ev", "边注最低 EV") / 100,
-    bankroll: readNumber("#bankroll", "本金", { positive: true }),
-    maxFraction: readNumber("#max-fraction", "单局本金比例上限", {
+    rebateRate: readNumber(field("rebate-rate"), `${labelPrefix}返水比例`, { min: 0, max: 100 }) / 100,
+    minimumEffectiveEv: readNumber(field("minimum-ev"), `${labelPrefix}最低有效 EV`) / 100,
+    minimumSideBetEv: readNumber(field("minimum-side-bet-ev"), `${labelPrefix}边注最低 EV`) / 100,
+    bankroll: readNumber(field("bankroll"), `${labelPrefix}本金`, { positive: true }),
+    maxFraction: readNumber(field("max-fraction"), `${labelPrefix}单局本金比例上限`, {
       min: 0,
       max: 100,
     }) / 100,
-    maxRoundStake: readNumber("#max-round-stake", "单局金额上限", { min: 0 }),
-    sideBetLimit: readNumber("#side-bet-limit", "边注单笔金额上限", { min: 0 }),
+    maxRoundStake: readNumber(field("max-round-stake"), `${labelPrefix}单局金额上限`, { min: 0 }),
+    sideBetLimit: readNumber(field("side-bet-limit"), `${labelPrefix}边注单笔金额上限`, { min: 0 }),
     sideBetRoundLimits,
-    allowMultipleBets: allowMultipleBets.checked,
-    tableLimit: readNumber("#table-limit", "桌台金额上限", { min: 0 }),
-    payoutRule: payoutRule.value,
+    allowMultipleBets: document.querySelector(field("allow-multiple-bets")).checked,
+    tableLimit: readNumber(field("table-limit"), `${labelPrefix}桌台金额上限`, { min: 0 }),
+    payoutRule: document.querySelector(field("payout-rule")).value,
     stakeStrategy: selectedStakeStrategy,
     strategyParameter,
   };
 }
 
-/** B 只覆盖下注金额策略；其他设置由 A 继承，保证对照试验输入一致。 */
+/** B 拥有独立下注配置，只与 A 共用牌靴副数和输入牌局。 */
 function comparisonStrategyConfig() {
-  if (!compareStrategies.checked) return null;
-  const selected = compareStakeStrategy.value;
-  const definition = stakeStrategyParameters[selected];
-  let parameter = 0;
-  if (definition) {
-    parameter = readNumber("#compare-strategy-parameter", `策略 B ${definition.label}`, {
-      min: 0,
-      max: definition.unit === "percent" ? 100 : undefined,
-    });
-    if (definition.unit === "percent") parameter /= 100;
-  }
-  return { stakeStrategy: selected, strategyParameter: parameter };
+  return compareStrategies.checked ? strategyConfig("compare-") : null;
 }
 
-function updateComparisonStrategyFields() {
+function updateComparisonStrategyFields(resetParameter = false) {
   compareStrategyFields.hidden = !compareStrategies.checked;
   const definition = stakeStrategyParameters[compareStakeStrategy.value];
   compareStrategyParameterField.hidden = !definition;
   if (!definition) return;
   compareStrategyParameterLabel.textContent = `策略 B · ${definition.label}`;
-  compareStrategyParameterInput.value = String(definition.defaultValue);
+  if (resetParameter) compareStrategyParameterInput.value = String(definition.defaultValue);
   compareStrategyParameterInput.step = String(definition.step);
   compareStrategyParameterInput.max = definition.unit === "percent" ? "100" : "";
-  compareStrategyParameterUnit.textContent = definition.unit === "money" ? "¥" : "%";
+  const isMoney = definition.unit === "money";
+  compareStrategyParameterWrapper.className = isMoney ? "input-prefix" : "input-suffix";
+  compareStrategyParameterPrefix.hidden = !isMoney;
+  compareStrategyParameterSuffix.hidden = isMoney;
+}
+
+function copyPrimaryConfigToComparison() {
+  for (const target of compareStrategyFields.querySelectorAll("input[id], select[id]")) {
+    const source = document.getElementById(target.id.slice("compare-".length));
+    if (!source) continue;
+    if (target.type === "checkbox") target.checked = source.checked;
+    else target.value = source.value;
+  }
+  updateComparisonStrategyFields(false);
+  updateComparisonConfigSummaries();
+  updateSideBetRoundLimitHints();
 }
 
 /**
@@ -477,11 +498,28 @@ function updateConfigSummaries() {
   }
 }
 
+/** B 的折叠摘要只读 B 控件，修改 A 时不会把 B 的显示或实际配置一起改掉。 */
+function updateComparisonConfigSummaries() {
+  const number = (id) => Number.parseFloat(document.querySelector(`#compare-${id}`).value);
+  const payout = document.querySelector("#compare-payout-rule").value === "standard" ? "标准庄" : "庄免佣";
+  const strategy = stakeStrategyLabels[compareStakeStrategy.value] ?? "—";
+  const bankroll = number("bankroll");
+  const rebate = number("rebate-rate");
+  const fraction = number("max-fraction");
+  const roundLimit = number("max-round-stake");
+  const sideLimit = number("side-bet-limit");
+  const multi = document.querySelector("#compare-allow-multiple-bets").checked ? "多下注开" : "单一目标";
+  setText("#compare-funding-config-summary",
+    `${payout} · ${strategy} · 本金 ${Number.isFinite(bankroll) ? money(bankroll) : "—"} · 返水 ${Number.isFinite(rebate) ? rebate : "—"}%`);
+  setText("#compare-risk-config-summary",
+    `单局 ${Number.isFinite(fraction) ? fraction : "—"}% · 上限 ${Number.isFinite(roundLimit) ? money(roundLimit) : "—"} · 边注 ${Number.isFinite(sideLimit) ? money(sideLimit) : "—"} · ${multi}`);
+}
+
 /** 更新每个边注“最后可下注局数”下方的自然语言提示。 */
 function updateSideBetRoundLimitHints() {
-  for (const [key, selector] of Object.entries(sideBetRoundLimitInputs)) {
-    const input = document.querySelector(selector);
-    const status = document.querySelector(sideBetRoundLimitStatus[key]);
+  for (const prefix of ["", "compare-"]) for (const [key, selector] of Object.entries(sideBetRoundLimitInputs)) {
+    const input = document.querySelector(`#${prefix}${selector.slice(1)}`);
+    const status = document.querySelector(`#${prefix}${sideBetRoundLimitStatus[key].slice(1)}`);
     if (!input || !status) continue;
 
     const lastPlayableRound = Number.parseInt(input.value, 10);
@@ -1213,6 +1251,11 @@ function renderStrategyComparison(report) {
   section.hidden = !comparison;
   legend.hidden = !comparison;
   setText("#bankroll-primary-legend", comparison ? "策略 A" : "结算后本金");
+  const distinctStartingBankrolls = Boolean(comparison)
+    && Number(report.summary?.initial_bankroll) !== Number(comparison.summary?.initial_bankroll);
+  document.querySelector("#bankroll-compare-baseline-legend").hidden = !distinctStartingBankrolls;
+  setText("#bankroll-primary-baseline-legend",
+    comparison ? distinctStartingBankrolls ? "A 初始本金" : "共同初始本金" : "初始本金");
   description.textContent = comparison
     ? comparison.timeline_mode === "bet_union"
       ? "横轴按两套策略实际下注局的共同时间顺序对齐；未下注局没有资金点。"
@@ -1227,6 +1270,7 @@ function renderStrategyComparison(report) {
   setText("#compare-a-heading", `A · ${aLabel}`);
   setText("#compare-b-heading", `B · ${bLabel}`);
   const rows = [
+    ["初始本金", "initial_bankroll", money, money],
     ["期末本金", "final_bankroll", money, money],
     ["最终净盈亏", "total_profit", money, money],
     ["本金收益率", "return_on_initial", value => percent(value, 2), value => percent(value, 2)],
@@ -1258,7 +1302,7 @@ function renderStrategyComparison(report) {
   }));
   setText(
     "#strategy-compare-note",
-    `A ${a.stopped_early ? "提前停止" : "完成回测"}（${integerFormatter.format(a.replayed_rounds)} 局）；B ${b.stopped_early ? "提前停止" : "完成回测"}（${integerFormatter.format(b.replayed_rounds)} 局）。B − A 只表示数值差，不代表每个指标越大越好。`,
+    `A ${a.stopped_early ? "提前停止" : "完成回测"}（${integerFormatter.format(a.replayed_rounds)} 局）；B ${b.stopped_early ? "提前停止" : "完成回测"}（${integerFormatter.format(b.replayed_rounds)} 局）。${distinctStartingBankrolls ? "初始本金不同，建议重点比较收益率与净盈亏。" : ""}B − A 只表示数值差，不代表每个指标越大越好。`,
   );
 }
 
@@ -1310,8 +1354,21 @@ stakeStrategy.addEventListener("change", () => {
   updateStakeStrategyFields();
   calculate();
 });
-compareStrategies.addEventListener("change", updateComparisonStrategyFields);
-compareStakeStrategy.addEventListener("change", updateComparisonStrategyFields);
+compareStrategies.addEventListener("change", () => {
+  if (compareStrategies.checked) copyPrimaryConfigToComparison();
+  else updateComparisonStrategyFields(false);
+});
+compareStakeStrategy.addEventListener("change", () => {
+  updateComparisonStrategyFields(true);
+  updateComparisonConfigSummaries();
+});
+compareCopyPrimary.addEventListener("click", copyPrimaryConfigToComparison);
+for (const eventType of ["input", "change"]) {
+  compareStrategyFields.addEventListener(eventType, () => {
+    updateComparisonConfigSummaries();
+    updateSideBetRoundLimitHints();
+  });
+}
 
 payoutRule.addEventListener("change", calculate);
 allowMultipleBets.addEventListener("change", calculate);
@@ -1673,7 +1730,7 @@ async function start() {
   // wasm-bindgen 初始化完成前，所有计算按钮都保持禁用；初始化成功后再做
   // 一次默认分析，让用户打开页面即可看到完整八副牌基线结果。
   try {
-    await init(new URL("./pkg/game_ev_engine_bg.wasm?v=31", import.meta.url));
+    await init(new URL("./pkg/game_ev_engine_bg.wasm?v=32", import.meta.url));
     wasmReady = true;
     wasmStatus.textContent = "WASM 已就绪";
     wasmStatus.classList.add("ready");
@@ -1690,6 +1747,7 @@ updateModeHelp();
 updateBlackjackModeHelp();
 updateStakeStrategyFields();
 updateComparisonStrategyFields();
+updateComparisonConfigSummaries();
 updateSideBetRoundLimitHints();
 updateConfigSummaries();
 updateSimulationEstimate();

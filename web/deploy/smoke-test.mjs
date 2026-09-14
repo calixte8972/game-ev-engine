@@ -74,8 +74,14 @@ if (!/id="bankroll-chart"/.test(pageHtml)
     || !/id="bankroll-chart-tooltip"/.test(pageHtml)) {
   throw new Error("回放结果缺少本金变化折线图或逐点提示");
 }
-for (const id of ["compare-strategies", "compare-stake-strategy", "strategy-compare-results", "strategy-compare-body", "bankroll-compare-legend"]) {
+for (const id of ["compare-strategies", "compare-strategy-fields", "compare-copy-primary", "strategy-compare-results", "strategy-compare-body", "bankroll-compare-legend"]) {
   if (!new RegExp(`id="${id}"`).test(pageHtml)) throw new Error(`双策略对比缺少页面元素：${id}`);
+}
+const comparisonAppSource = readFileSync(resolve(webDirectory, "app.js"), "utf8");
+if (!/source\.cloneNode\(true\)/.test(comparisonAppSource)
+    || !/element\.id = `compare-\$\{element\.id\}`/.test(comparisonAppSource)
+    || !/strategyConfig\("compare-"\)/.test(comparisonAppSource)) {
+  throw new Error("策略 B 必须拥有独立复制的全部配置字段");
 }
 
 // 用最小 Canvas 宿主执行双线绘制，防止上线后才遇到坐标或提示框的运行时错误。

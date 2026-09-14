@@ -1825,14 +1825,42 @@ td:first-child {
 
 .strategy-compare-fields {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
   margin-top: 14px;
 }
 
+.strategy-compare-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.strategy-compare-toolbar strong { color: var(--felt-dark); }
+.strategy-compare-toolbar button {
+  border: 1px solid #a9cec0;
+  border-radius: 999px;
+  padding: 7px 11px;
+  color: var(--felt-dark);
+  background: white;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+.strategy-compare-toolbar button:hover,
+.strategy-compare-toolbar button:focus-visible {
+  color: white;
+  background: var(--felt);
+}
+.strategy-compare-fields > .field-help { margin: 0 0 2px; }
+.strategy-compare-fields .side-limit-config { margin-top: 0; }
+
 .strategy-compare-fields[hidden],
 .strategy-compare-results[hidden],
-#bankroll-compare-legend[hidden] { display: none; }
+#bankroll-compare-legend[hidden],
+#bankroll-compare-baseline-legend[hidden] { display: none; }
 
 .strategy-compare-results {
   margin: 16px 0;
@@ -2354,6 +2382,7 @@ td:first-child {
 }
 
 .chart-line-swatch-b { border-color: var(--comparison); }
+.chart-baseline-swatch-b { border-color: var(--comparison); }
 
 @media (max-width: 620px) {
   .strategy-compare-fields { grid-template-columns: 1fr; }
