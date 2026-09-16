@@ -13,6 +13,15 @@
 
 脚本会生成 `web/pkg/`。这个目录是构建产物，不需要手工修改。
 
+构建后可运行发布前检查：
+
+```powershell
+node .\web\deploy\smoke-test.mjs
+node .\web\deploy\replay-worker-test.mjs
+node .\web\deploy\build-worker.mjs
+node .\web\deploy\worker-cache-test.mjs
+```
+
 ## 本地打开
 
 浏览器不能直接通过 `file://` 加载 WebAssembly 模块，需要本地 HTTP 服务：

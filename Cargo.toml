@@ -6,6 +6,8 @@ name = "game-ev-engine"
 version = "0.1.0"
 # 使用 Rust 2024 edition 的语法和名称解析规则。
 edition = "2024"
+# 仓库包含多个辅助二进制；默认运行面向用户的概率分析 CLI。
+default-run = "game-ev-engine"
 
 # 同一个库既能被本地 Rust 程序链接，也能编译成浏览器加载的 WebAssembly。
 [lib]

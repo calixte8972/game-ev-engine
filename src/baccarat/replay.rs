@@ -846,6 +846,19 @@ struct LoadedRound {
     validation_error: Option<String>,
 }
 
+/// 单局校验阶段产出的结构化结果。
+///
+/// 使用具名字段代替容易错位的五元组，使新增校验信息时不会破坏调用方，
+/// 也让 Clippy 能继续作为零警告质量门禁运行。
+#[derive(Debug, Default)]
+struct RoundValidation {
+    cards: Option<Vec<Card>>,
+    round_result: Option<super::RoundResult>,
+    outcome: Option<RoundOutcome>,
+    banker_total: Option<u8>,
+    validation_error: Option<String>,
+}
+
 /// 概率预计算结果的稳定键。
 ///
 /// 子 Worker 只负责“当前牌靴状态 -> 概率权重”，而本金与倍投必须留在
@@ -1362,8 +1375,13 @@ fn load_rounds(
 
         // 牌面校验只产生“可用结果或错误说明”，不会在这里扣除任何牌；
         // 只有后面的 replay_rounds 确认整靴可回放后才会改变 Shoe。
-        let (cards, round_result, outcome, banker_total, validation_error) =
-            validate_source_round(&source, &mut quality);
+        let RoundValidation {
+            cards,
+            round_result,
+            outcome,
+            banker_total,
+            validation_error,
+        } = validate_source_round(&source, &mut quality);
         rounds.push(LoadedRound {
             table_id: source.table_id,
             session_id: source.session_id,
@@ -1403,27 +1421,21 @@ fn load_rounds(
 }
 
 /// 校验单局本身，但此时绝不修改牌靴。
-fn validate_source_round(
-    source: &CsvRound,
-    quality: &mut CsvQualityReport,
-) -> (
-    Option<Vec<Card>>,
-    Option<super::RoundResult>,
-    Option<RoundOutcome>,
-    Option<u8>,
-    Option<String>,
-) {
+fn validate_source_round(source: &CsvRound, quality: &mut CsvQualityReport) -> RoundValidation {
     // 校验顺序从便宜到昂贵：先解析来源 payload，再用统一规则解析牌序，
     // 最后才比较数据库结果。每一步失败都会返回足够信息，供整靴隔离统计。
     let parsed = match parse_raw_cards(&source.raw_cards) {
         Ok(Some(cards)) => cards,
         Ok(None) => {
             quality.empty_card_rows += 1;
-            return (None, None, None, None, None);
+            return RoundValidation::default();
         }
         Err(error) => {
             quality.invalid_card_rows += 1;
-            return (None, None, None, None, Some(error.to_string()));
+            return RoundValidation {
+                validation_error: Some(error.to_string()),
+                ..RoundValidation::default()
+            };
         }
     };
 
@@ -1431,13 +1443,11 @@ fn validate_source_round(
         Ok(result) => result,
         Err(error) => {
             quality.invalid_card_rows += 1;
-            return (
-                Some(parsed),
-                None,
-                None,
-                None,
-                Some(format!("牌序不符合百家乐补牌规则：{error}")),
-            );
+            return RoundValidation {
+                cards: Some(parsed),
+                validation_error: Some(format!("牌序不符合百家乐补牌规则：{error}")),
+                ..RoundValidation::default()
+            };
         }
     };
     // Rust 结果是回放可信度的基准；数据库 result_code 只作为待核对的外部字段。
@@ -1448,50 +1458,50 @@ fn validate_source_round(
     // 完整数据库格式提供了结果码时，仍保留这道交叉校验以发现脏数据。
     let Some(result_code) = source.result_code else {
         quality.valid_card_rows += 1;
-        return (
-            Some(parsed),
-            Some(result),
-            Some(calculated),
-            Some(banker_total),
-            None,
-        );
+        return RoundValidation {
+            cards: Some(parsed),
+            round_result: Some(result),
+            outcome: Some(calculated),
+            banker_total: Some(banker_total),
+            validation_error: None,
+        };
     };
 
     let recorded = match decode_recorded_outcome(result_code) {
         Ok(outcome) => outcome,
         Err(error) => {
             quality.invalid_card_rows += 1;
-            return (
-                Some(parsed),
-                Some(result),
-                Some(calculated),
-                Some(banker_total),
-                Some(error.to_string()),
-            );
+            return RoundValidation {
+                cards: Some(parsed),
+                round_result: Some(result),
+                outcome: Some(calculated),
+                banker_total: Some(banker_total),
+                validation_error: Some(error.to_string()),
+            };
         }
     };
 
     if recorded != calculated {
         quality.outcome_mismatch_rows += 1;
-        return (
-            Some(parsed),
-            Some(result),
-            Some(calculated),
-            Some(banker_total),
-            Some(format!(
+        return RoundValidation {
+            cards: Some(parsed),
+            round_result: Some(result),
+            outcome: Some(calculated),
+            banker_total: Some(banker_total),
+            validation_error: Some(format!(
                 "数据库结果 {recorded:?} 与 Rust 结果 {calculated:?} 不一致"
             )),
-        );
+        };
     }
 
     quality.valid_card_rows += 1;
-    (
-        Some(parsed),
-        Some(result),
-        Some(calculated),
-        Some(banker_total),
-        None,
-    )
+    RoundValidation {
+        cards: Some(parsed),
+        round_result: Some(result),
+        outcome: Some(calculated),
+        banker_total: Some(banker_total),
+        validation_error: None,
+    }
 }
 
 /// 隔离不完整牌靴，并返回需要进入全局资金时间线的行索引。
