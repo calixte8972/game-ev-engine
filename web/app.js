@@ -53,6 +53,7 @@ const replayProgressPanel = document.querySelector("#replay-progress-panel");
 const replayProgressBar = document.querySelector("#replay-progress-bar");
 const replayProgressValue = document.querySelector("#replay-progress-value");
 const replayProgressLabel = document.querySelector("#replay-progress-label");
+const replayProgressEta = document.querySelector("#replay-progress-eta");
 const replayProgressTrack = document.querySelector("#replay-progress-track");
 const replayRulesTitle = document.querySelector("#replay-rules-title");
 const replayRulePrimary = document.querySelector("#replay-rule-primary");
@@ -282,6 +283,10 @@ let replayDetailFlushTimer = null;
 let replayStorageElapsedMs = 0;
 let replayDetailRenderToken = 0;
 let replayProgressOverall = 0;
+let replayProgressStartedAt = 0;
+let replayProgressLastSampleAt = 0;
+let replayProgressLastSampleOverall = 0;
+let replayProgressRate = 0;
 let activeGame = "baccarat";
 let activeBaccaratView = "analysis";
 
@@ -903,17 +908,53 @@ function setReplayProgress(
 ) {
   if (!replayProgressBar || !replayProgressValue || !replayProgressLabel) return;
   const safeOverall = Math.max(0, Math.min(1, Number(overall) || 0));
+  const now = performance.now();
+  if (allowDecrease || replayProgressStartedAt === 0) {
+    replayProgressStartedAt = now;
+    replayProgressLastSampleAt = now;
+    replayProgressLastSampleOverall = safeOverall;
+    replayProgressRate = 0;
+  }
   replayProgressOverall = allowDecrease
     ? safeOverall
     : Math.max(replayProgressOverall, safeOverall);
+  const sampleElapsed = now - replayProgressLastSampleAt;
+  const progressDelta = replayProgressOverall - replayProgressLastSampleOverall;
+  if (!indeterminate && sampleElapsed >= 250 && progressDelta > 0.0005) {
+    const currentRate = progressDelta / sampleElapsed;
+    replayProgressRate = replayProgressRate > 0
+      ? replayProgressRate * 0.7 + currentRate * 0.3
+      : currentRate;
+  }
+  replayProgressLastSampleAt = now;
+  replayProgressLastSampleOverall = replayProgressOverall;
   const percentage = Math.round(replayProgressOverall * 100);
   replayProgressPanel?.removeAttribute("hidden");
   replayProgressBar.style.width = `${percentage}%`;
   replayProgressBar.classList.toggle("is-indeterminate", indeterminate);
   replayProgressValue.textContent = `${percentage}%`;
   replayProgressLabel.textContent = detail ? `${label} · ${detail}` : label;
+  if (replayProgressEta) {
+    if (replayProgressOverall >= 0.999) {
+      replayProgressEta.textContent = "已完成";
+    } else if (indeterminate || replayProgressRate <= 0 || now - replayProgressStartedAt < 1_000) {
+      replayProgressEta.textContent = "预计剩余：计算中";
+    } else {
+      replayProgressEta.textContent = `预计剩余：${formatReplayDuration((1 - replayProgressOverall) / replayProgressRate)}`;
+    }
+  }
   replayProgressBar.setAttribute("aria-valuenow", String(percentage));
   replayProgressTrack?.setAttribute("aria-valuenow", String(percentage));
+}
+
+function formatReplayDuration(milliseconds) {
+  const seconds = Math.max(1, Math.round(Number(milliseconds) / 1_000));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  if (minutes < 60) return `${minutes} 分 ${String(remainingSeconds).padStart(2, "0")} 秒`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours} 小时 ${String(minutes % 60).padStart(2, "0")} 分`;
 }
 
 function resetReplayProgress(label = "等待开始") {

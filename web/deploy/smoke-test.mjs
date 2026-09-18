@@ -54,6 +54,9 @@ for (const id of ["simulation-shoes", "simulation-rounds", "simulation-seed"]) {
 if (!/<input id="simulation-shoes"[^>]*max="1000000"/.test(pageHtml)) {
   throw new Error("随机回测的生成牌靴数上限必须是 1,000,000");
 }
+if (!/id="replay-progress-eta"/.test(pageHtml)) {
+  throw new Error("回测进度缺少预计剩余时间提示");
+}
 
 // 只取第一靴做边界测试，不实际生成 1,000,000 靴，避免烟测退化成耗时回测。
 const maximumShoeGenerator = new ShoeGenerator(1_000_000, 1, "20260902", 8);
@@ -236,6 +239,9 @@ if (!/id="replay-pagination"/.test(pageHtml)
 }
 
 const appSource = readFileSync(resolve(webDirectory, "app.js"), "utf8");
+if (!/formatReplayDuration/.test(appSource) || !/预计剩余：计算中/.test(appSource)) {
+  throw new Error("回测进度缺少预计剩余时间计算逻辑");
+}
 for (const strategy of ["martingale", "reverse_martingale", "dalembert"]) {
   if (!new RegExp(`${strategy}:`).test(appSource)) {
     throw new Error(`前端没有为递进策略提供参数配置：${strategy}`);

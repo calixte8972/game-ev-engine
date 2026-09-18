@@ -442,7 +442,10 @@
         <div id="replay-progress-panel" class="replay-progress-panel" hidden aria-live="polite">
           <div class="replay-progress-heading">
             <span id="replay-progress-label">等待开始</span>
-            <strong id="replay-progress-value">0%</strong>
+            <span class="replay-progress-meta">
+              <span id="replay-progress-eta">预计剩余：—</span>
+              <strong id="replay-progress-value">0%</strong>
+            </span>
           </div>
           <div id="replay-progress-track" class="replay-progress-track" role="progressbar" aria-label="回测计算进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
             <div id="replay-progress-bar" class="replay-progress-bar"></div>

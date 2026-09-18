@@ -1536,6 +1536,22 @@ td:first-child {
   white-space: nowrap;
 }
 
+.replay-progress-meta {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-shrink: 0;
+  overflow: visible !important;
+}
+
+.replay-progress-eta {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap !important;
+}
+
 .replay-progress-heading strong {
   min-width: 3.4em;
   color: var(--felt);
