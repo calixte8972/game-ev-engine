@@ -45,6 +45,7 @@ const simulationShoes = document.querySelector("#simulation-shoes");
 const simulationRounds = document.querySelector("#simulation-rounds");
 const simulationSeed = document.querySelector("#simulation-seed");
 const simulationEstimate = document.querySelector("#simulation-estimate");
+const MAX_SIMULATION_SHOES = 1_000_000;
 const parallelReplay = document.querySelector("#parallel-replay");
 const parallelWorkerCount = document.querySelector("#parallel-worker-count");
 const parallelAutoTune = document.querySelector("#parallel-auto-tune");
@@ -972,7 +973,7 @@ function updateSimulationEstimate({ clampRounds = false } = {}) {
 function simulationRequest() {
   const shoes = readNumber("#simulation-shoes", "生成牌靴数", {
     min: 1,
-    max: 200_000,
+    max: MAX_SIMULATION_SHOES,
     integer: true,
   });
   const maxRoundsPerShoe = readNumber("#simulation-rounds", "每靴最大子局数", {
