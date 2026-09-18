@@ -17,7 +17,8 @@ import { createBankrollChart } from "./bankroll-chart.js";
 import { createBetContributionCharts } from "./bet-contribution-charts.js";
 import { createReplayAnalysisCharts } from "./replay-analysis-charts.js";
 import { createReplayTrendCharts } from "./replay-trend-charts.js";
-import { deleteReplayStore, openReplayStore, readReplayDetailPage } from "./replay-storage.js";
+import { deleteReplayStore, openReplayStore, readReplayDetailPage, readReplayDetails } from "./replay-storage.js";
+import { buildBetDetailExport, EXPORT_FORMATS } from "./replay-export.mjs";
 
 const form = document.querySelector("#analysis-form");
 const analyzeButton = document.querySelector("#analyze-button");
@@ -68,6 +69,9 @@ const replayPreviousPage = document.querySelector("#replay-previous-page");
 const replayNextPage = document.querySelector("#replay-next-page");
 const replayLastPage = document.querySelector("#replay-last-page");
 const replayPageStatus = document.querySelector("#replay-page-status");
+const replayExportFormat = document.querySelector("#replay-export-format");
+const replayExportButton = document.querySelector("#replay-export-button");
+const replayExportStatus = document.querySelector("#replay-export-status");
 const betCountGrid = document.querySelector("#bet-count-grid");
 
 // 图表是独立控制器：app.js 只把完整回放报告交给它，不关心 Canvas 坐标、
@@ -1071,6 +1075,74 @@ function outcomeDetailCell(bet) {
   return cell;
 }
 
+function replayDetailCount(report) {
+  const reportBets = Array.isArray(report?.bets) ? report.bets.length : 0;
+  return Math.max(reportBets, Number(report?.detail_count ?? report?.summary?.placed_bet_count ?? 0));
+}
+
+function setReplayExportAvailability(available) {
+  replayExportFormat.disabled = !available;
+  replayExportButton.disabled = !available;
+}
+
+async function loadReplayDetailsForExport(report) {
+  const sourceBets = Array.isArray(report.bets) && report.bets.length > 0 ? report.bets : null;
+  if (sourceBets) return sourceBets;
+  const count = replayDetailCount(report);
+  if (!report.run_id || count === 0) return [];
+
+  const result = [];
+  const pageSize = 2_000;
+  for (let offset = 0; offset < count;) {
+    const page = await readReplayDetails(report.run_id, offset, Math.min(pageSize, count - offset));
+    if (!page.length) break;
+    result.push(...page);
+    offset += page.length;
+  }
+  return result;
+}
+
+function triggerReplayDownload(file) {
+  const url = URL.createObjectURL(file.blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = file.filename;
+  link.hidden = true;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+async function exportReplayDetails() {
+  const report = currentReplayReport;
+  if (!report || replayExportButton.disabled) return;
+  const format = replayExportFormat.value;
+  const detailCount = replayDetailCount(report);
+  if (Number(report.omitted_bet_details ?? 0) > 0) {
+    replayExportStatus.textContent = "明细不完整，请重新运行回测后导出。";
+    return;
+  }
+
+  replayExportButton.disabled = true;
+  replayExportFormat.disabled = true;
+  replayExportStatus.textContent = `正在准备 ${integerFormatter.format(detailCount)} 笔明细…`;
+  try {
+    const bets = await loadReplayDetailsForExport(report);
+    if (!bets.length) throw new Error("本次回测没有可导出的下注明细");
+    const file = buildBetDetailExport(format, bets, report.summary);
+    triggerReplayDownload(file);
+    replayExportStatus.textContent = `已导出 ${integerFormatter.format(file.count)} 笔明细 · ${EXPORT_FORMATS[format].extension.toUpperCase()}`;
+  } catch (error) {
+    replayExportStatus.textContent = `导出失败：${error?.message ?? error}`;
+  } finally {
+    const available = Boolean(currentReplayReport)
+      && replayDetailCount(currentReplayReport) > 0
+      && Number(currentReplayReport.omitted_bet_details ?? 0) === 0;
+    setReplayExportAvailability(available);
+  }
+}
+
 async function renderReplayDetails() {
   // 大回测的明细已按批写入 IndexedDB；这里一次只读取当前页，避免把百万条
   // 下注重新装回 JavaScript 堆，也避免表格一次创建百万个 DOM 节点。
@@ -1079,7 +1151,7 @@ async function renderReplayDetails() {
   const report = currentReplayReport;
   const { bets, omitted_bet_details: omittedBetDetails, summary } = report;
   const sourceBets = Array.isArray(bets) && bets.length > 0 ? bets : null;
-  const detailCount = sourceBets ? sourceBets.length : Number(report.detail_count ?? summary.placed_bet_count ?? 0);
+  const detailCount = replayDetailCount(report);
   const pageSize = Number.parseInt(replayPageSize.value, 10);
   const totalPages = Math.max(1, Math.ceil(detailCount / pageSize));
   currentReplayPage = Math.min(Math.max(currentReplayPage, 1), totalPages);
@@ -1138,6 +1210,7 @@ async function renderReplayDetails() {
   }
 
   replayPagination.hidden = detailCount === 0;
+  setReplayExportAvailability(detailCount > 0 && Number(omittedBetDetails ?? 0) === 0);
   replayFirstPage.disabled = currentReplayPage === 1;
   replayPreviousPage.disabled = currentReplayPage === 1;
   replayNextPage.disabled = currentReplayPage === totalPages;
@@ -1406,6 +1479,8 @@ deckCount.addEventListener("change", () => updateSimulationEstimate({ clampRound
 csvFileInput.addEventListener("change", () => {
   const [file] = csvFileInput.files;
   currentCsvFile = file ?? null;
+  setReplayExportAvailability(false);
+  replayExportStatus.textContent = "完成回测后可导出下注明细";
   replayResults.hidden = true;
   replayStreakPanel.hidden = true;
   document.querySelector("#strategy-compare-results").hidden = true;
@@ -1455,12 +1530,16 @@ replayLastPage.addEventListener("click", () => {
   renderReplayDetails();
 });
 
+replayExportButton.addEventListener("click", exportReplayDetails);
+
 replayButton.addEventListener("click", async () => {
   if (replayRunning || (replaySourceMode === "csv" && !currentCsvFile)) return;
   replayError.hidden = true;
   replayResults.hidden = true;
   replayStreakPanel.hidden = true;
   currentReplayReport = null;
+  setReplayExportAvailability(false);
+  replayExportStatus.textContent = "正在生成新的回测明细…";
   replayPagination.hidden = true;
   replayBody.replaceChildren();
   if (replayDetailFlushTimer) {

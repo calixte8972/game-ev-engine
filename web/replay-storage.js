@@ -103,7 +103,8 @@ export async function openReplayStore(runId) {
 export async function readReplayDetails(runId, offset, limit) {
   const store = await openReplayStore(runId);
   try {
-    return (await store.page("details", offset, limit)).map(row => row.value.bet ?? row.value);
+    const after = offset > 0 ? offset - 1 : null;
+    return (await store.page("details", after, limit)).map(row => row.value.bet ?? row.value);
   } finally { store.close(); }
 }
 

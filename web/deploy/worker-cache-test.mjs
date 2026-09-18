@@ -24,6 +24,10 @@ assert.equal(head.status, 200);
 assert.equal((await head.arrayBuffer()).byteLength, 0);
 assert.equal(head.headers.get("etag"), etag);
 
+const exportModule = await worker.fetch(new Request("https://example.test/replay-export.mjs"));
+assert.equal(exportModule.status, 200);
+assert.match(exportModule.headers.get("content-type") ?? "", /^text\/javascript/);
+
 assert.equal((await worker.fetch(new Request("https://example.test/missing"))).status, 404);
 assert.equal((await worker.fetch(new Request(assetUrl, { method: "POST" }))).status, 405);
 

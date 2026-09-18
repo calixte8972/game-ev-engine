@@ -20,6 +20,7 @@ node .\web\deploy\smoke-test.mjs
 node .\web\deploy\replay-worker-test.mjs
 node .\web\deploy\build-worker.mjs
 node .\web\deploy\worker-cache-test.mjs
+node .\web\deploy\replay-export-test.mjs
 ```
 
 ## 本地打开
@@ -93,3 +94,4 @@ http://localhost:8000
 - 本金变化折线图卡片始终显示，未回放时会提示先上传 CSV；完成回放后按真实下注结算局展示滚动余额，同局多注合并为一个点。大量数据只在绘制时做保留峰谷的抽样，悬停信息和下注明细仍使用完整数据。
 - 最大支持 200 MB CSV；文件以可转移二进制缓冲区交给 Web Worker，在后台解析和回放，减少主线程复制与卡顿。
 - 回放报告保留全部真实下注明细；页面默认每页显示 500 笔，可切换每页数量并翻到末页查看完整数据。
+- 完成回放后可从明细表导出全部下注记录，支持 CSV（Excel 可打开）、TSV、JSON 原始字段和 Excel 网页表格 `.xls` 四种格式；导出不受当前分页影响。

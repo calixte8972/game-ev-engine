@@ -104,6 +104,18 @@ if (!/source\.cloneNode\(true\)/.test(comparisonAppSource)
     || !/strategyConfig\("compare-"\)/.test(comparisonAppSource)) {
   throw new Error("策略 B 必须拥有独立复制的全部配置字段");
 }
+const replayExportSource = readFileSync(resolve(webDirectory, "replay-export.mjs"), "utf8");
+for (const format of ["csv", "tsv", "json", "xls"]) {
+  if (!new RegExp(`${format}:`).test(replayExportSource)) {
+    throw new Error(`下注明细导出缺少 ${format.toUpperCase()} 格式`);
+  }
+}
+if (!/id="replay-export-format"/.test(pageHtml)
+    || !/id="replay-export-button"/.test(pageHtml)
+    || !/readReplayDetails/.test(comparisonAppSource)
+    || !/buildBetDetailExport/.test(comparisonAppSource)) {
+  throw new Error("下注明细导出入口没有接入全部分页明细");
+}
 
 // 用最小 Canvas 宿主执行双线绘制，防止上线后才遇到坐标或提示框的运行时错误。
 {
