@@ -18,7 +18,7 @@ import { createBetContributionCharts } from "./bet-contribution-charts.js";
 import { createReplayAnalysisCharts } from "./replay-analysis-charts.js";
 import { createReplayTrendCharts } from "./replay-trend-charts.js";
 import { deleteReplayStore, openReplayStore, readReplayDetailPage, readReplayDetails } from "./replay-storage.js";
-import { buildBetDetailExport, EXPORT_FORMATS } from "./replay-export.mjs";
+import { createBetDetailExportEncoder, EXPORT_FORMATS } from "./replay-export.mjs";
 
 const form = document.querySelector("#analysis-form");
 const analyzeButton = document.querySelector("#analyze-button");
@@ -49,6 +49,7 @@ const MAX_SIMULATION_SHOES = 1_000_000;
 const parallelReplay = document.querySelector("#parallel-replay");
 const parallelWorkerCount = document.querySelector("#parallel-worker-count");
 const parallelAutoTune = document.querySelector("#parallel-auto-tune");
+const summaryOnlyReplay = document.querySelector("#summary-only-replay");
 const replayProgressPanel = document.querySelector("#replay-progress-panel");
 const replayProgressBar = document.querySelector("#replay-progress-bar");
 const replayProgressValue = document.querySelector("#replay-progress-value");
@@ -278,7 +279,7 @@ let activeReplayRunId = null;
 let replayDetailStore = null;
 let replayDetailSequence = 0;
 let replayDetailWriteTail = Promise.resolve();
-let replayDetailPendingRows = [];
+let replayDetailPendingBatches = [];
 let replayDetailFlushTimer = null;
 let replayStorageElapsedMs = 0;
 let replayDetailRenderToken = 0;
@@ -298,7 +299,7 @@ function resetReplayWorker() {
   // 回收整块计算内存，防止连续回测累计保留大内存。
   replayWorker?.terminate();
   replayWorkerReady = false;
-  replayWorker = new Worker(new URL("./replay-worker.js?v=33", import.meta.url), { type: "module" });
+  replayWorker = new Worker(new URL("./replay-worker.js?v=34", import.meta.url), { type: "module" });
   replayWorker.addEventListener("message", handleReplayMessage);
   replayWorker.addEventListener("error", handleReplayError);
   replayWorker.addEventListener("messageerror", handleReplayError);
@@ -986,6 +987,7 @@ function setReplayRunning(running, label) {
     : replaySourceMode === "simulation" ? "生成并开始回测" : "开始 CSV 回放";
   for (const tab of replaySourceTabs) tab.disabled = running;
   parallelReplay.disabled = running;
+  summaryOnlyReplay.disabled = running;
   updateParallelReplayControls();
   updateReplayButton();
 }
@@ -1120,6 +1122,7 @@ function outcomeDetailCell(bet) {
 }
 
 function replayDetailCount(report) {
+  if (report?.details_saved === false) return 0;
   const reportBets = Array.isArray(report?.bets) ? report.bets.length : 0;
   return Math.max(reportBets, Number(report?.detail_count ?? report?.summary?.placed_bet_count ?? 0));
 }
@@ -1129,21 +1132,18 @@ function setReplayExportAvailability(available) {
   replayExportButton.disabled = !available;
 }
 
-async function loadReplayDetailsForExport(report) {
+async function forEachReplayDetailPage(report, callback) {
   const sourceBets = Array.isArray(report.bets) && report.bets.length > 0 ? report.bets : null;
-  if (sourceBets) return sourceBets;
   const count = replayDetailCount(report);
-  if (!report.run_id || count === 0) return [];
-
-  const result = [];
   const pageSize = 2_000;
   for (let offset = 0; offset < count;) {
-    const page = await readReplayDetails(report.run_id, offset, Math.min(pageSize, count - offset));
+    const page = sourceBets
+      ? sourceBets.slice(offset, Math.min(offset + pageSize, count))
+      : await readReplayDetails(report.run_id, offset, Math.min(pageSize, count - offset));
     if (!page.length) break;
-    result.push(...page);
+    await callback(page, offset + page.length, count);
     offset += page.length;
   }
-  return result;
 }
 
 function triggerReplayDownload(file) {
@@ -1163,6 +1163,10 @@ async function exportReplayDetails() {
   if (!report || replayExportButton.disabled) return;
   const format = replayExportFormat.value;
   const detailCount = replayDetailCount(report);
+  if (report.details_saved === false) {
+    replayExportStatus.textContent = "本次只保存了汇总，没有可导出的下注明细。";
+    return;
+  }
   if (Number(report.omitted_bet_details ?? 0) > 0) {
     replayExportStatus.textContent = "明细不完整，请重新运行回测后导出。";
     return;
@@ -1170,18 +1174,55 @@ async function exportReplayDetails() {
 
   replayExportButton.disabled = true;
   replayExportFormat.disabled = true;
-  replayExportStatus.textContent = `正在准备 ${integerFormatter.format(detailCount)} 笔明细…`;
+  replayExportStatus.textContent = `正在流式导出 ${integerFormatter.format(detailCount)} 笔明细…`;
+  const encoder = createBetDetailExportEncoder(format, report.summary);
+  let writable = null;
   try {
-    const bets = await loadReplayDetailsForExport(report);
-    if (!bets.length) throw new Error("本次回测没有可导出的下注明细");
-    const file = buildBetDetailExport(format, bets, report.summary);
-    triggerReplayDownload(file);
-    replayExportStatus.textContent = `已导出 ${integerFormatter.format(file.count)} 笔明细 · ${EXPORT_FORMATS[format].extension.toUpperCase()}`;
+    let parts = null;
+    if (typeof globalThis.showSaveFilePicker === "function") {
+      const handle = await globalThis.showSaveFilePicker({
+        suggestedName: encoder.filename,
+        types: [{
+          description: EXPORT_FORMATS[format].label,
+          accept: { [encoder.mime.split(";")[0]]: [`.${encoder.extension}`] },
+        }],
+      });
+      writable = await handle.createWritable();
+      await writable.write(encoder.start());
+    } else {
+      // Safari/Firefox 等没有文件流 API 时仍然按页编码，不再保存完整下注对象；
+      // 最后仅由 Blob 组合已编码的文本块完成传统下载。
+      parts = [encoder.start()];
+    }
+    await forEachReplayDetailPage(report, async (page, completed, total) => {
+      const chunk = encoder.append(page);
+      if (writable) await writable.write(chunk);
+      else parts.push(chunk);
+      replayExportStatus.textContent = `正在流式导出 ${integerFormatter.format(completed)} / ${integerFormatter.format(total)} 笔…`;
+    });
+    if (encoder.count !== detailCount) {
+      throw new Error(`仅读取到 ${encoder.count} / ${detailCount} 笔明细，请重新运行回测`);
+    }
+    const footer = encoder.finish();
+    if (writable) {
+      await writable.write(footer);
+      await writable.close();
+      writable = null;
+    } else {
+      parts.push(footer);
+      triggerReplayDownload({
+        blob: new Blob(parts, { type: encoder.mime }), filename: encoder.filename,
+      });
+    }
+    replayExportStatus.textContent = `已导出 ${integerFormatter.format(encoder.count)} 笔明细 · ${EXPORT_FORMATS[format].extension.toUpperCase()}`;
   } catch (error) {
-    replayExportStatus.textContent = `导出失败：${error?.message ?? error}`;
+    if (writable) await writable.abort().catch(() => {});
+    replayExportStatus.textContent = error?.name === "AbortError"
+      ? "已取消导出。" : `导出失败：${error?.message ?? error}`;
   } finally {
     const available = Boolean(currentReplayReport)
       && replayDetailCount(currentReplayReport) > 0
+      && currentReplayReport.details_saved !== false
       && Number(currentReplayReport.omitted_bet_details ?? 0) === 0;
     setReplayExportAvailability(available);
   }
@@ -1194,6 +1235,7 @@ async function renderReplayDetails() {
   const token = ++replayDetailRenderToken;
   const report = currentReplayReport;
   const { bets, omitted_bet_details: omittedBetDetails, summary } = report;
+  const summaryOnly = report.details_saved === false;
   const sourceBets = Array.isArray(bets) && bets.length > 0 ? bets : null;
   const detailCount = replayDetailCount(report);
   const pageSize = Number.parseInt(replayPageSize.value, 10);
@@ -1244,7 +1286,9 @@ async function renderReplayDetails() {
     row.className = "placeholder-row";
     const cell = document.createElement("td");
     cell.colSpan = 10;
-    cell.textContent = summary.replayed_rounds === 0
+    cell.textContent = summaryOnly
+      ? "本次选择了“只保存汇总”，未保存下注明细。"
+      : summary.replayed_rounds === 0
       ? "没有可从第 1 局完整重建的牌靴，请查看隔离局数。"
       : detailCount === 0
         ? "没有任何一局同时通过 EV 门槛和所选资金策略检查。"
@@ -1254,14 +1298,16 @@ async function renderReplayDetails() {
   }
 
   replayPagination.hidden = detailCount === 0;
-  setReplayExportAvailability(detailCount > 0 && Number(omittedBetDetails ?? 0) === 0);
+  setReplayExportAvailability(!summaryOnly && detailCount > 0 && Number(omittedBetDetails ?? 0) === 0);
   replayFirstPage.disabled = currentReplayPage === 1;
   replayPreviousPage.disabled = currentReplayPage === 1;
   replayNextPage.disabled = currentReplayPage === totalPages;
   replayLastPage.disabled = currentReplayPage === totalPages;
   replayPageStatus.textContent = `第 ${integerFormatter.format(currentReplayPage)} / ${integerFormatter.format(totalPages)} 页`;
 
-  if (omittedBetDetails > 0) {
+  if (summaryOnly) {
+    setText("#detail-note", `已计算 ${integerFormatter.format(summary.placed_bet_count)} 笔下注，但未保存明细；如需导出，请重新回测并关闭“只保存汇总”。`);
+  } else if (omittedBetDetails > 0) {
     setText("#detail-note", `仍有 ${integerFormatter.format(omittedBetDetails)} 笔明细未包含；请重新运行回放。`);
   } else if (detailCount === 0) {
     setText("#detail-note", "本次策略没有产生可下注明细。");
@@ -1590,7 +1636,7 @@ replayButton.addEventListener("click", async () => {
     clearTimeout(replayDetailFlushTimer);
     replayDetailFlushTimer = null;
   }
-  replayDetailPendingRows = [];
+  replayDetailPendingBatches = [];
   replayStorageElapsedMs = 0;
   resetReplayProgress("准备回测");
   bankrollChartController.reset("正在回放，完成后显示新的本金变化曲线…");
@@ -1604,7 +1650,8 @@ replayButton.addEventListener("click", async () => {
     const previousRunId = activeReplayRunId;
     activeReplayRunId = `run-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     replayDetailStore?.close();
-    replayDetailStore = await openReplayStore(activeReplayRunId);
+    const saveReplayDetails = !summaryOnlyReplay.checked;
+    replayDetailStore = saveReplayDetails ? await openReplayStore(activeReplayRunId) : null;
     replayDetailSequence = 0;
     replayDetailWriteTail = Promise.resolve();
     globalThis.__replayDetailWriteTail = replayDetailWriteTail;
@@ -1615,6 +1662,7 @@ replayButton.addEventListener("click", async () => {
       ...strategyConfig(),
       comparisonConfig: comparisonStrategyConfig(),
       runId: activeReplayRunId,
+      saveReplayDetails,
       parallelReplay: parallelReplay.checked,
       parallelWorkerCount: parallelReplay.checked
         ? readNumber("#parallel-worker-count", "并行数", { min: 1, max: 8, integer: true }) : 1,
@@ -1658,7 +1706,7 @@ function handleReplayMessage(event) {
       clearTimeout(replayDetailFlushTimer);
       replayDetailFlushTimer = null;
     }
-    replayDetailPendingRows = [];
+    flushReplayDetails(true);
     replayDetailSequence = 0;
     // 降级重跑前先等待已经排队的批量写入，再清理旧明细；否则两个 IndexedDB
     // 事务可能交错，导致旧批次在清理后又“复活”。
@@ -1780,32 +1828,49 @@ function handleReplayMessage(event) {
 }
 
 /**
- * 将明细先聚合到一个有界缓冲区，再用更大的 IndexedDB 事务写入。
+ * 将明细批次聚合后写入 IndexedDB，并在事务提交后逐批确认给 Worker。
  *
- * Worker 仍按 256 局回传，页面最多暂存 2048 笔下注；这样减少事务提交次数，
- * 又不会为了追求吞吐把几十万笔明细全部留在 JavaScript 内存中。
+ * Worker 最多允许 4 个未确认批次，因此即使 IndexedDB 变慢，计算端也会暂停，
+ * 不会让等待写入的 Promise/数组随百万靴持续增长。
  */
 const REPLAY_DETAIL_WRITE_BATCH = 2048;
+const REPLAY_DETAIL_MAX_PENDING_BATCHES = 4;
 function flushReplayDetails(force = false) {
-  if (!replayDetailStore || !replayDetailPendingRows.length) return replayDetailWriteTail;
-  if (!force && replayDetailPendingRows.length < REPLAY_DETAIL_WRITE_BATCH) {
+  if (!replayDetailStore || !replayDetailPendingBatches.length) return replayDetailWriteTail;
+  const pendingRows = replayDetailPendingBatches.reduce((sum, batch) => sum + batch.rows.length, 0);
+  if (!force && pendingRows < REPLAY_DETAIL_WRITE_BATCH
+      && replayDetailPendingBatches.length < REPLAY_DETAIL_MAX_PENDING_BATCHES) {
     return replayDetailWriteTail;
   }
-  const rows = replayDetailPendingRows.splice(
-    0,
-    force ? replayDetailPendingRows.length : REPLAY_DETAIL_WRITE_BATCH,
-  );
+  const batches = replayDetailPendingBatches.splice(0);
+  const rows = batches.flatMap(batch => batch.rows);
+  const worker = replayWorker;
+  const runId = activeReplayRunId;
   replayDetailWriteTail = replayDetailWriteTail.then(async () => {
-    const started = performance.now();
-    await replayDetailStore.put("details", rows);
-    replayStorageElapsedMs += performance.now() - started;
+    try {
+      const started = performance.now();
+      await replayDetailStore.put("details", rows);
+      replayStorageElapsedMs += performance.now() - started;
+      for (const batch of batches) {
+        worker?.postMessage({ type: "detail-ack", runId, batchId: batch.batchId });
+      }
+    } catch (error) {
+      worker?.postMessage({
+        type: "detail-storage-error", runId,
+        message: error?.message ?? String(error),
+      });
+      throw error;
+    }
   });
+  // 错误仍保留在 writeTail 供 complete 分支统一展示；这里附加只读 catch，
+  // 避免浏览器在 Worker 尚未回传 error 时报告未处理的 Promise 拒绝。
+  void replayDetailWriteTail.catch(() => {});
   globalThis.__replayDetailWriteTail = replayDetailWriteTail;
   return replayDetailWriteTail;
 }
 
 function scheduleReplayDetailFlush() {
-  if (replayDetailFlushTimer || !replayDetailPendingRows.length) return;
+  if (replayDetailFlushTimer || !replayDetailPendingBatches.length) return;
   replayDetailFlushTimer = setTimeout(() => {
     replayDetailFlushTimer = null;
     void flushReplayDetails(true);
@@ -1814,13 +1879,25 @@ function scheduleReplayDetailFlush() {
 
 /** 将一个 Worker 批次加入本地明细缓冲，并在回测结束前强制刷完。 */
 function persistReplayDetails(message) {
-  if (!replayDetailStore || message.runId !== activeReplayRunId) return;
+  if (message.runId !== activeReplayRunId) return;
+  if (!replayDetailStore) {
+    replayWorker?.postMessage({
+      type: "detail-storage-error", runId: message.runId,
+      message: "本轮未创建明细存储，无法保存 Worker 返回的明细",
+    });
+    return;
+  }
   const rows = (message.details ?? []).map((bet) => ({
     id: replayDetailSequence++,
     bet,
   }));
-  if (!rows.length) return;
-  replayDetailPendingRows.push(...rows);
+  if (!rows.length) {
+    replayWorker?.postMessage({
+      type: "detail-ack", runId: message.runId, batchId: message.batchId,
+    });
+    return;
+  }
+  replayDetailPendingBatches.push({ batchId: message.batchId, rows });
   flushReplayDetails(false);
   scheduleReplayDetailFlush();
 }
@@ -1853,7 +1930,7 @@ async function start() {
   // wasm-bindgen 初始化完成前，所有计算按钮都保持禁用；初始化成功后再做
   // 一次默认分析，让用户打开页面即可看到完整八副牌基线结果。
   try {
-    await init(new URL("./pkg/game_ev_engine_bg.wasm?v=33", import.meta.url));
+    await init(new URL("./pkg/game_ev_engine_bg.wasm?v=34", import.meta.url));
     wasmReady = true;
     wasmStatus.textContent = "WASM 已就绪";
     wasmStatus.classList.add("ready");

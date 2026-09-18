@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 
-import { buildBetDetailExport, BET_DETAIL_EXPORT_COLUMNS } from "../replay-export.mjs";
+import {
+  buildBetDetailExport, createBetDetailExportEncoder, BET_DETAIL_EXPORT_COLUMNS,
+} from "../replay-export.mjs";
 
 const bets = [{
   started_at: "2026-09-18 12:00:00",
@@ -40,4 +42,15 @@ assert.deepEqual([...csvBytes.slice(0, 3)], [0xef, 0xbb, 0xbf]);
 assert.match(csv, /庄/);
 assert.equal(BET_DETAIL_EXPORT_COLUMNS.length, 17);
 
-console.log("PASS: bet detail CSV, TSV, JSON and Excel-compatible XLS exports");
+for (const format of ["csv", "tsv", "json", "xls"]) {
+  const encoder = createBetDetailExportEncoder(
+    format, { placed_bet_count: 2 }, new Date("2026-09-18T12:00:00Z"),
+  );
+  const chunks = [encoder.start(), encoder.append(bets), encoder.append(bets), encoder.finish()];
+  assert.equal(encoder.count, 2);
+  const contents = chunks.join("");
+  if (format === "json") assert.equal(JSON.parse(contents).bets.length, 2);
+  else assert.ok(contents.includes("开局时间"));
+}
+
+console.log("PASS: bet detail CSV, TSV, JSON and Excel-compatible XLS streaming exports");

@@ -43,6 +43,56 @@ const defaultSideBetRoundLimits = {
 // `session.push()` 调用次数；如果将来核心上限变化，只需要改这一处。
 const REPLAY_BATCH_SIZE = 256;
 const PROGRESS_THROTTLE_MS = 120;
+// 页面只有在对应 IndexedDB 事务提交后才确认批次。协调 Worker 最多允许
+// 4 个批次未确认，从源头限制待写明细的内存，而不是只限制页面数组大小。
+const DETAIL_MAX_IN_FLIGHT = 4;
+let detailFlow = null;
+
+function beginDetailFlow(runId, enabled) {
+  detailFlow = {
+    runId, enabled, nextBatchId: 0, pending: new Set(), waiters: new Set(), error: null,
+  };
+}
+
+function wakeDetailWaiters() {
+  if (!detailFlow) return;
+  for (const waiter of detailFlow.waiters) {
+    detailFlow.waiters.delete(waiter);
+    detailFlow.error ? waiter.reject(detailFlow.error) : waiter.resolve();
+  }
+}
+
+function acknowledgeDetailBatch(message) {
+  if (!detailFlow || message.runId !== detailFlow.runId) return;
+  if (detailFlow.pending.delete(message.batchId)) wakeDetailWaiters();
+}
+
+function failDetailStorage(message) {
+  if (!detailFlow || message.runId !== detailFlow.runId) return;
+  detailFlow.error = new Error(message.message || "浏览器本地明细写入失败");
+  wakeDetailWaiters();
+}
+
+function waitForDetailSignal() {
+  if (detailFlow?.error) return Promise.reject(detailFlow.error);
+  return new Promise((resolve, reject) => detailFlow.waiters.add({ resolve, reject }));
+}
+
+async function postDetailBatch(details) {
+  if (!detailFlow?.enabled || !details.length) return;
+  while (detailFlow.pending.size >= DETAIL_MAX_IN_FLIGHT) await waitForDetailSignal();
+  if (detailFlow.error) throw detailFlow.error;
+  const batchId = detailFlow.nextBatchId++;
+  detailFlow.pending.add(batchId);
+  self.postMessage({
+    type: "detail-batch", runId: detailFlow.runId, batchId, details,
+  });
+}
+
+async function waitForAllDetailBatches() {
+  while (detailFlow?.enabled && detailFlow.pending.size > 0) await waitForDetailSignal();
+  if (detailFlow?.error) throw detailFlow.error;
+}
 
 function finiteNumberOr(value, fallback) {
   const number = Number(value);
@@ -774,7 +824,6 @@ async function runStreamPipeline({
   let comparisonStopped = false;
   let timelineOffset = 0;
   const targetOrder = order;
-  let detailSequence = 0;
   let probabilityCompleted = 0;
   let settledRounds = 0;
   let lastProgressAt = 0;
@@ -819,7 +868,7 @@ async function runStreamPipeline({
     postPipelineProgress("probability", completed, taskCount, workerCount, isParallel, force);
   };
 
-  const processEntries = (entries) => {
+  const processEntries = async (entries) => {
     for (let offset = 0; offset < entries.length; offset += REPLAY_BATCH_SIZE) {
       const batch = entries.slice(offset, offset + REPLAY_BATCH_SIZE);
       // 横轴用本次回放中的真实局序，而非各策略各自的“第几次下注”。
@@ -852,7 +901,7 @@ async function runStreamPipeline({
         const curveStarted = performance.now();
         curve.addBets(bets, timelinePositions);
         timings.curveMs += performance.now() - curveStarted;
-        self.postMessage({ type: "detail-batch", runId, batchId: detailSequence++, details: bets });
+        await postDetailBatch(bets);
       }
       const comparisonBets = Array.isArray(comparisonResponse?.bets) ? comparisonResponse.bets : [];
       if (comparisonBets.length) comparisonCurve.addBets(comparisonBets, timelinePositions);
@@ -957,7 +1006,7 @@ async function runStreamPipeline({
           preparedBySourceOrder.set(entry.sourceOrder, entry);
         }
       } else {
-        stopped = processEntries(entries);
+        stopped = await processEntries(entries);
       }
       postProbabilityProgress(taskId + 1, 1, false);
       if (stopped) break;
@@ -969,7 +1018,7 @@ async function runStreamPipeline({
           if (!entry) throw new Error("单线程预计算结果缺少原始行");
           return entry;
         });
-        stopped = processEntries(entries);
+        stopped = await processEntries(entries);
       }
       preparedBySourceOrder.clear();
     }
@@ -1007,7 +1056,7 @@ async function runStreamPipeline({
         while (readyTasks.has(nextSequentialTask)) {
           const entries = readyTasks.get(nextSequentialTask);
           readyTasks.delete(nextSequentialTask);
-          stopped = processEntries(entries);
+          stopped = await processEntries(entries);
           nextSequentialTask += 1;
           if (stopped) return;
         }
@@ -1027,7 +1076,7 @@ async function runStreamPipeline({
           nextOrder += 1;
         }
         if (!entries.length) return;
-        stopped = processEntries(entries);
+        stopped = await processEntries(entries);
       }
     };
 
@@ -1149,7 +1198,7 @@ async function runStreamPipeline({
       for (let index = 0; index < poolSize; index += 1) {
         let worker;
         try {
-          worker = new Worker(new URL("./replay-shard-worker.js?v=33", import.meta.url), { type: "module" });
+          worker = new Worker(new URL("./replay-shard-worker.js?v=34", import.meta.url), { type: "module" });
         } catch (error) {
           reject(error);
           return;
@@ -1181,8 +1230,11 @@ async function runStreamPipeline({
   const report = JSON.parse(session.finish());
   timings.settlementMs += performance.now() - finishStarted;
   report.bets = [];
-  report.omitted_bet_details = 0;
-  report.detail_count = Number(report.summary?.placed_bet_count ?? 0);
+  report.details_saved = detailFlow?.enabled === true;
+  report.detail_count = report.details_saved
+    ? Number(report.summary?.placed_bet_count ?? 0) : 0;
+  report.omitted_bet_details = report.details_saved
+    ? 0 : Number(report.summary?.placed_bet_count ?? 0);
   report.run_id = runId;
   curve.finish();
   report.chart_points = curve.points();
@@ -1193,7 +1245,9 @@ async function runStreamPipeline({
     const comparisonReport = JSON.parse(comparisonSession.finish());
     comparisonCurve.finish();
     comparisonReport.bets = [];
-    comparisonReport.detail_count = Number(comparisonReport.summary?.placed_bet_count ?? 0);
+    comparisonReport.details_saved = false;
+    comparisonReport.detail_count = 0;
+    comparisonReport.omitted_bet_details = Number(comparisonReport.summary?.placed_bet_count ?? 0);
     comparisonReport.chart_points = comparisonCurve.points();
     comparisonReport.trend_charts = comparisonCurve.trends();
     comparisonReport.streamed = true;
@@ -1203,6 +1257,7 @@ async function runStreamPipeline({
     "settlement", settledRounds, progressTotal,
     localOnly ? 1 : poolSize, !localOnly, true,
   );
+  await waitForAllDetailBatches();
   return { report, timings, workerCount: poolSize };
 }
 
@@ -1229,24 +1284,23 @@ function legacyComparisonPositions(primaryBets, comparisonBets) {
   };
 }
 
-function externalizeLegacyReport(report, runId, postDetails = true, timelinePositions = null) {
+async function externalizeLegacyReport(report, runId, postDetails = true, timelinePositions = null) {
   const bets = Array.isArray(report.bets) ? report.bets : [];
   const curve = new BoundedCurve(report.summary?.initial_bankroll ?? 0);
   curve.addBets(bets, timelinePositions);
-  for (let offset = 0, batchId = 0; postDetails && offset < bets.length; offset += REPLAY_BATCH_SIZE, batchId += 1) {
-    self.postMessage({
-      type: "detail-batch", runId, batchId,
-      details: bets.slice(offset, offset + REPLAY_BATCH_SIZE),
-    });
+  for (let offset = 0; postDetails && offset < bets.length; offset += REPLAY_BATCH_SIZE) {
+    await postDetailBatch(bets.slice(offset, offset + REPLAY_BATCH_SIZE));
   }
   report.bets = [];
-  report.detail_count = bets.length;
-  report.omitted_bet_details = 0;
+  report.details_saved = postDetails && detailFlow?.enabled === true;
+  report.detail_count = report.details_saved ? bets.length : 0;
+  report.omitted_bet_details = report.details_saved ? 0 : bets.length;
   report.run_id = runId;
   curve.finish();
   report.chart_points = curve.points();
   report.trend_charts = curve.trends();
   report.streamed = false;
+  if (postDetails) await waitForAllDetailBatches();
   return report;
 }
 
@@ -1268,13 +1322,21 @@ function mergePreparedResults(results) {
 
 /* ----------------------------- 入口 ----------------------------- */
 
-const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=33", import.meta.url));
+const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=34", import.meta.url));
 ready.then(() => self.postMessage({ type: "ready" })).catch((error) => {
   self.postMessage({ type: "error", message: `无法加载 CSV 回放核心：${error?.message ?? String(error)}` });
 });
 
 let running = false;
 self.addEventListener("message", async (event) => {
+  if (event.data?.type === "detail-ack") {
+    acknowledgeDetailBatch(event.data);
+    return;
+  }
+  if (event.data?.type === "detail-storage-error") {
+    failDetailStorage(event.data);
+    return;
+  }
   if (!new Set(["replay", "simulate"]).has(event.data?.type) || running) return;
   running = true;
   const config = event.data.config ?? {};
@@ -1288,6 +1350,7 @@ self.addEventListener("message", async (event) => {
     }
     : null;
   const runId = config.runId ?? `run-${Date.now()}`;
+  beginDetailFlow(runId, config.saveReplayDetails !== false);
   try {
     await ready;
     const started = performance.now();
@@ -1401,9 +1464,9 @@ self.addEventListener("message", async (event) => {
         ? JSON.parse(replayBaccaratCsvWithSideBetLimits(csvText, ...commonArguments(comparisonConfig))) : null;
       const timeline = comparisonRaw
         ? legacyComparisonPositions(primaryRaw.bets, comparisonRaw.bets) : null;
-      report = externalizeLegacyReport(primaryRaw, runId, true, timeline?.positions);
+      report = await externalizeLegacyReport(primaryRaw, runId, true, timeline?.positions);
       if (comparisonConfig) {
-        report.comparison = externalizeLegacyReport(comparisonRaw, runId, false, timeline.positions);
+        report.comparison = await externalizeLegacyReport(comparisonRaw, runId, false, timeline.positions);
         report.comparison.timeline_mode = timeline.mode;
         report.comparison.timeline_end = timeline.end;
       }
@@ -1441,9 +1504,9 @@ self.addEventListener("message", async (event) => {
           ? JSON.parse(replayBaccaratCsvWithSideBetLimits(csvText, ...commonArguments(comparisonConfig))) : null;
         const timeline = comparisonRaw
           ? legacyComparisonPositions(legacy.bets, comparisonRaw.bets) : null;
-        report = externalizeLegacyReport(legacy, runId, true, timeline?.positions);
+        report = await externalizeLegacyReport(legacy, runId, true, timeline?.positions);
         if (comparisonConfig) {
-          report.comparison = externalizeLegacyReport(comparisonRaw, runId, false, timeline.positions);
+          report.comparison = await externalizeLegacyReport(comparisonRaw, runId, false, timeline.positions);
           report.comparison.timeline_mode = timeline.mode;
           report.comparison.timeline_end = timeline.end;
         }

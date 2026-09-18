@@ -1945,13 +1945,19 @@ td:first-child {
 
 .replay-execution-controls {
   margin-top: 12px;
+  flex-wrap: wrap;
 }
 
 .replay-parallel-toggle {
+  flex: 1 1 250px;
   min-width: 0;
   align-items: flex-start;
   gap: 9px;
   cursor: pointer;
+}
+
+.replay-summary-only-toggle {
+  flex-basis: 230px;
 }
 
 .replay-parallel-toggle input {

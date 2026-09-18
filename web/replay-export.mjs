@@ -52,14 +52,12 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&#39;");
 }
 
-function htmlTable(bets) {
+function htmlTableHeader() {
   const headers = BET_DETAIL_EXPORT_COLUMNS
     .map(([, label]) => `<th>${escapeHtml(label)}</th>`).join("");
-  const rows = bets.map(bet => `<tr>${betDetailRow(bet)
-    .map(value => `<td>${escapeHtml(value)}</td>`).join("")}</tr>`).join("");
   return `\uFEFF<!DOCTYPE html><html><head><meta charset="utf-8"><style>`
     + "table{border-collapse:collapse}th,td{border:1px solid #cbd5d1;padding:4px 8px;white-space:nowrap}th{background:#e8f2ed}"
-    + `</style></head><body><table><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table></body></html>`;
+    + `</style></head><body><table><thead><tr>${headers}</tr></thead><tbody>`;
 }
 
 export const EXPORT_FORMATS = Object.freeze({
@@ -69,31 +67,57 @@ export const EXPORT_FORMATS = Object.freeze({
   xls: { label: "Excel 网页表格（.xls）", extension: "xls", mime: "application/vnd.ms-excel;charset=utf-8" },
 });
 
-export function buildBetDetailExport(format, bets, summary = {}, now = new Date()) {
+/**
+ * 创建只保留行数状态的增量编码器。调用方可以把 start/append/finish 的结果
+ * 直接写进 FileSystemWritableFileStream，无需把全部下注明细或完整文件留在内存。
+ */
+export function createBetDetailExportEncoder(format, summary = {}, now = new Date()) {
   const definition = EXPORT_FORMATS[format];
   if (!definition) throw new Error(`不支持的导出格式：${format}`);
-  const rows = Array.isArray(bets) ? bets : [];
-  let contents;
-
-  if (format === "json") {
-    contents = JSON.stringify({
-      exported_at: now.toISOString(), summary,
-      columns: Object.fromEntries(BET_DETAIL_EXPORT_COLUMNS), bets: rows,
-    }, null, 2);
-  } else if (format === "xls") {
-    contents = htmlTable(rows);
-  } else {
-    const delimiter = format === "tsv" ? "\t" : ",";
+  const filename = `baccarat-bet-details-${now.toISOString().slice(0, 19).replaceAll(/[:T]/g, "-")}.${definition.extension}`;
+  let count = 0;
+  const delimiter = format === "tsv" ? "\t" : ",";
+  const start = () => {
+    if (format === "json") {
+      return `{"exported_at":${JSON.stringify(now.toISOString())},"summary":${JSON.stringify(summary)},"columns":${JSON.stringify(Object.fromEntries(BET_DETAIL_EXPORT_COLUMNS))},"bets":[`;
+    }
+    if (format === "xls") return htmlTableHeader();
     const header = BET_DETAIL_EXPORT_COLUMNS
       .map(([, label]) => escapeDelimited(label, delimiter)).join(delimiter);
-    const body = rows.map(bet => betDetailRow(bet)
-      .map(value => escapeDelimited(value, delimiter)).join(delimiter)).join("\r\n");
-    contents = `\uFEFF${header}${body ? `\r\n${body}` : ""}\r\n`;
-  }
-
+    return `\uFEFF${header}\r\n`;
+  };
+  const append = (bets) => {
+    const rows = Array.isArray(bets) ? bets : [];
+    if (!rows.length) return "";
+    let contents;
+    if (format === "json") {
+      contents = `${count === 0 ? "" : ","}${rows.map(bet => JSON.stringify(bet)).join(",")}`;
+    } else if (format === "xls") {
+      contents = rows.map(bet => `<tr>${betDetailRow(bet)
+        .map(value => `<td>${escapeHtml(value)}</td>`).join("")}</tr>`).join("");
+    } else {
+      contents = rows.map(bet => betDetailRow(bet)
+        .map(value => escapeDelimited(value, delimiter)).join(delimiter)).join("\r\n") + "\r\n";
+    }
+    count += rows.length;
+    return contents;
+  };
+  const finish = () => format === "json"
+    ? "]}\n"
+    : format === "xls" ? "</tbody></table></body></html>" : "";
   return {
-    blob: new Blob([contents], { type: definition.mime }),
-    filename: `baccarat-bet-details-${now.toISOString().slice(0, 19).replaceAll(/[:T]/g, "-")}.${definition.extension}`,
-    count: rows.length,
+    filename, mime: definition.mime, extension: definition.extension,
+    start, append, finish,
+    get count() { return count; },
+  };
+}
+
+export function buildBetDetailExport(format, bets, summary = {}, now = new Date()) {
+  const encoder = createBetDetailExportEncoder(format, summary, now);
+  const contents = [encoder.start(), encoder.append(Array.isArray(bets) ? bets : []), encoder.finish()];
+  return {
+    blob: new Blob(contents, { type: encoder.mime }),
+    filename: encoder.filename,
+    count: encoder.count,
   };
 }

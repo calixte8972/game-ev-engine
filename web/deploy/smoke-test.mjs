@@ -116,7 +116,8 @@ for (const format of ["csv", "tsv", "json", "xls"]) {
 if (!/id="replay-export-format"/.test(pageHtml)
     || !/id="replay-export-button"/.test(pageHtml)
     || !/readReplayDetails/.test(comparisonAppSource)
-    || !/buildBetDetailExport/.test(comparisonAppSource)) {
+    || !/forEachReplayDetailPage/.test(comparisonAppSource)
+    || !/createBetDetailExportEncoder/.test(comparisonAppSource)) {
   throw new Error("下注明细导出入口没有接入全部分页明细");
 }
 
@@ -284,6 +285,14 @@ if (!/csvFile:\s*currentCsvFile/.test(appSource)
     || !/detail-batch/.test(replayWorkerSource)
     || !/replay-storage/.test(appSource)) {
   throw new Error("大型 CSV 没有使用 Worker 分批读取并把明细落盘");
+}
+if (!/id="summary-only-replay"/.test(pageHtml)
+    || !/saveReplayDetails/.test(appSource)
+    || !/DETAIL_MAX_IN_FLIGHT\s*=\s*4/.test(replayWorkerSource)
+    || !/detail-ack/.test(replayWorkerSource)
+    || !/showSaveFilePicker/.test(appSource)
+    || !/createBetDetailExportEncoder/.test(appSource)) {
+  throw new Error("汇总模式、IndexedDB 写入背压或流式导出没有完整接线");
 }
 if (!/session_id.*round_no.*raw_cards/s.test(pageHtml)) {
   throw new Error("页面没有说明精简 CSV 的三列格式");

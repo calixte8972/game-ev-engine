@@ -8,7 +8,7 @@
       content="使用 Rust WebAssembly 在浏览器中计算百家乐与二十一点有限牌靴 EV。"
     />
     <title>牌靴 EV 策略实验室</title>
-    <link rel="stylesheet" href="./styles.css?v=33" />
+    <link rel="stylesheet" href="./styles.css?v=34" />
   </head>
   <body>
     <!-- 首屏工具栏把品牌、游戏切换、规则入口和运行状态放在同一行。 -->
@@ -535,8 +535,15 @@
                     <small>用首副牌靴实测后选择线程数</small>
                   </span>
                 </label>
+                <label class="replay-parallel-toggle replay-summary-only-toggle" for="summary-only-replay">
+                  <input id="summary-only-replay" type="checkbox" />
+                  <span>
+                    <strong>只保存汇总</strong>
+                    <small>不保存下注明细；保留汇总与图表，适合超大回测。</small>
+                  </span>
+                </label>
               </div>
-              <p class="replay-execution-note">并行上限会按设备资源下调；开启自动测速后，系统先用首副牌靴测量实际概率计算耗时，再在上限内选择线程数。随机牌靴按需生成，精简 CSV 按流读取。回测按整靴分批、限制在途任务，并在同一个资金会话中按原顺序结算。完整下注明细保存在本机浏览器，页面只读取当前页。</p>
+              <p class="replay-execution-note">并行上限会按设备资源下调；开启自动测速后，系统先用首副牌靴测量实际概率计算耗时，再在上限内选择线程数。随机牌靴按需生成，精简 CSV 按流读取。回测按整靴分批、限制在途任务，并在同一个资金会话中按原顺序结算。保存明细时采用写入背压，导出会分页流式读取；只保存汇总时不会创建本轮明细库。</p>
             </div>
             <div class="strategy-compare-config">
               <label class="replay-parallel-toggle" for="compare-strategies">
@@ -1275,6 +1282,6 @@
       <span>历史收益不代表未来结果，EV 是概率期望，不是单局保证。</span>
     </footer>
 
-    <script type="module" src="./app.js?v=33"></script>
+    <script type="module" src="./app.js?v=34"></script>
   </body>
 </html>

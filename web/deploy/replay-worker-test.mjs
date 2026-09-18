@@ -74,6 +74,8 @@ if (!isMainThread) {
       const timeout = setTimeout(() => { thread.terminate(); reject(new Error("Worker timeout")); }, 30_000);
       const detailBatches = [];
       const progressValues = [];
+      let pendingDetailAcks = 0;
+      let maximumPendingDetailAcks = 0;
       thread.on("error", reject);
       thread.on("message", message => {
         if (message.type === "progress" && Number.isFinite(Number(message.overall))) {
@@ -97,7 +99,19 @@ if (!isMainThread) {
           }
         }
         if (message.type === "detail-reset") detailBatches.length = 0;
-        if (message.type === "detail-batch") detailBatches.push(...message.details);
+        if (message.type === "detail-batch") {
+          detailBatches.push(...message.details);
+          pendingDetailAcks += 1;
+          maximumPendingDetailAcks = Math.max(maximumPendingDetailAcks, pendingDetailAcks);
+          const acknowledge = () => {
+            pendingDetailAcks -= 1;
+            thread.postMessage({
+              type: "detail-ack", runId: message.runId, batchId: message.batchId,
+            });
+          };
+          if (options.ackDelayMs) setTimeout(acknowledge, options.ackDelayMs);
+          else acknowledge();
+        }
         if (message.type === "complete" || message.type === "error") {
           clearTimeout(timeout);
           thread.terminate();
@@ -107,6 +121,8 @@ if (!isMainThread) {
             report: { ...message.report, bets: message.report.bets?.length
               ? message.report.bets : detailBatches },
             progressValues,
+            detailBatchCount: detailBatches.length,
+            maximumPendingDetailAcks,
           });
         }
       });
@@ -125,6 +141,22 @@ if (!isMainThread) {
   ));
   assert.deepEqual(serial.report.bets, expected.bets, "单线程必须保留独立边注截止局数");
   assert.equal(serial.report.summary.final_bankroll, expected.summary.final_bankroll);
+  assert.equal(serial.report.details_saved, true);
+  const backpressured = await run(
+    { parallelReplay: false }, csv,
+    { simulate: { shoes: 12, maxRoundsPerShoe: 8, seed: "1042" }, ackDelayMs: 20 },
+  );
+  assert.ok(backpressured.detailBatchCount > 0);
+  assert.ok(backpressured.maximumPendingDetailAcks <= 4,
+    "IndexedDB 确认变慢时未确认明细批次不得超过 4");
+  const summaryOnly = await run(
+    { parallelReplay: false, saveReplayDetails: false }, csv,
+    { simulate: { shoes: 4, maxRoundsPerShoe: 8, seed: "2042" } },
+  );
+  assert.equal(summaryOnly.report.details_saved, false);
+  assert.equal(summaryOnly.report.detail_count, 0);
+  assert.equal(summaryOnly.detailBatchCount, 0);
+  assert.equal(summaryOnly.report.omitted_bet_details, summaryOnly.report.summary.placed_bet_count);
   const comparisonConfig = { stakeStrategy: "fixed", strategyParameter: 20 };
   const comparisonSerial = await run({
     parallelReplay: false, comparisonConfig,
