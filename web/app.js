@@ -920,14 +920,16 @@ function setReplayProgress(
     : Math.max(replayProgressOverall, safeOverall);
   const sampleElapsed = now - replayProgressLastSampleAt;
   const progressDelta = replayProgressOverall - replayProgressLastSampleOverall;
-  if (!indeterminate && sampleElapsed >= 250 && progressDelta > 0.0005) {
+  // 生成百万靴时每一靴只贡献极小的总体进度；必须跨一段时间累计样本，
+  // 不能按单条 Worker 消息计算，否则进度增量会小到被阈值吞掉。
+  if (!indeterminate && sampleElapsed >= 500 && progressDelta > 0) {
     const currentRate = progressDelta / sampleElapsed;
     replayProgressRate = replayProgressRate > 0
       ? replayProgressRate * 0.7 + currentRate * 0.3
       : currentRate;
+    replayProgressLastSampleAt = now;
+    replayProgressLastSampleOverall = replayProgressOverall;
   }
-  replayProgressLastSampleAt = now;
-  replayProgressLastSampleOverall = replayProgressOverall;
   const percentage = Math.round(replayProgressOverall * 100);
   replayProgressPanel?.removeAttribute("hidden");
   replayProgressBar.style.width = `${percentage}%`;

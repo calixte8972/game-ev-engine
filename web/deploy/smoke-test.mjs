@@ -242,6 +242,9 @@ const appSource = readFileSync(resolve(webDirectory, "app.js"), "utf8");
 if (!/formatReplayDuration/.test(appSource) || !/预计剩余：计算中/.test(appSource)) {
   throw new Error("回测进度缺少预计剩余时间计算逻辑");
 }
+if (!/sampleElapsed >= 500/.test(appSource) || !/progressDelta > 0/.test(appSource)) {
+  throw new Error("预计剩余时间没有按时间窗口累计小进度增量");
+}
 for (const strategy of ["martingale", "reverse_martingale", "dalembert"]) {
   if (!new RegExp(`${strategy}:`).test(appSource)) {
     throw new Error(`前端没有为递进策略提供参数配置：${strategy}`);
