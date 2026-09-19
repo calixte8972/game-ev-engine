@@ -11,6 +11,7 @@
  * 概率计算并行而把本金按牌靴复制，也不用把全部概率 JSON 留在内存中。
  */
 import * as wasm from "./pkg/game_ev_engine.js";
+import { openReplayStore } from "./replay-storage.js";
 
 const init = wasm.default;
 const {
@@ -43,15 +44,24 @@ const defaultSideBetRoundLimits = {
 // `session.push()` 调用次数；如果将来核心上限变化，只需要改这一处。
 const REPLAY_BATCH_SIZE = 256;
 const PROGRESS_THROTTLE_MS = 120;
+const MAX_REPLAY_ROUNDS = 1_666_666;
+
+function validateRoundCount(total) {
+  if (!Number.isSafeInteger(total) || total < 1 || total > MAX_REPLAY_ROUNDS) {
+    throw new Error("单次回测最多支持 1,666,666 局，请减少牌靴数或拆分 CSV");
+  }
+}
 // 页面只有在对应 IndexedDB 事务提交后才确认批次。协调 Worker 最多允许
 // 4 个批次未确认，从源头限制待写明细的内存，而不是只限制页面数组大小。
 const DETAIL_MAX_IN_FLIGHT = 4;
 let detailFlow = null;
 
-function beginDetailFlow(runId, enabled) {
+async function beginDetailFlow(runId, enabled, workerStorage = false) {
   detailFlow = {
     runId, enabled, nextBatchId: 0, pending: new Set(), waiters: new Set(), error: null,
+    store: null, nextRowId: 0, storageMs: 0,
   };
+  if (enabled && workerStorage) detailFlow.store = await openReplayStore(runId);
 }
 
 function wakeDetailWaiters() {
@@ -80,6 +90,21 @@ function waitForDetailSignal() {
 
 async function postDetailBatch(details) {
   if (!detailFlow?.enabled || !details.length) return;
+  if (detailFlow.store) {
+    // 计算和持久化在同一个 Worker 中顺序推进；没有页面 ACK 或定时器依赖。
+    // 每次只保留当前结算批次，事务提交后才允许结算下一批。
+    const started = performance.now();
+    try {
+      await detailFlow.store.put("details", details.map(bet => ({
+        id: detailFlow.nextRowId++, bet,
+      })));
+      detailFlow.storageMs += performance.now() - started;
+    } catch (error) {
+      detailFlow.error = error;
+      throw error;
+    }
+    return;
+  }
   while (detailFlow.pending.size >= DETAIL_MAX_IN_FLIGHT) await waitForDetailSignal();
   if (detailFlow.error) throw detailFlow.error;
   const batchId = detailFlow.nextBatchId++;
@@ -327,6 +352,7 @@ function compareNumericText(left, right) {
 function splitCsvIntoShoeTasks(csvText) {
   const records = readCsvRecords(csvText.replace(/^\uFEFF/, ""));
   if (records.length < 2) throw new Error("CSV 没有可拆分的数据行");
+  validateRoundCount(records.length - 1);
   const header = parseCsvRecord(records[0]);
   const tableIndex = findColumn(header, ["table_id", "table", "桌台", "桌号", "gi011"]);
   const sourcePkIndex = findColumn(header, ["__source_pk", "source_pk"]);
@@ -461,6 +487,7 @@ async function splitCsvBlobIntoShoeTasks(blob) {
       continue;
     }
     const sourceOrder = stats.totalRows;
+    validateRoundCount(sourceOrder + 1);
     const tableId = valueAt(fields, indexes.table, "1") || "1";
     const sessionId = valueAt(fields, indexes.session);
     const roundNo = valueAt(fields, indexes.round);
@@ -1150,15 +1177,22 @@ async function runStreamPipeline({
     };
 
     const done = new Promise((resolve, reject) => {
-      const check = async () => {
-        await flush();
-        await pump();
-        if (stopped || (completed === taskCount && inFlight.size === 0 && readyTasks.size === 0
-            && (!targetOrder || nextOrder === targetOrder.length))) {
-          settled = true;
-          cleanup();
-          resolve();
-        }
+      // 磁盘背压会让 flush 让出执行权；所有完成事件共用一个结算队列，
+      // 防止多桌交错数据在 await 期间同时进入资金会话或提前报告完成。
+      let checkTail = Promise.resolve();
+      const check = () => {
+        checkTail = checkTail.then(async () => {
+          if (settled) return;
+          await flush();
+          await pump();
+          if (stopped || (completed === taskCount && inFlight.size === 0 && readyTasks.size === 0
+              && (!targetOrder || nextOrder === targetOrder.length))) {
+            settled = true;
+            cleanup();
+            resolve();
+          }
+        });
+        return checkTail;
       };
       const onMessage = async (worker, message) => {
         if (settled) return;
@@ -1191,6 +1225,7 @@ async function runStreamPipeline({
           postProbabilityProgress(completed, poolSize, true);
           await check();
         } catch (error) {
+          settled = true;
           cleanup();
           reject(error);
         }
@@ -1198,7 +1233,7 @@ async function runStreamPipeline({
       for (let index = 0; index < poolSize; index += 1) {
         let worker;
         try {
-          worker = new Worker(new URL("./replay-shard-worker.js?v=34", import.meta.url), { type: "module" });
+          worker = new Worker(new URL("./replay-shard-worker.js?v=35", import.meta.url), { type: "module" });
         } catch (error) {
           reject(error);
           return;
@@ -1322,7 +1357,7 @@ function mergePreparedResults(results) {
 
 /* ----------------------------- 入口 ----------------------------- */
 
-const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=34", import.meta.url));
+const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=35", import.meta.url));
 ready.then(() => self.postMessage({ type: "ready" })).catch((error) => {
   self.postMessage({ type: "error", message: `无法加载 CSV 回放核心：${error?.message ?? String(error)}` });
 });
@@ -1350,9 +1385,13 @@ self.addEventListener("message", async (event) => {
     }
     : null;
   const runId = config.runId ?? `run-${Date.now()}`;
-  beginDetailFlow(runId, config.saveReplayDetails !== false);
   try {
     await ready;
+    if (event.data.type === "simulate") {
+      const { shoes, maxRoundsPerShoe } = event.data.simulation ?? {};
+      validateRoundCount(Number(shoes) * Number(maxRoundsPerShoe));
+    }
+    await beginDetailFlow(runId, config.saveReplayDetails !== false, config.workerDetailStorage === true);
     const started = performance.now();
     let csvText = null;
     const csvFile = event.data.csvFile;
@@ -1372,15 +1411,20 @@ self.addEventListener("message", async (event) => {
       sessionCount = Number(shoes);
       taskCount = Number(shoes);
       const generator = new ShoeGenerator(shoes, maxRoundsPerShoe, seed, config.decks);
+      let lastGenerateProgressAt = -Infinity;
       taskAt = async (taskId) => {
         const rowsJson = generator.next();
         if (rowsJson === "null") throw new Error("随机牌靴生成器提前结束");
         // 直接把生成器的结构化 JSON 交给子 Worker；不再先拼 CSV，再由
         // 子 Worker 重新运行 CSV 读取器。sourceBase 用于恢复全局稳定行号。
-        self.postMessage({
-          type: "progress", phase: "generate", completed: taskId + 1,
-          total: taskCount, overall: Math.min(0.15, 0.05 + (taskId + 1) / taskCount * 0.1),
-        });
+        const now = performance.now();
+        if (now - lastGenerateProgressAt >= PROGRESS_THROTTLE_MS || taskId + 1 === taskCount) {
+          lastGenerateProgressAt = now;
+          self.postMessage({
+            type: "progress", phase: "generate", completed: taskId + 1,
+            total: taskCount, overall: Math.min(0.15, 0.05 + (taskId + 1) / taskCount * 0.1),
+          });
+        }
         return {
           generatedRowsJson: rowsJson,
           sourceBase: taskId * maxRoundsPerShoe,
@@ -1451,6 +1495,11 @@ self.addEventListener("message", async (event) => {
       }
     }
 
+    if (event.data.type === "replay") {
+      const rowCount = dataset?.total_rows ?? JSON.parse(inspectReplayShoe(csvText)).dataset.total_rows;
+      // 空 CSV 的原有质量诊断仍交给核心处理。
+      if (rowCount > 0) validateRoundCount(Number(rowCount));
+    }
     let report;
     let performanceTimings = null;
     let pipelineFallbackReason = "";
@@ -1491,7 +1540,14 @@ self.addEventListener("message", async (event) => {
         report = pipelineResult.report;
         performanceTimings = pipelineResult.timings;
       } catch (error) {
-        self.postMessage({ type: "detail-reset", runId });
+        if (detailFlow?.error) throw error;
+        if (detailFlow?.store) {
+          await detailFlow.store.clearTemporary();
+          detailFlow.nextRowId = 0;
+        } else {
+          await waitForAllDetailBatches();
+          self.postMessage({ type: "detail-reset", runId });
+        }
         if (csvText === null && csvFile?.text) csvText = await csvFile.text();
         if (csvText === null) throw error;
         // 分片路径的质量摘要只是读取阶段的快速画像；如果分片计算失败，
@@ -1552,6 +1608,7 @@ self.addEventListener("message", async (event) => {
       : "";
     const totalElapsed = performance.now() - started;
     performanceTimings ??= {};
+    performanceTimings.storageMs = detailFlow?.storageMs ?? 0;
     performanceTimings.totalMs = totalElapsed;
     performanceTimings.totalRows = Number(report.dataset?.total_rows ?? dataset?.total_rows ?? 0);
     performanceTimings.replayedRounds = Number(report.summary?.replayed_rounds ?? 0);
@@ -1571,6 +1628,7 @@ self.addEventListener("message", async (event) => {
   } catch (error) {
     self.postMessage({ type: "error", message: error?.message ?? String(error) });
   } finally {
+    detailFlow?.store?.close();
     running = false;
   }
 });

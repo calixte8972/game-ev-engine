@@ -13,6 +13,10 @@ wasm.initSync({ module: bytes });
 if (!isMainThread) {
   let created = 0;
   let terminated = 0;
+  const storedDetails = new Map();
+  let storageOpens = 0;
+  let activeWrites = 0;
+  let maximumActiveWrites = 0;
   class BrowserWorker {
     constructor(url) {
       if (workerData.failCreation && created === 1) throw new Error("Injected worker creation failure");
@@ -37,18 +41,40 @@ if (!isMainThread) {
   const source = readFileSync(file, "utf8")
     .replace(/import init,\s*\{[\s\S]*?\}\s*from\s*"\.\/pkg\/game_ev_engine.js";/, "")
     .replace(/import \* as wasm from "\.\/pkg\/game_ev_engine.js";/, "")
+    .replace(/import \{ openReplayStore \} from "\.\/replay-storage.js";/, "")
     .replaceAll("import.meta.url", JSON.stringify(file.href));
   const context = vm.createContext({
     ...wasm, wasm, init: async () => {},
     ArrayBuffer, TextEncoder, TextDecoder, URL, performance,
     navigator: { hardwareConcurrency: 16, deviceMemory: workerData.memory ?? 8 },
     Worker: BrowserWorker,
+    openReplayStore: async () => {
+      storageOpens += 1;
+      return {
+        async put(store, rows) {
+          activeWrites += 1;
+          maximumActiveWrites = Math.max(maximumActiveWrites, activeWrites);
+          try {
+            if (workerData.storageDelayMs) await new Promise(resolve => setTimeout(resolve, workerData.storageDelayMs));
+            if (workerData.failStorage) throw new Error("Injected storage quota failure");
+            for (const row of rows) storedDetails.set(row.id, row.bet);
+          } finally { activeWrites -= 1; }
+        },
+        async clearTemporary() { storedDetails.clear(); },
+        close() {},
+      };
+    },
     self: {
       addEventListener(type, callback) {
         if (type === "message") parentPort.on("message", data => callback({ data }));
       },
       postMessage(data, transfer) {
-        parentPort.postMessage({ ...data, created, terminated }, transfer);
+        parentPort.postMessage({
+          ...data, created, terminated,
+          ...(data.type === "complete" ? {
+            storedDetails: [...storedDetails.values()], storageOpens, maximumActiveWrites,
+          } : {}),
+        }, transfer);
       },
     },
   });
@@ -157,6 +183,28 @@ if (!isMainThread) {
   assert.equal(summaryOnly.report.detail_count, 0);
   assert.equal(summaryOnly.detailBatchCount, 0);
   assert.equal(summaryOnly.report.omitted_bet_details, summaryOnly.report.summary.placed_bet_count);
+  // 不发送任何页面存储 ACK：后台 Worker 必须独立写完并结束。
+  const workerStored = await run({ parallelReplay: true, parallelWorkerCount: 4, workerDetailStorage: true }, csv,
+    { storageDelayMs: 10 });
+  assert.equal(workerStored.detailBatchCount, 0);
+  assert.equal(workerStored.storageOpens, 1);
+  assert.equal(workerStored.maximumActiveWrites, 1, "写入背压只允许一个事务批次在途");
+  assert.deepEqual(workerStored.storedDetails, serial.report.bets);
+  assert.deepEqual(workerStored.report.summary, serial.report.summary);
+  assert.ok(workerStored.timings.storageMs > 0);
+  const workerSummary = await run({ workerDetailStorage: true, saveReplayDetails: false }, csv);
+  assert.equal(workerSummary.storageOpens, 0, "汇总模式不得创建明细库");
+  assert.deepEqual(workerSummary.report.summary, serial.report.summary);
+  await assert.rejects(run({ workerDetailStorage: true }, csv, { failStorage: true }), /storage quota/);
+  await assert.rejects(run({}, csv, {
+    simulate: { shoes: 27_778, maxRoundsPerShoe: 60, seed: "42" },
+  }), /1,666,666/);
+  const limitSource = readFileSync(new URL("replay-worker.js", web), "utf8");
+  const limitContext = vm.createContext({});
+  vm.runInContext(limitSource.slice(limitSource.indexOf("const MAX_REPLAY_ROUNDS"),
+    limitSource.indexOf("// 页面只有在对应")), limitContext);
+  assert.doesNotThrow(() => limitContext.validateRoundCount(1_666_666));
+  assert.throws(() => limitContext.validateRoundCount(1_666_667), /1,666,666/);
   const comparisonConfig = { stakeStrategy: "fixed", strategyParameter: 20 };
   const comparisonSerial = await run({
     parallelReplay: false, comparisonConfig,
@@ -361,6 +409,12 @@ if (!isMainThread) {
     interleavedParallel.report.summary.final_bankroll,
     interleavedSerial.report.summary.final_bankroll,
   );
+  const interleavedStored = await run({
+    parallelReplay: true, parallelWorkerCount: 4, workerDetailStorage: true,
+  }, interleavedCsv, { storageDelayMs: 10 });
+  assert.deepEqual(interleavedStored.storedDetails, interleavedSerial.report.bets,
+    "磁盘等待期间交错牌靴仍按原时间顺序结算");
+  assert.deepEqual(interleavedStored.report.summary, interleavedSerial.report.summary);
   // 不先 parse 大整数；确认合并过程保留每一位权重和牌靴 ID。
   const source = readFileSync(new URL("replay-worker.js", web), "utf8");
   const merge = source.slice(source.indexOf("function mergePreparedResults"), source.indexOf("/* ----------------------------- 入口"));
