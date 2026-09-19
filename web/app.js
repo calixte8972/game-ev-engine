@@ -45,8 +45,7 @@ const simulationShoes = document.querySelector("#simulation-shoes");
 const simulationRounds = document.querySelector("#simulation-rounds");
 const simulationSeed = document.querySelector("#simulation-seed");
 const simulationEstimate = document.querySelector("#simulation-estimate");
-const MAX_SIMULATION_SHOES = 1_000_000;
-const MAX_REPLAY_ROUNDS = 1_666_666;
+const MAX_SIMULATION_SHOES = 1_666_666;
 const parallelReplay = document.querySelector("#parallel-replay");
 const parallelWorkerCount = document.querySelector("#parallel-worker-count");
 const parallelAutoTune = document.querySelector("#parallel-auto-tune");
@@ -300,7 +299,7 @@ function resetReplayWorker() {
   // 回收整块计算内存，防止连续回测累计保留大内存。
   replayWorker?.terminate();
   replayWorkerReady = false;
-  replayWorker = new Worker(new URL("./replay-worker.js?v=35", import.meta.url), { type: "module" });
+  replayWorker = new Worker(new URL("./replay-worker.js?v=36", import.meta.url), { type: "module" });
   replayWorker.addEventListener("message", handleReplayMessage);
   replayWorker.addEventListener("error", handleReplayError);
   replayWorker.addEventListener("messageerror", handleReplayError);
@@ -1006,19 +1005,16 @@ function updateSimulationEstimate({ clampRounds = false } = {}) {
 
   const shoes = Number.parseInt(simulationShoes.value, 10);
   const rounds = Number.parseInt(simulationRounds.value, 10);
-  const maxShoes = Number.isInteger(rounds) && rounds > 0
-    ? Math.min(MAX_SIMULATION_SHOES, Math.floor(MAX_REPLAY_ROUNDS / rounds))
-    : MAX_SIMULATION_SHOES;
-  simulationShoes.max = String(maxShoes);
-  simulationShoes.setCustomValidity(shoes > maxShoes ? "单次回测最多支持 1,666,666 局" : "");
+  simulationShoes.max = String(MAX_SIMULATION_SHOES);
+  simulationShoes.setCustomValidity(shoes > MAX_SIMULATION_SHOES ? "单次回测最多支持 1,666,666 靴" : "");
   if (!Number.isInteger(shoes) || shoes < 1 || !Number.isInteger(rounds) || rounds < 1) {
     simulationEstimate.textContent = `当前 ${deckCount.value} 副牌最多保证每靴生成 ${maximumRounds} 局。`;
   } else if (rounds > maximumRounds) {
     simulationEstimate.textContent = `当前 ${deckCount.value} 副牌最多保证每靴生成 ${maximumRounds} 局，请调小子局数。`;
-  } else if (shoes * rounds > MAX_REPLAY_ROUNDS) {
-    simulationEstimate.textContent = `超过单次 1,666,666 局上限；每靴 ${rounds} 局时最多 ${integerFormatter.format(maxShoes)} 靴。`;
+  } else if (shoes > MAX_SIMULATION_SHOES) {
+    simulationEstimate.textContent = "超过单次 1,666,666 靴上限，请减少牌靴数。";
   } else {
-    simulationEstimate.textContent = `预计生成 ${integerFormatter.format(shoes)} 靴，共 ${integerFormatter.format(shoes * rounds)} 局（单次上限 1,666,666 局）。`;
+    simulationEstimate.textContent = `预计生成 ${integerFormatter.format(shoes)} 靴，共 ${integerFormatter.format(shoes * rounds)} 局（单次上限 1,666,666 靴）。`;
   }
   updateReplayButton();
 }
@@ -1035,9 +1031,6 @@ function simulationRequest() {
     integer: true,
   });
   const seed = simulationSeed.value.trim();
-  if (shoes * maxRoundsPerShoe > MAX_REPLAY_ROUNDS) {
-    throw new Error("单次回测最多支持 1,666,666 局，请减少牌靴数或每靴局数");
-  }
   if (!/^\d{1,20}$/.test(seed) || BigInt(seed) > 18_446_744_073_709_551_615n) {
     throw new Error("随机种子必须是 0 到 18446744073709551615 之间的整数");
   }
@@ -1940,7 +1933,7 @@ async function start() {
   // wasm-bindgen 初始化完成前，所有计算按钮都保持禁用；初始化成功后再做
   // 一次默认分析，让用户打开页面即可看到完整八副牌基线结果。
   try {
-    await init(new URL("./pkg/game_ev_engine_bg.wasm?v=35", import.meta.url));
+    await init(new URL("./pkg/game_ev_engine_bg.wasm?v=36", import.meta.url));
     wasmReady = true;
     wasmStatus.textContent = "WASM 已就绪";
     wasmStatus.classList.add("ready");

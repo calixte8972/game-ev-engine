@@ -51,31 +51,31 @@ for (const id of ["simulation-shoes", "simulation-rounds", "simulation-seed"]) {
     throw new Error(`随机牌靴回测缺少输入：${id}`);
   }
 }
-if (!/<input id="simulation-shoes"[^>]*max="1000000"/.test(pageHtml)) {
-  throw new Error("随机回测的生成牌靴数上限必须是 1,000,000");
+if (!/<input id="simulation-shoes"[^>]*max="1666666"/.test(pageHtml)) {
+  throw new Error("随机回测的生成牌靴数上限必须是 1,666,666");
 }
 if (!/id="replay-progress-eta"/.test(pageHtml)) {
   throw new Error("回测进度缺少预计剩余时间提示");
 }
 
-// 只取第一靴做边界测试，不实际生成 1,000,000 靴，避免烟测退化成耗时回测。
-const maximumShoeGenerator = new ShoeGenerator(1_000_000, 1, "20260902", 8);
+// 在上限处初始化并取一靴；验证每靴 60 局不会被误当成总局数超限。
+const maximumShoeGenerator = new ShoeGenerator(1_666_666, 60, "20260902", 8);
 try {
-  if (JSON.parse(maximumShoeGenerator.next()).length !== 1) {
-    throw new Error("1,000,000 靴上限未能启动随机生成器");
+  if (JSON.parse(maximumShoeGenerator.next()).length !== 60) {
+    throw new Error("1,666,666 靴、每靴 60 局未能启动随机生成器");
   }
 } finally {
   maximumShoeGenerator.free();
 }
 let rejectedAboveMaximum = false;
 try {
-  const invalidGenerator = new ShoeGenerator(1_000_001, 1, "20260902", 8);
+  const invalidGenerator = new ShoeGenerator(1_666_667, 1, "20260902", 8);
   invalidGenerator.free();
 } catch {
   rejectedAboveMaximum = true;
 }
 if (!rejectedAboveMaximum) {
-  throw new Error("超过 1,000,000 靴时 WASM 生成器必须拒绝请求");
+  throw new Error("超过 1,666,666 靴时 WASM 生成器必须拒绝请求");
 }
 
 for (const id of [
@@ -253,8 +253,8 @@ for (const strategy of ["martingale", "reverse_martingale", "dalembert"]) {
 }
 if (!/MAX_SIMULATION_SHOES/.test(appSource)
     || !/max:\s*MAX_SIMULATION_SHOES/.test(appSource)
-    || !/MAX_SIMULATION_SHOES\s*=\s*1_000_000/.test(appSource)) {
-  throw new Error("随机回测的 JavaScript 校验上限必须与输入框保持为 1,000,000");
+    || !/MAX_SIMULATION_SHOES\s*=\s*1_666_666/.test(appSource)) {
+  throw new Error("随机回测的 JavaScript 校验上限必须与输入框保持为 1,666,666 靴");
 }
 if (!/data-replay-source="simulation"/.test(pageHtml)
     || !/type:\s*"simulate"/.test(appSource)

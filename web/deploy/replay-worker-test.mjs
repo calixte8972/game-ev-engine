@@ -197,14 +197,14 @@ if (!isMainThread) {
   assert.deepEqual(workerSummary.report.summary, serial.report.summary);
   await assert.rejects(run({ workerDetailStorage: true }, csv, { failStorage: true }), /storage quota/);
   await assert.rejects(run({}, csv, {
-    simulate: { shoes: 27_778, maxRoundsPerShoe: 60, seed: "42" },
+    simulate: { shoes: 1_666_667, maxRoundsPerShoe: 60, seed: "42" },
   }), /1,666,666/);
   const limitSource = readFileSync(new URL("replay-worker.js", web), "utf8");
   const limitContext = vm.createContext({});
-  vm.runInContext(limitSource.slice(limitSource.indexOf("const MAX_REPLAY_ROUNDS"),
+  vm.runInContext(limitSource.slice(limitSource.indexOf("const MAX_REPLAY_SHOES"),
     limitSource.indexOf("// 页面只有在对应")), limitContext);
-  assert.doesNotThrow(() => limitContext.validateRoundCount(1_666_666));
-  assert.throws(() => limitContext.validateRoundCount(1_666_667), /1,666,666/);
+  assert.doesNotThrow(() => limitContext.validateShoeCount(1_666_666));
+  assert.throws(() => limitContext.validateShoeCount(1_666_667), /1,666,666/);
   const comparisonConfig = { stakeStrategy: "fixed", strategyParameter: 20 };
   const comparisonSerial = await run({
     parallelReplay: false, comparisonConfig,
@@ -337,6 +337,14 @@ if (!isMainThread) {
     tableLimit: 100, sideBetLimit: 100, allowMultipleBets: false,
     stakeStrategy: "fixed", strategyParameter: 100,
   };
+  // 实际穿过 Worker + WASM 的上限校验；使用确定的提前停止策略避免跑满亿局。
+  const maximumShoes = await run({ ...stopConfig, saveReplayDetails: false }, csv, {
+    simulate: { shoes: 1_666_666, maxRoundsPerShoe: 60, seed: "1" },
+  });
+  assert.equal(maximumShoes.report.dataset.session_count, 1_666_666);
+  assert.equal(maximumShoes.report.dataset.total_rows, 99_999_960);
+  assert.equal(maximumShoes.report.summary.stopped_early, true);
+  assert.ok(maximumShoes.report.summary.replayed_rounds < 60);
   const stopComparison = await run({
     ...stopConfig, comparisonConfig: { stakeStrategy: "fixed", strategyParameter: 1 },
   }, csv, { simulate: stopSimulation });
@@ -424,6 +432,25 @@ if (!isMainThread) {
   assert.equal(context.mergePreparedResults([new TextEncoder().encode(raw).buffer]), raw);
   // 页面完成回测后必须释放旧实例；重复点击才创建新的实例，过期消息不渲染。
   const appSource = readFileSync(new URL("app.js", web), "utf8");
+  const simulationPage = vm.createContext({
+    MAX_SIMULATION_SHOES: 1_666_666,
+    simulationShoes: { value: "1666666", setCustomValidity(value) { this.error = value; } },
+    simulationRounds: { value: "60" }, simulationSeed: { value: "1" },
+    simulationEstimate: {}, deckCount: { value: "8" },
+    integerFormatter: new Intl.NumberFormat("en-US"), updateReplayButton() {},
+    readNumber(selector, label, options) {
+      const value = selector === "#simulation-shoes" ? 1_666_666 : 60;
+      assert.ok(value <= options.max, `${label} 上限必须允许该配置`);
+      return value;
+    },
+  });
+  vm.runInContext(appSource.slice(appSource.indexOf("function maximumGuaranteedSimulationRounds"),
+    appSource.indexOf("function setReplaySourceMode")), simulationPage);
+  simulationPage.updateSimulationEstimate();
+  assert.equal(simulationPage.simulationShoes.max, "1666666");
+  assert.equal(simulationPage.simulationShoes.error, "");
+  assert.match(simulationPage.simulationEstimate.textContent, /99,999,960 局/);
+  assert.equal(simulationPage.simulationRequest().shoes, 1_666_666);
   let instances = 0;
   let rendered = 0;
   class PageWorker {

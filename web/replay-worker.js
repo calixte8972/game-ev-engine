@@ -44,11 +44,11 @@ const defaultSideBetRoundLimits = {
 // `session.push()` 调用次数；如果将来核心上限变化，只需要改这一处。
 const REPLAY_BATCH_SIZE = 256;
 const PROGRESS_THROTTLE_MS = 120;
-const MAX_REPLAY_ROUNDS = 1_666_666;
+const MAX_REPLAY_SHOES = 1_666_666;
 
-function validateRoundCount(total) {
-  if (!Number.isSafeInteger(total) || total < 1 || total > MAX_REPLAY_ROUNDS) {
-    throw new Error("单次回测最多支持 1,666,666 局，请减少牌靴数或拆分 CSV");
+function validateShoeCount(total) {
+  if (!Number.isSafeInteger(total) || total < 1 || total > MAX_REPLAY_SHOES) {
+    throw new Error("单次回测最多支持 1,666,666 靴，请减少牌靴数或拆分 CSV");
   }
 }
 // 页面只有在对应 IndexedDB 事务提交后才确认批次。协调 Worker 最多允许
@@ -352,7 +352,6 @@ function compareNumericText(left, right) {
 function splitCsvIntoShoeTasks(csvText) {
   const records = readCsvRecords(csvText.replace(/^\uFEFF/, ""));
   if (records.length < 2) throw new Error("CSV 没有可拆分的数据行");
-  validateRoundCount(records.length - 1);
   const header = parseCsvRecord(records[0]);
   const tableIndex = findColumn(header, ["table_id", "table", "桌台", "桌号", "gi011"]);
   const sourcePkIndex = findColumn(header, ["__source_pk", "source_pk"]);
@@ -487,7 +486,6 @@ async function splitCsvBlobIntoShoeTasks(blob) {
       continue;
     }
     const sourceOrder = stats.totalRows;
-    validateRoundCount(sourceOrder + 1);
     const tableId = valueAt(fields, indexes.table, "1") || "1";
     const sessionId = valueAt(fields, indexes.session);
     const roundNo = valueAt(fields, indexes.round);
@@ -1233,7 +1231,7 @@ async function runStreamPipeline({
       for (let index = 0; index < poolSize; index += 1) {
         let worker;
         try {
-          worker = new Worker(new URL("./replay-shard-worker.js?v=35", import.meta.url), { type: "module" });
+          worker = new Worker(new URL("./replay-shard-worker.js?v=36", import.meta.url), { type: "module" });
         } catch (error) {
           reject(error);
           return;
@@ -1357,7 +1355,7 @@ function mergePreparedResults(results) {
 
 /* ----------------------------- 入口 ----------------------------- */
 
-const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=35", import.meta.url));
+const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=36", import.meta.url));
 ready.then(() => self.postMessage({ type: "ready" })).catch((error) => {
   self.postMessage({ type: "error", message: `无法加载 CSV 回放核心：${error?.message ?? String(error)}` });
 });
@@ -1388,8 +1386,8 @@ self.addEventListener("message", async (event) => {
   try {
     await ready;
     if (event.data.type === "simulate") {
-      const { shoes, maxRoundsPerShoe } = event.data.simulation ?? {};
-      validateRoundCount(Number(shoes) * Number(maxRoundsPerShoe));
+      const { shoes } = event.data.simulation ?? {};
+      validateShoeCount(Number(shoes));
     }
     await beginDetailFlow(runId, config.saveReplayDetails !== false, config.workerDetailStorage === true);
     const started = performance.now();
@@ -1496,9 +1494,10 @@ self.addEventListener("message", async (event) => {
     }
 
     if (event.data.type === "replay") {
-      const rowCount = dataset?.total_rows ?? JSON.parse(inspectReplayShoe(csvText)).dataset.total_rows;
+      const shoeCount = taskCount ?? dataset?.session_count
+        ?? JSON.parse(inspectReplayShoe(csvText)).dataset.session_count;
       // 空 CSV 的原有质量诊断仍交给核心处理。
-      if (rowCount > 0) validateRoundCount(Number(rowCount));
+      if (shoeCount > 0) validateShoeCount(Number(shoeCount));
     }
     let report;
     let performanceTimings = null;
