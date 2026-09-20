@@ -51,6 +51,30 @@ function validateShoeCount(total) {
     throw new Error("单次回测最多支持 1,666,666 靴，请减少牌靴数或拆分 CSV");
   }
 }
+
+const runControl = {
+  paused: false,
+  stopRequested: false,
+  waiters: new Set(),
+};
+
+function resetRunControl() {
+  runControl.paused = false;
+  runControl.stopRequested = false;
+  runControl.waiters.clear();
+}
+
+function releaseRunControlWaiters() {
+  for (const resolve of runControl.waiters) resolve();
+  runControl.waiters.clear();
+}
+
+async function waitForRunPermission() {
+  while (runControl.paused && !runControl.stopRequested) {
+    await new Promise(resolve => runControl.waiters.add(resolve));
+  }
+  return !runControl.stopRequested;
+}
 // 页面只有在对应 IndexedDB 事务提交后才确认批次。协调 Worker 最多允许
 // 4 个批次未确认，从源头限制待写明细的内存，而不是只限制页面数组大小。
 const DETAIL_MAX_IN_FLIGHT = 4;
@@ -836,7 +860,7 @@ class BoundedCurve {
  */
 async function runStreamPipeline({
   order, taskAt, taskCount, config, sessionCount, timestampOrder,
-  parallel, requestedWorkerCount, runId, taskForSourceOrder, totalRoundCount,
+  parallel, requestedWorkerCount, runId, taskForSourceOrder,
   comparisonConfig,
 }) {
   const session = new ReplaySession(streamConfigJson(config, sessionCount));
@@ -851,6 +875,9 @@ async function runStreamPipeline({
   const targetOrder = order;
   let probabilityCompleted = 0;
   let settledRounds = 0;
+  let settledShoes = 0;
+  const settlementRemaining = new Map();
+  const entryOwners = new WeakMap();
   let lastProgressAt = 0;
   let lastOverall = 0;
   const timings = {
@@ -866,7 +893,7 @@ async function runStreamPipeline({
     selectedWorkerCount: 1,
   };
   const progressStep = Math.max(1, Math.ceil(taskCount / 100));
-  const progressTotal = Math.max(1, Number(totalRoundCount) || taskCount);
+  const progressTotal = Math.max(1, taskCount);
   const staticPoolSize = parallel ? workerCountFor(taskCount, requestedWorkerCount) : 1;
   const postPipelineProgress = (phase, completed, total, workerCount, isParallel, force = false) => {
     const now = performance.now();
@@ -876,7 +903,7 @@ async function runStreamPipeline({
     const probabilityRatio = taskCount > 0
       ? Math.min(1, probabilityCompleted / taskCount) : 1;
     const settlementRatio = progressTotal > 0
-      ? Math.min(1, settledRounds / progressTotal) : 0;
+      ? Math.min(1, settledShoes / progressTotal) : 0;
     const calculatedOverall = Math.min(0.98, 0.05 + probabilityRatio * 0.55 + settlementRatio * 0.38);
     // 并行任务的完成消息不是严格按派发顺序到达；Worker 自己也保证单调，
     // 主线程即使收到交错阶段消息，也不会把进度条写回较小百分比。
@@ -884,7 +911,7 @@ async function runStreamPipeline({
     lastOverall = overall;
     self.postMessage({
       type: "progress", phase, completed, total, workerCount, parallel: isParallel,
-      overall, settledRounds, settlementTotal: progressTotal,
+      overall, settledRounds, settledShoes, settlementTotal: progressTotal,
     });
   };
   const postProbabilityProgress = (completed, workerCount, isParallel, force = false) => {
@@ -893,8 +920,31 @@ async function runStreamPipeline({
     postPipelineProgress("probability", completed, taskCount, workerCount, isParallel, force);
   };
 
+  const registerSettlementEntries = (taskId, entries) => {
+    if (!entries.length) {
+      settledShoes += 1;
+      return;
+    }
+    settlementRemaining.set(taskId, entries.length);
+    for (const entry of entries) entryOwners.set(entry, taskId);
+  };
+  const noteSettledEntries = (entries) => {
+    for (const entry of entries) {
+      const taskId = entry.taskId ?? entryOwners.get(entry);
+      const remaining = settlementRemaining.get(taskId);
+      if (!Number.isInteger(remaining)) continue;
+      if (remaining <= 1) {
+        settlementRemaining.delete(taskId);
+        settledShoes += 1;
+      } else {
+        settlementRemaining.set(taskId, remaining - 1);
+      }
+    }
+  };
+
   const processEntries = async (entries) => {
     for (let offset = 0; offset < entries.length; offset += REPLAY_BATCH_SIZE) {
+      if (!await waitForRunPermission()) return true;
       const batch = entries.slice(offset, offset + REPLAY_BATCH_SIZE);
       // 横轴用本次回放中的真实局序，而非各策略各自的“第几次下注”。
       // 因此 A 跳过某局而 B 下注时，两条线仍落在同一时间位置。
@@ -917,10 +967,6 @@ async function runStreamPipeline({
         Number(response?.summary?.replayed_rounds ?? 0),
         Number(comparisonResponse?.summary?.replayed_rounds ?? 0),
       );
-      postPipelineProgress(
-        "settlement", settledRounds, progressTotal,
-        localOnly ? 1 : poolSize, !localOnly,
-      );
       const bets = Array.isArray(response?.bets) ? response.bets : [];
       if (bets.length) {
         const curveStarted = performance.now();
@@ -932,6 +978,11 @@ async function runStreamPipeline({
       if (comparisonBets.length) comparisonCurve.addBets(comparisonBets, timelinePositions);
       primaryStopped ||= Boolean(response?.summary?.stopped_early);
       comparisonStopped ||= Boolean(comparisonResponse?.summary?.stopped_early);
+      noteSettledEntries(batch);
+      postPipelineProgress(
+        "settlement", settledShoes, progressTotal,
+        localOnly ? 1 : poolSize, !localOnly,
+      );
       if (primaryStopped && (!comparisonSession || comparisonStopped)) return true;
     }
     return false;
@@ -1018,19 +1069,26 @@ async function runStreamPipeline({
     const preparedBySourceOrder = targetOrder ? new Map() : null;
     let stopped = false;
     for (let taskId = 0; taskId < taskCount; taskId += 1) {
+      if (!await waitForRunPermission()) {
+        stopped = true;
+        break;
+      }
       const task = await getTask(taskId);
       const preparedJson = prepareLocalTask(taskId, task);
       const decodeStarted = performance.now();
       const entries = decodePreparedJson(preparedJson);
       timings.decodeMs += performance.now() - decodeStarted;
       if (preparedBySourceOrder) {
-        for (const entry of entries) {
+        const ownedEntries = entries.map(entry => ({ ...entry, taskId }));
+        registerSettlementEntries(taskId, ownedEntries);
+        for (const entry of ownedEntries) {
           if (preparedBySourceOrder.has(entry.sourceOrder)) {
             throw new Error("单线程预计算结果出现重复原始行");
           }
           preparedBySourceOrder.set(entry.sourceOrder, entry);
         }
       } else {
+        registerSettlementEntries(taskId, entries);
         stopped = await processEntries(entries);
       }
       postProbabilityProgress(taskId + 1, 1, false);
@@ -1077,6 +1135,10 @@ async function runStreamPipeline({
 
     const flush = async () => {
       if (stopped) return;
+      if (!await waitForRunPermission()) {
+        stopped = true;
+        return;
+      }
       if (!targetOrder) {
         while (readyTasks.has(nextSequentialTask)) {
           const entries = readyTasks.get(nextSequentialTask);
@@ -1111,10 +1173,13 @@ async function runStreamPipeline({
       markAssigned(0);
       completed = 1;
       if (!targetOrder) {
+        registerSettlementEntries(0, prefetchedEntries);
         readyTasks.set(0, prefetchedEntries);
       } else {
-        readyTasks.set(0, { remaining: prefetchedEntries.length });
-        for (const entry of prefetchedEntries) {
+        const ownedEntries = prefetchedEntries.map(entry => ({ ...entry, taskId: 0 }));
+        registerSettlementEntries(0, ownedEntries);
+        readyTasks.set(0, { remaining: ownedEntries.length });
+        for (const entry of ownedEntries) {
           if (packetsByOrder.has(entry.sourceOrder)) throw new Error("自动测速结果出现重复原始行");
           packetsByOrder.set(entry.sourceOrder, { ...entry, taskId: 0 });
         }
@@ -1129,6 +1194,10 @@ async function runStreamPipeline({
       if (pumping || settled || stopped) return;
       pumping = true;
       try {
+        if (!await waitForRunPermission()) {
+          stopped = true;
+          return;
+        }
         while (!stopped && available.length && assignedTaskCount < taskCount) {
           // 带时间的多桌数据可能把不同牌靴交错排列。若全局下一局属于尚未
           // 派发的牌靴，即使普通背压名额已满，也必须先派发这一靴；否则前面
@@ -1210,10 +1279,13 @@ async function runStreamPipeline({
           const entries = decodePreparedBuffer(message.preparedBuffer);
           timings.decodeMs += performance.now() - decodeStarted;
           if (!targetOrder) {
+            registerSettlementEntries(taskId, entries);
             readyTasks.set(taskId, entries);
           } else {
-            readyTasks.set(taskId, { remaining: entries.length });
-            for (const entry of entries) {
+            const ownedEntries = entries.map(entry => ({ ...entry, taskId }));
+            registerSettlementEntries(taskId, ownedEntries);
+            readyTasks.set(taskId, { remaining: ownedEntries.length });
+            for (const entry of ownedEntries) {
               if (packetsByOrder.has(entry.sourceOrder)) throw new Error("并行结果出现重复原始行");
               packetsByOrder.set(entry.sourceOrder, { ...entry, taskId });
             }
@@ -1231,7 +1303,7 @@ async function runStreamPipeline({
       for (let index = 0; index < poolSize; index += 1) {
         let worker;
         try {
-          worker = new Worker(new URL("./replay-shard-worker.js?v=36", import.meta.url), { type: "module" });
+          worker = new Worker(new URL("./replay-shard-worker.js?v=37", import.meta.url), { type: "module" });
         } catch (error) {
           reject(error);
           return;
@@ -1274,6 +1346,7 @@ async function runStreamPipeline({
   report.trend_charts = curve.trends();
   report.streamed = true;
   report.performance = timings;
+  report.user_stopped = runControl.stopRequested;
   if (comparisonSession) {
     const comparisonReport = JSON.parse(comparisonSession.finish());
     comparisonCurve.finish();
@@ -1287,7 +1360,7 @@ async function runStreamPipeline({
     report.comparison = comparisonReport;
   }
   postPipelineProgress(
-    "settlement", settledRounds, progressTotal,
+    "settlement", settledShoes, progressTotal,
     localOnly ? 1 : poolSize, !localOnly, true,
   );
   await waitForAllDetailBatches();
@@ -1355,13 +1428,31 @@ function mergePreparedResults(results) {
 
 /* ----------------------------- 入口 ----------------------------- */
 
-const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=36", import.meta.url));
+const ready = init(new URL("./pkg/game_ev_engine_bg.wasm?v=37", import.meta.url));
 ready.then(() => self.postMessage({ type: "ready" })).catch((error) => {
   self.postMessage({ type: "error", message: `无法加载 CSV 回放核心：${error?.message ?? String(error)}` });
 });
 
 let running = false;
 self.addEventListener("message", async (event) => {
+  if (event.data?.type === "pause" && running) {
+    runControl.paused = true;
+    self.postMessage({ type: "control", state: "paused" });
+    return;
+  }
+  if (event.data?.type === "resume" && running) {
+    runControl.paused = false;
+    releaseRunControlWaiters();
+    self.postMessage({ type: "control", state: "running" });
+    return;
+  }
+  if (event.data?.type === "stop" && running) {
+    runControl.stopRequested = true;
+    runControl.paused = false;
+    releaseRunControlWaiters();
+    self.postMessage({ type: "control", state: "stopping" });
+    return;
+  }
   if (event.data?.type === "detail-ack") {
     acknowledgeDetailBatch(event.data);
     return;
@@ -1372,6 +1463,7 @@ self.addEventListener("message", async (event) => {
   }
   if (!new Set(["replay", "simulate"]).has(event.data?.type) || running) return;
   running = true;
+  resetRunControl();
   const config = event.data.config ?? {};
   // B 有完整独立的资金、EV、赔付和边注限制配置；只有牌靴副数必须与 A
   // 相同，因为两者对照的是同一批真实牌局和同一条概率预计算流。
@@ -1533,7 +1625,6 @@ self.addEventListener("message", async (event) => {
         const pipelineResult = await runStreamPipeline({
           order, taskAt, taskCount, config, sessionCount, timestampOrder,
           parallel: requestedParallel, requestedWorkerCount, runId, taskForSourceOrder,
-          totalRoundCount: dataset?.total_rows ?? taskCount,
           comparisonConfig,
         });
         report = pipelineResult.report;
@@ -1599,12 +1690,12 @@ self.addEventListener("message", async (event) => {
       ? Number(performanceTimings?.selectedWorkerCount)
         || workerCountFor(taskCount, requestedWorkerCount) : 1;
     const usedParallel = requestedParallel && report.streamed === true && effectiveWorkerCount > 1;
-    const fallbackReason = requestedParallel && !usedParallel
-      ? pipelineFallbackReason
-        || (effectiveWorkerCount <= 1 && taskCount <= 1
+    const fallbackReason = pipelineFallbackReason
+      || (requestedParallel && !usedParallel
+        ? (effectiveWorkerCount <= 1 && taskCount <= 1
           ? "只有一副可回放牌靴，已使用单线程"
           : "设备资源限制为单线程")
-      : "";
+        : "");
     const totalElapsed = performance.now() - started;
     performanceTimings ??= {};
     performanceTimings.storageMs = detailFlow?.storageMs ?? 0;
@@ -1622,6 +1713,7 @@ self.addEventListener("message", async (event) => {
       workerCount: usedParallel ? effectiveWorkerCount : 1,
       shardCount: taskCount,
       parallel: usedParallel,
+      stoppedByUser: runControl.stopRequested,
       fallbackReason,
     });
   } catch (error) {

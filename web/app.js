@@ -37,6 +37,9 @@ const multipleRecommendationBody = document.querySelector("#multiple-recommendat
 const csvFileInput = document.querySelector("#csv-file");
 const selectedFile = document.querySelector("#selected-file");
 const replayButton = document.querySelector("#replay-button");
+const replayRunControls = document.querySelector("#replay-run-controls");
+const replayPauseButton = document.querySelector("#replay-pause-button");
+const replayStopButton = document.querySelector("#replay-stop-button");
 const replayStatus = document.querySelector("#replay-status");
 const replaySourceTabs = document.querySelectorAll("[data-replay-source]");
 const csvReplaySource = document.querySelector("#csv-replay-source");
@@ -271,6 +274,9 @@ const integerFormatter = new Intl.NumberFormat("zh-CN", {
 let wasmReady = false;
 let replayWorkerReady = false;
 let replayRunning = false;
+let replayPaused = false;
+let replayControlPending = false;
+let replayStopRequested = false;
 let currentCsvFile = null;
 let replaySourceMode = "csv";
 let currentReplayReport = null;
@@ -299,7 +305,7 @@ function resetReplayWorker() {
   // 回收整块计算内存，防止连续回测累计保留大内存。
   replayWorker?.terminate();
   replayWorkerReady = false;
-  replayWorker = new Worker(new URL("./replay-worker.js?v=36", import.meta.url), { type: "module" });
+  replayWorker = new Worker(new URL("./replay-worker.js?v=37", import.meta.url), { type: "module" });
   replayWorker.addEventListener("message", handleReplayMessage);
   replayWorker.addEventListener("error", handleReplayError);
   replayWorker.addEventListener("messageerror", handleReplayError);
@@ -988,6 +994,15 @@ function setReplayRunning(running, label) {
   for (const tab of replaySourceTabs) tab.disabled = running;
   parallelReplay.disabled = running;
   summaryOnlyReplay.disabled = running;
+  replayRunControls.hidden = !running;
+  if (!running) {
+    replayPaused = false;
+    replayControlPending = false;
+    replayStopRequested = false;
+    replayPauseButton.textContent = "暂停回测";
+  }
+  replayPauseButton.disabled = !running || replayControlPending || replayStopRequested;
+  replayStopButton.disabled = !running || replayStopRequested;
   updateParallelReplayControls();
   updateReplayButton();
 }
@@ -1626,6 +1641,23 @@ replayLastPage.addEventListener("click", () => {
 
 replayExportButton.addEventListener("click", exportReplayDetails);
 
+replayPauseButton.addEventListener("click", () => {
+  if (!replayRunning || !replayWorker || replayControlPending || replayStopRequested) return;
+  replayControlPending = true;
+  replayPauseButton.disabled = true;
+  replayWorker.postMessage({ type: replayPaused ? "resume" : "pause" });
+});
+
+replayStopButton.addEventListener("click", () => {
+  if (!replayRunning || !replayWorker || replayStopRequested) return;
+  replayStopRequested = true;
+  replayPauseButton.disabled = true;
+  replayStopButton.disabled = true;
+  replayStatus.textContent = "正在提前结束回测并整理已完成结果…";
+  replayProgressEta.textContent = "正在结束";
+  replayWorker.postMessage({ type: "stop" });
+});
+
 replayButton.addEventListener("click", async () => {
   if (replayRunning || (replaySourceMode === "csv" && !currentCsvFile)) return;
   replayError.hidden = true;
@@ -1642,6 +1674,9 @@ replayButton.addEventListener("click", async () => {
   }
   replayDetailPendingBatches = [];
   replayStorageElapsedMs = 0;
+  replayPaused = false;
+  replayControlPending = false;
+  replayStopRequested = false;
   resetReplayProgress("准备回测");
   bankrollChartController.reset("正在回放，完成后显示新的本金变化曲线…");
   replayTrendChartController.reset();
@@ -1703,6 +1738,30 @@ function handleReplayMessage(event) {
   // 协调 Worker 回传 ready/progress/complete/error。页面只展示进度和最终报告，
   // 不在主线程重新运行 CSV 回放。
   const message = event.data;
+  if (message.type === "control") {
+    replayControlPending = false;
+    if (message.state === "paused") {
+      replayPaused = true;
+      replayPauseButton.textContent = "继续回测";
+      replayStatus.textContent = "回测已暂停；点击“继续回测”恢复…";
+      replayProgressEta.textContent = "已暂停";
+    } else if (message.state === "running") {
+      replayPaused = false;
+      replayPauseButton.textContent = "暂停回测";
+      replayStatus.textContent = "回测已继续…";
+      replayProgressStartedAt = performance.now();
+      replayProgressLastSampleAt = replayProgressStartedAt;
+      replayProgressLastSampleOverall = replayProgressOverall;
+      replayProgressRate = 0;
+    } else if (message.state === "stopping") {
+      replayStopRequested = true;
+      replayStatus.textContent = "正在提前结束回测并整理已完成结果…";
+      replayProgressEta.textContent = "正在结束";
+    }
+    replayPauseButton.disabled = !replayRunning || replayControlPending || replayStopRequested;
+    replayStopButton.disabled = !replayRunning || replayStopRequested;
+    return;
+  }
   if (message.type === "detail-batch") {
     persistReplayDetails(message);
     return;
@@ -1748,9 +1807,13 @@ function handleReplayMessage(event) {
       const executionLabel = message.parallel
         ? `${message.workerCount ?? 1} 个并行 Worker`
         : "单线程";
-      setReplayRunning(false, `回放完成 · ${executionLabel}`);
+      const stoppedByUser = Boolean(message.stoppedByUser || message.report?.user_stopped);
+      setReplayRunning(false, stoppedByUser
+        ? `已提前结束 · ${executionLabel}`
+        : `回放完成 · ${executionLabel}`);
       releaseReplayWorker();
-      setReplayProgress(1, "回测完成", `${message.report?.summary?.replayed_rounds ?? 0} 局`);
+      setReplayProgress(1, stoppedByUser ? "已提前结束" : "回测完成",
+        `${message.report?.summary?.replayed_rounds ?? 0} 局`);
       renderReplay(message.report, message.elapsedMilliseconds, {
         ...(message.timings ?? message.report?.performance ?? {}),
         storageMs: Number(message.timings?.storageMs ?? 0) + replayStorageElapsedMs,
@@ -1772,6 +1835,7 @@ function handleReplayMessage(event) {
   }
 
   if (message.type === "progress") {
+    if (replayPaused || replayStopRequested) return;
     if (message.phase === "generate") {
       replayStatus.textContent = "正在生成可复现牌靴…";
       setReplayProgress(
@@ -1811,7 +1875,7 @@ function handleReplayMessage(event) {
       setReplayProgress(
         message.overall ?? 0.7,
         "顺序结算",
-        `${message.completed ?? message.settledRounds ?? 0}/${message.total ?? message.settlementTotal ?? 0} 局`,
+        `${message.completed ?? message.settledShoes ?? 0}/${message.total ?? message.settlementTotal ?? 0} 靴`,
       );
     } else if (message.phase === "input") {
       replayStatus.textContent = "正在准备回测数据…";
@@ -1933,7 +1997,7 @@ async function start() {
   // wasm-bindgen 初始化完成前，所有计算按钮都保持禁用；初始化成功后再做
   // 一次默认分析，让用户打开页面即可看到完整八副牌基线结果。
   try {
-    await init(new URL("./pkg/game_ev_engine_bg.wasm?v=36", import.meta.url));
+    await init(new URL("./pkg/game_ev_engine_bg.wasm?v=37", import.meta.url));
     wasmReady = true;
     wasmStatus.textContent = "WASM 已就绪";
     wasmStatus.classList.add("ready");

@@ -100,12 +100,44 @@ if (!isMainThread) {
       const timeout = setTimeout(() => { thread.terminate(); reject(new Error("Worker timeout")); }, 30_000);
       const detailBatches = [];
       const progressValues = [];
+      const settlementProgress = [];
+      const controlStates = [];
+      let pauseRequested = false;
+      let stopRequested = false;
+      let pausedAt = 0;
+      let pausedMilliseconds = 0;
       let pendingDetailAcks = 0;
       let maximumPendingDetailAcks = 0;
       thread.on("error", reject);
       thread.on("message", message => {
         if (message.type === "progress" && Number.isFinite(Number(message.overall))) {
           progressValues.push(Number(message.overall));
+          if (message.phase === "settlement") {
+            settlementProgress.push({
+              completed: Number(message.completed), total: Number(message.total),
+              settledShoes: Number(message.settledShoes),
+            });
+          }
+          const settledShoes = Number(message.settledShoes ?? message.completed ?? 0);
+          if (message.phase === "settlement" && options.pauseAfterShoes
+              && settledShoes >= options.pauseAfterShoes && !pauseRequested) {
+            pauseRequested = true;
+            thread.postMessage({ type: "pause" });
+          }
+          if (message.phase === "settlement" && options.stopAfterShoes
+              && settledShoes >= options.stopAfterShoes && !stopRequested) {
+            stopRequested = true;
+            thread.postMessage({ type: "stop" });
+          }
+        }
+        if (message.type === "control") {
+          controlStates.push(message.state);
+          if (message.state === "paused") {
+            pausedAt = performance.now();
+            setTimeout(() => thread.postMessage({ type: "resume" }), options.pauseDurationMs ?? 40);
+          } else if (message.state === "running" && pausedAt > 0) {
+            pausedMilliseconds += performance.now() - pausedAt;
+          }
         }
         if (message.type === "ready") {
           if (options.simulate) {
@@ -147,8 +179,11 @@ if (!isMainThread) {
             report: { ...message.report, bets: message.report.bets?.length
               ? message.report.bets : detailBatches },
             progressValues,
+            settlementProgress,
             detailBatchCount: detailBatches.length,
             maximumPendingDetailAcks,
+            controlStates,
+            pausedMilliseconds,
           });
         }
       });
@@ -167,6 +202,10 @@ if (!isMainThread) {
   ));
   assert.deepEqual(serial.report.bets, expected.bets, "单线程必须保留独立边注截止局数");
   assert.equal(serial.report.summary.final_bankroll, expected.summary.final_bankroll);
+  assert.equal(serial.report.streamed, true, serial.fallbackReason);
+  assert.deepEqual(serial.settlementProgress.at(-1), {
+    completed: 8, total: 8, settledShoes: 8,
+  }, "顺序结算进度必须按牌靴计数");
   assert.equal(serial.report.details_saved, true);
   const backpressured = await run(
     { parallelReplay: false }, csv,
@@ -190,8 +229,30 @@ if (!isMainThread) {
   assert.equal(workerStored.storageOpens, 1);
   assert.equal(workerStored.maximumActiveWrites, 1, "写入背压只允许一个事务批次在途");
   assert.deepEqual(workerStored.storedDetails, serial.report.bets);
-  assert.deepEqual(workerStored.report.summary, serial.report.summary);
+  const withoutCacheDiagnostics = ({ probability_cache_hits, probability_cache_misses, ...summary }) => summary;
+  assert.deepEqual(withoutCacheDiagnostics(workerStored.report.summary), withoutCacheDiagnostics(serial.report.summary));
   assert.ok(workerStored.timings.storageMs > 0);
+  const pausedReplay = await run({
+    parallelReplay: false, workerDetailStorage: true,
+  }, csv, {
+    simulate: { shoes: 40, maxRoundsPerShoe: 8, seed: "3042" },
+    storageDelayMs: 8, pauseAfterShoes: 2, pauseDurationMs: 60,
+  });
+  assert.deepEqual(pausedReplay.controlStates, ["paused", "running"]);
+  assert.ok(pausedReplay.pausedMilliseconds >= 45, "暂停必须阻止后续牌靴结算直到继续");
+  assert.equal(pausedReplay.stoppedByUser, false);
+  assert.equal(pausedReplay.report.summary.replayed_rounds, 320);
+  const stoppedReplay = await run({
+    parallelReplay: false, workerDetailStorage: true,
+  }, csv, {
+    simulate: { shoes: 100, maxRoundsPerShoe: 8, seed: "4042" },
+    storageDelayMs: 8, stopAfterShoes: 2,
+  });
+  assert.ok(stoppedReplay.controlStates.includes("stopping"));
+  assert.equal(stoppedReplay.stoppedByUser, true);
+  assert.equal(stoppedReplay.report.user_stopped, true);
+  assert.ok(stoppedReplay.report.summary.replayed_rounds > 0);
+  assert.ok(stoppedReplay.report.summary.replayed_rounds < 800);
   const workerSummary = await run({ workerDetailStorage: true, saveReplayDetails: false }, csv);
   assert.equal(workerSummary.storageOpens, 0, "汇总模式不得创建明细库");
   assert.deepEqual(workerSummary.report.summary, serial.report.summary);
@@ -242,7 +303,8 @@ if (!isMainThread) {
   const independentlyConfiguredParallel = await run({
     parallelReplay: true, parallelWorkerCount: 4, comparisonConfig: independentB,
   });
-  assert.deepEqual(independentlyConfiguredParallel.report.comparison.summary, independentBAlone.report.summary,
+  assert.deepEqual(withoutCacheDiagnostics(independentlyConfiguredParallel.report.comparison.summary),
+    withoutCacheDiagnostics(independentBAlone.report.summary),
     "并行预计算也要覆盖 B 放宽后的边注范围");
   for (const point of comparisonSerial.report.comparison.chart_points.slice(1)) {
     assert.ok(point.timelineIndex >= point.index,
@@ -422,7 +484,8 @@ if (!isMainThread) {
   }, interleavedCsv, { storageDelayMs: 10 });
   assert.deepEqual(interleavedStored.storedDetails, interleavedSerial.report.bets,
     "磁盘等待期间交错牌靴仍按原时间顺序结算");
-  assert.deepEqual(interleavedStored.report.summary, interleavedSerial.report.summary);
+  assert.deepEqual(withoutCacheDiagnostics(interleavedStored.report.summary),
+    withoutCacheDiagnostics(interleavedSerial.report.summary));
   // 不先 parse 大整数；确认合并过程保留每一位权重和牌靴 ID。
   const source = readFileSync(new URL("replay-worker.js", web), "utf8");
   const merge = source.slice(source.indexOf("function mergePreparedResults"), source.indexOf("/* ----------------------------- 入口"));

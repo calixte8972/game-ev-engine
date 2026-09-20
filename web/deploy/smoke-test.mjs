@@ -57,6 +57,9 @@ if (!/<input id="simulation-shoes"[^>]*max="1666666"/.test(pageHtml)) {
 if (!/id="replay-progress-eta"/.test(pageHtml)) {
   throw new Error("回测进度缺少预计剩余时间提示");
 }
+for (const id of ["replay-pause-button", "replay-stop-button"]) {
+  if (!new RegExp(`id="${id}"`).test(pageHtml)) throw new Error(`回测控制缺少 ${id}`);
+}
 
 // 在上限处初始化并取一靴；验证每靴 60 局不会被误当成总局数超限。
 const maximumShoeGenerator = new ShoeGenerator(1_666_666, 60, "20260902", 8);
@@ -242,6 +245,12 @@ if (!/id="replay-pagination"/.test(pageHtml)
 const appSource = readFileSync(resolve(webDirectory, "app.js"), "utf8");
 if (!/formatReplayDuration/.test(appSource) || !/预计剩余：计算中/.test(appSource)) {
   throw new Error("回测进度缺少预计剩余时间计算逻辑");
+}
+if (!/type:\s*replayPaused \? "resume" : "pause"/.test(appSource)
+    || !/type:\s*"stop"/.test(appSource)
+    || !/settledShoes/.test(replayWorkerSource)
+    || !/waitForRunPermission/.test(replayWorkerSource)) {
+  throw new Error("暂停、继续、提前结束或按牌靴展示进度没有完整接线");
 }
 if (!/sampleElapsed >= 500/.test(appSource) || !/progressDelta > 0/.test(appSource)) {
   throw new Error("预计剩余时间没有按时间窗口累计小进度增量");
